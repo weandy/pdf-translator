@@ -9,7 +9,6 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.8",
     "pydantic-settings>=2.4",
-    "sqlmodel>=0.0.22",
     "pymupdf>=1.26",
     "httpx2>=2.16",  # openai SDK 与 Starlette 已改用 httpx2，统一用它
     "openai>=1.60",

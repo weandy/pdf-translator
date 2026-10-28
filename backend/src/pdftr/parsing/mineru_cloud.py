@@ -44,6 +44,14 @@ class MinerUCloudParser:
         self._transport = transport  # 测试时注入假传输层
 
     async def parse(self, pdf: Path, pages: list[int] | None = None, raw_dir: Path | None = None) -> LayoutResult:
+        try:
+            return await self._parse(pdf, pages, raw_dir)
+        except httpx2.TimeoutException as e:
+            raise ParseError("连接 MinerU 云端超时，请检查服务器能否访问 mineru.net") from e
+        except httpx2.TransportError as e:
+            raise ParseError("无法连接 MinerU 云端，请检查服务器网络（Docker 部署时确认容器能访问外网）") from e
+
+    async def _parse(self, pdf: Path, pages: list[int] | None, raw_dir: Path | None) -> LayoutResult:
         headers = {"Authorization": f"Bearer {self._token}"}
         async with (
             httpx2.AsyncClient(headers=headers, timeout=120, transport=self._transport) as api,

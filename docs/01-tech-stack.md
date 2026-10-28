@@ -2,7 +2,7 @@
 
 > 日期：2026-10-28（v9：S11 公开数据集与开源项目调研确认默认不思考，精翻档适合非论文内容；v8：S10 验证 v2 提示词跨模型有效、v3 无提升；思考收益不稳定，默认不思考；v7 采用 v2 提示词；v6 质量纳入评判标准；v5 省 token 与 Key 存浏览器；v4 默认轻量模式）
 > 依据：[00-research.md](00-research.md)
-> 状态：草案。§8 验证实验完成后转为正式决策
+> 状态：验证实验已完成；第一阶段（P1）已按本选型实现并发布 v0.1.0，详见 [03-mvp-design.md](03-mvp-design.md)
 
 ---
 
@@ -88,7 +88,7 @@ flowchart LR
 | Web 框架 | **FastAPI** + Pydantic v2 | Litestar | IR 用 Pydantic 定义，可导出 JSON Schema 生成前端 TS 类型 |
 | 任务执行 | **SQLite 任务表 + 进程内 worker**（asyncio + ProcessPool） | Redis + arq | 单实例自部署不必上 Redis；接口抽象好，以后可替换 |
 | 进度推送 | **SSE** | WebSocket | 单向推送足够 |
-| 数据库 | **SQLite**（SQLModel） | PostgreSQL | 任务、翻译缓存、术语库、API 配置 |
+| 数据库 | **SQLite**（标准库 sqlite3） | PostgreSQL | 任务、段落、翻译缓存 |
 | 文件存储 | 本地目录 `data/jobs/<id>/` | — | 原文件、IR、背景页、导出物 |
 | PDF 读写 | **PyMuPDF** | pikepdf | 文字提取、去字、叠加合成、栅格化 |
 | 版面解析（默认，云端） | **MinerU 精准解析 API** | **Doc2X v3-2026 API**（付费） | MinerU 免费、每天 1000 页优先额度、单文件 ≤200 页（超出自动分段）；Doc2X ¥0.01–0.02/页；**上传前提醒** |

@@ -2,12 +2,13 @@
 	admin off
 }
 
-:80 {
+# 监听地址与后端地址可用环境变量覆盖（主机网络模式见 deploy/docker-compose.hostnet.yml）
+{$PDFTR_LISTEN::80} {
 	encode zstd gzip
 
-	# 接口转发给后端容器（服务名 app）
+	# 接口转发给后端（默认是同一 Compose 网络里的服务 app）
 	handle /api/* {
-		reverse_proxy app:8000 {
+		reverse_proxy {$PDFTR_UPSTREAM:app:8000} {
 			# SSE 进度推送不缓冲
 			flush_interval -1
 		}

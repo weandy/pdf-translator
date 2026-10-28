@@ -1,0 +1,17 @@
+# 主机网络模式：宿主机的 Docker 桥接网络无法访问外网时使用
+# （例如 `docker run` 提示 “IPv4 forwarding is disabled. Networking will not work.”）。
+#
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.hostnet.yml up -d --build
+#
+# 后端只监听 127.0.0.1，外部只能经前端的 Caddy 访问。
+services:
+  app:
+    network_mode: host
+    command: ["uvicorn", "pdftr.api.app:create_app", "--factory", "--host", "127.0.0.1", "--port", "8000"]
+
+  web:
+    network_mode: host
+    ports: !reset []
+    environment:
+      PDFTR_LISTEN: ":${PDFTR_PORT:-8080}"
+      PDFTR_UPSTREAM: "127.0.0.1:8000"
