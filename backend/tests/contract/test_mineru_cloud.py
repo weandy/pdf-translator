@@ -159,3 +159,15 @@ def test_upload_status_text():
 
     assert upload_status(1258291, 3565158, 40) == "正在上传到 MinerU 云端：1.2 / 3.4 MB，31 KB/s，约 1 分 13 秒"
     assert upload_status(0, 3565158, 0.5) == "正在上传到 MinerU 云端：0.0 / 3.4 MB"
+
+
+def test_proxy_setting_reaches_parser(tmp_path: Path):
+    from pdftr.config import Settings
+    from pdftr.container import build_container
+    from pdftr.pipeline.secrets import Secrets
+
+    settings = Settings(data_dir=tmp_path, glossary_sources="", mineru_proxy="socks5h://u:p@127.0.0.1:1080")
+    deps = build_container(settings).pipeline.deps
+    secrets = Secrets(llm_base_url="https://api.deepseek.com", llm_api_key="k", llm_model="m", parser_token="t")
+    parser = deps.parser_factory(secrets)
+    assert isinstance(parser, MinerUCloudParser) and parser._proxy == "socks5h://u:p@127.0.0.1:1080"

@@ -76,7 +76,7 @@ def build_container(settings: Settings | None = None, deps_override: dict | None
         "cache": SqliteTranslationCache(db),
         "events": EventBus(),
         "secrets": SecretStore(),
-        "parser_factory": lambda sec: MinerUCloudParser(sec.parser_token),
+        "parser_factory": lambda sec: MinerUCloudParser(sec.parser_token, proxy=s.mineru_proxy),
         "chat_factory": lambda sec: OpenAICompatChat(
             base_url=sec.llm_base_url, api_key=sec.llm_api_key, model=sec.llm_model
         ),

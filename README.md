@@ -46,6 +46,7 @@ docker compose -f deploy/docker-compose.yml up -d --build
   ```bash
   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.hostnet.yml up -d --build
   ```
+- **“正在上传到 MinerU 云端”很慢**：进度页会显示上传速度。海外服务器到国内的线路可能只有每秒几十 KB，可在 `.env` 里设置 `PDFTR_MINERU_PROXY`（如 `socks5h://用户:密码@主机:端口`），让发往 MinerU 的请求经一台线路好的机器转发（实测从约 25 KB/s 提升到约 1.8 MB/s）；翻译服务不受影响。
 - **一直停在“版面解析”**：MinerU 免费额度在高峰时需要排队，实测从 30 秒到 10 分钟以上不等；进度页会显示 MinerU 的实时状态（排队中、解析到第几页），可以关闭页面稍后在“我的任务”里查看。
 - **个别段落显示为灰色原文**：该段译文没有通过公式占位符校验，点击段落后“重翻”或“精修”。
 

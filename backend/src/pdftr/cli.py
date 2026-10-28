@@ -32,7 +32,8 @@ from pdftr.translation.service import TranslateOptions, translate
 
 def _parse(args: argparse.Namespace) -> None:
     out = Path(args.out)
-    parser = MinerUCloudParser(Settings().mineru_api_token)
+    settings = Settings()
+    parser = MinerUCloudParser(settings.mineru_api_token, proxy=settings.mineru_proxy)
     asyncio.run(parser.parse(Path(args.pdf), raw_dir=out))
     import io
     import zipfile

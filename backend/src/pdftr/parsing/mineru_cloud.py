@@ -40,6 +40,7 @@ class MinerUCloudParser:
         timeout: float = 900.0,
         retry_delays: tuple[float, ...] = (2.0, 5.0, 10.0),
         stall_timeout: float = 60.0,
+        proxy: str | None = None,
         transport: httpx2.AsyncBaseTransport | None = None,
     ) -> None:
         if not token:
@@ -51,6 +52,8 @@ class MinerUCloudParser:
         self._timeout = timeout
         self._retry_delays = retry_delays
         self._stall_timeout = stall_timeout
+        # 只有发往 MinerU 的请求走代理（服务器到国内线路差时用，见 PDFTR_MINERU_PROXY）；有注入的传输层时不用
+        self._proxy = None if transport is not None else (proxy or None)
         self._transport = transport  # 测试时注入假传输层
 
     async def parse(
@@ -73,9 +76,9 @@ class MinerUCloudParser:
         headers = {"Authorization": f"Bearer {self._token}"}
         async with (
             httpx2.AsyncClient(headers=headers, timeout=httpx2.Timeout(120, connect=15),
-                               transport=self._transport) as api,
+                               transport=self._transport, proxy=self._proxy) as api,
             httpx2.AsyncClient(timeout=httpx2.Timeout(300, connect=15), transport=self._transport,
-                               follow_redirects=True) as plain,
+                               proxy=self._proxy, follow_redirects=True) as plain,
         ):  # fmt: skip
             on_progress("正在上传到 MinerU 云端")
             batch_id, upload_url = await self._request_upload(api, pdf, pages)

@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     llm_model: str = "deepseek-flash"
     llm_api_key: str = ""
     mineru_api_token: str = ""
+    # 发往 MinerU（接口、上传、下载结果）的代理，如 socks5h://用户:密码@主机:端口 或 http://主机:端口。
+    # 服务器到国内线路差时使用：实测某海外服务器直连上传约 25 KB/s，经洛杉矶一台线路好的机器转发约 1.8 MB/s
+    mineru_proxy: str = ""
 
     llm_concurrency: int = 0  # 每个任务同时发给翻译服务的请求数；0 = 按服务商自动（DeepSeek 4、本机模型 1、其他 2）
     max_concurrent_jobs: int = 2
