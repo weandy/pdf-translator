@@ -30,7 +30,7 @@ class FakeMinerU:
         self.polls = 0
         self.seen: list[str] = []
 
-    def __call__(self, request: httpx2.Request) -> httpx2.Response:
+    async def __call__(self, request: httpx2.Request) -> httpx2.Response:
         url = str(request.url)
         self.seen.append(f"{request.method} {url}")
         if url.startswith(API):
@@ -38,12 +38,13 @@ class FakeMinerU:
             if not self.auth_ok:
                 return httpx2.Response(401)
         if request.method == "POST" and url == f"{API}/file-urls/batch":
-            body = request.read()
+            body = await request.aread()
             assert b'"enable_formula": true' in body or b'"enable_formula":true' in body
             return httpx2.Response(200, json={"code": 0, "data": {"batch_id": "b1", "file_urls": [UPLOAD]}})
         if request.method == "PUT" and url == UPLOAD:
             assert "Authorization" not in request.headers  # 预签名地址不能带鉴权头
-            assert request.read() == b"%PDF-fake"
+            assert await request.aread() == b"%PDF-fake"
+            assert request.headers["content-length"] == "9"  # 显式长度，不用分块传输编码
             return httpx2.Response(200)
         if request.method == "GET" and url == f"{API}/extract-results/batch/b1":
             self.polls += 1
@@ -151,3 +152,10 @@ def test_stalled_request_hits_deadline_and_retries():
     with pytest.raises(httpx2.TimeoutException, match="超过 0 秒未完成"):
         asyncio.run(run())
     assert calls == ["PUT", "PUT"]  # 超时后重试了一次
+
+
+def test_upload_status_text():
+    from pdftr.parsing.mineru_cloud import upload_status
+
+    assert upload_status(1258291, 3565158, 40) == "正在上传到 MinerU 云端：1.2 / 3.4 MB，31 KB/s，约 1 分 13 秒"
+    assert upload_status(0, 3565158, 0.5) == "正在上传到 MinerU 云端：0.0 / 3.4 MB"

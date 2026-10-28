@@ -10,6 +10,7 @@ import json
 import logging
 import time
 import zipfile
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from pdftr.parsing.mineru_normalize import normalize
 from pdftr.parsing.port import ParseError, ParseProgress
 
 API = "https://mineru.net/api/v4"
+UPLOAD_CHUNK = 64 * 1024
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +39,7 @@ class MinerUCloudParser:
         poll_interval: float = 5.0,
         timeout: float = 900.0,
         retry_delays: tuple[float, ...] = (2.0, 5.0, 10.0),
+        stall_timeout: float = 60.0,
         transport: httpx2.AsyncBaseTransport | None = None,
     ) -> None:
         if not token:
@@ -47,6 +50,7 @@ class MinerUCloudParser:
         self._poll_interval = poll_interval
         self._timeout = timeout
         self._retry_delays = retry_delays
+        self._stall_timeout = stall_timeout
         self._transport = transport  # 测试时注入假传输层
 
     async def parse(
@@ -75,9 +79,7 @@ class MinerUCloudParser:
         ):  # fmt: skip
             on_progress("正在上传到 MinerU 云端")
             batch_id, upload_url = await self._request_upload(api, pdf, pages)
-            data = pdf.read_bytes()
-            # 总时限按 50 KB/s 的最低速度估算，另加 60 秒
-            r = await self._send(plain, "PUT", upload_url, content=data, deadline=60 + len(data) / 50_000)
+            r = await self._upload(plain, upload_url, pdf.read_bytes(), on_progress)
             _check(r, "上传文件")
             zip_url = await self._wait(api, batch_id, on_progress)
             on_progress("正在下载解析结果", 1.0)
@@ -150,6 +152,61 @@ class MinerUCloudParser:
                 log.warning("访问 MinerU 网络出错（%s），%.0f 秒后重试", type(e).__name__, delay)
                 await asyncio.sleep(delay)
         raise AssertionError("unreachable")
+
+    async def _upload(
+        self, client: httpx2.AsyncClient, url: str, data: bytes, on_progress: ParseProgress
+    ) -> httpx2.Response:
+        """分块上传并每秒汇报进度（已传多少、速度、预计剩余时间）。
+
+        只在连续 stall_timeout 秒没有任何进展时才中断重传：网络慢但仍在推进时不打断
+        （此前按文件大小设总时限，慢速链路上会把快传完的上传掐断重来）。预签名地址不支持续传，重传从头开始。
+        """
+        attempts = len(self._retry_delays) + 1
+        for n, delay in enumerate((*self._retry_delays, None), start=1):
+            sent, start = 0, time.monotonic()
+            last = start
+
+            async def body() -> AsyncIterator[bytes]:
+                nonlocal sent, last
+                for i in range(0, len(data), UPLOAD_CHUNK):
+                    yield data[i : i + UPLOAD_CHUNK]
+                    sent, last = min(i + UPLOAD_CHUNK, len(data)), time.monotonic()
+
+            headers = {"Content-Length": str(len(data))}  # 显式给出长度：预签名上传不接受分块传输编码
+            task = asyncio.ensure_future(client.request("PUT", url, content=body(), headers=headers))
+            try:
+                while True:
+                    done, _ = await asyncio.wait({task}, timeout=1.0)
+                    if done:
+                        return task.result()
+                    now = time.monotonic()
+                    if now - last > self._stall_timeout:
+                        raise TimeoutError
+                    retry = f"（第 {n}/{attempts} 次尝试）" if n > 1 else ""
+                    on_progress(upload_status(sent, len(data), now - start) + retry, sent / len(data))
+            except (httpx2.TransportError, TimeoutError) as e:
+                task.cancel()
+                if delay is None:
+                    raise ParseError(
+                        f"上传到 MinerU 云端失败：网络连续 {self._stall_timeout:.0f} 秒没有进展，"
+                        "请稍后重试；服务器到国内线路较差时可配置 PDFTR_MINERU_PROXY"
+                    ) from e
+                log.warning("上传到 MinerU 卡住或出错（%s），%.0f 秒后重传", type(e).__name__, delay)
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable")
+
+
+def upload_status(sent: int, total: int, elapsed: float) -> str:
+    """“正在上传到 MinerU 云端：1.2 / 3.4 MB，32 KB/s，约 1 分 10 秒”。"""
+    mb = lambda n: f"{n / 1048576:.1f}"  # noqa: E731
+    text = f"正在上传到 MinerU 云端：{mb(sent)} / {mb(total)} MB"
+    if elapsed < 1 or sent == 0:
+        return text
+    speed = sent / elapsed
+    rate = f"{speed / 1048576:.1f} MB/s" if speed >= 1048576 else f"{speed / 1024:.0f} KB/s"
+    left = (total - sent) / speed
+    eta = f"约 {left:.0f} 秒" if left < 60 else f"约 {left // 60:.0f} 分 {left % 60:.0f} 秒"
+    return f"{text}，{rate}，{eta}" if sent < total else f"{text}，{rate}，等待对方确认"
 
 
 def _ignore(message: str, fraction: float | None = None) -> None:
