@@ -18,6 +18,7 @@ from pdftr.domain.ir import Block, BlockType, Document, Segment
 from pdftr.rendering import fonts
 
 ExportMode = Literal["mono", "dual"]
+Side = Literal["left", "right"]  # 双语对照时译文放在哪一边
 LINE_HEIGHT = 1.2  # 与论文正文的行距相近
 
 _BREAK_AFTER = set("，。；：、）！？,;:.)")
@@ -190,6 +191,7 @@ def export_pdf(
     segments: list[Segment],
     mode: ExportMode,
     font_dir: Path | None = None,
+    side: Side = "right",
 ) -> bytes:
     """返回导出的 PDF 字节。未翻译或失败的段落排入原文，避免出现空白。font_dir 缺字体时用内置字体。"""
     font_dir = font_dir if font_dir is not None and fonts.available(font_dir) else None
@@ -208,8 +210,9 @@ def export_pdf(
         for i in range(len(src)):
             w, h = src[i].rect.width, src[i].rect.height
             page = out.new_page(width=w * 2, height=h)
-            page.show_pdf_page(pymupdf.Rect(0, 0, w, h), src, i)
-            page.show_pdf_page(pymupdf.Rect(w, 0, w * 2, h), translated, i)
+            left, right = (translated, src) if side == "left" else (src, translated)
+            page.show_pdf_page(pymupdf.Rect(0, 0, w, h), left, i)
+            page.show_pdf_page(pymupdf.Rect(w, 0, w * 2, h), right, i)
         data = out.tobytes(garbage=3, deflate=True)
         out.close()
         return data

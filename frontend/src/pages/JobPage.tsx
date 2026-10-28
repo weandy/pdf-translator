@@ -7,6 +7,7 @@ import { Link, useParams } from "react-router";
 
 import { progressOf, withSegment } from "@/entities/document/model";
 import { useJob } from "@/entities/job/model";
+import { useSettings } from "@/entities/settings/model";
 import { DownloadMenu } from "@/features/export/DownloadMenu";
 import { JobProgress } from "@/features/job-progress/JobProgress";
 import { ReaderView } from "@/features/reader/ReaderView";
@@ -17,6 +18,7 @@ export function JobPage() {
   const { id = "" } = useParams();
   const { job, error, refresh } = useJob(id);
   const qc = useQueryClient();
+  const { translationSide } = useSettings();
   const [selected, setSelected] = useState<string | null>(null);
   const ready = job?.status === "done";
   const { data: doc, error: docError } = useQuery({
@@ -65,6 +67,7 @@ export function JobPage() {
           selectedSegment={selected}
           onSelectSegment={setSelected}
           heading={heading}
+          side={translationSide}
           actions={<DownloadMenu jobId={id} />}
         />
         {segment && (

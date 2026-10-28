@@ -18,7 +18,7 @@ from pdftr.extraction.chars import page_count
 from pdftr.pipeline.runner import Pipeline, load_context, load_document
 from pdftr.pipeline.secrets import Secrets
 from pdftr.rendering.background import crop_png
-from pdftr.rendering.export import ExportMode, export_pdf
+from pdftr.rendering.export import ExportMode, Side, export_pdf
 from pdftr.translation.cost import PRICES, is_deepseek_peak
 from pdftr.translation.service import TranslateOptions, translate
 
@@ -119,14 +119,14 @@ def purge_expired(pipeline: Pipeline, retention_days: int, now: datetime | None 
     return removed
 
 
-def export_job(pipeline: Pipeline, job_id: str, mode: ExportMode) -> tuple[str, bytes]:
+def export_job(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "right") -> tuple[str, bytes]:
     """导出纯译文或双语对照 PDF，返回（建议的文件名, 内容）。每次按当前译文生成，包含用户的修改。"""
     job = get_job(pipeline, job_id)
     if job.status is not JobStatus.DONE:
         raise UserError("任务完成后才能下载")
     deps = pipeline.deps
     data = export_pdf(deps.artifacts.path(job_id, "original.pdf"), deps.artifacts.path(job_id, "background.pdf"),
-                      load_document(deps, job_id), deps.store.segments(job_id), mode, deps.font_dir)  # fmt: skip
+                      load_document(deps, job_id), deps.store.segments(job_id), mode, deps.font_dir, side)  # fmt: skip
     suffix = "译文" if mode == "mono" else "双语对照"
     return f"{Path(job.filename).stem}-{suffix}.pdf", data
 

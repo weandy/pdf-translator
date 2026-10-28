@@ -159,6 +159,11 @@ def test_full_flow(client: TestClient):
     dual = client.get(f"/api/jobs/{job['id']}/export", params={"mode": "dual"})
     with pymupdf.open(stream=dual.content, filetype="pdf") as pdf:
         assert pdf[0].rect.width == 1200 and "be a function" in pdf[0].get_text()
+        left = str(pdf[0].get_text(clip=pymupdf.Rect(0, 0, 600, 800)))
+    assert "Let" in left and "精:" not in left  # 默认原文在左、译文在右
+    dual_left = client.get(f"/api/jobs/{job['id']}/export", params={"mode": "dual", "side": "left"})
+    with pymupdf.open(stream=dual_left.content, filetype="pdf") as pdf:
+        assert "精:" in str(pdf[0].get_text(clip=pymupdf.Rect(0, 0, 600, 800)))
 
     # 不提供任务列表（防止公开部署时看到别人的任务）；可以删除自己的任务
     assert client.get("/api/jobs").status_code == 405

@@ -15,6 +15,7 @@ export interface Settings {
   quality: Quality;
   includeReferences: boolean;
   translateFigures: boolean;
+  translationSide: "left" | "right"; // 双语对照时译文在左边还是右边
   rememberKeys: boolean;
 }
 
@@ -28,6 +29,7 @@ export const DEFAULTS: Settings = {
   quality: "default",
   includeReferences: false,
   translateFigures: true,
+  translationSide: "right",
   rememberKeys: true,
 };
 

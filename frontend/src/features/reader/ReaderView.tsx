@@ -24,12 +24,22 @@ interface Props {
   /** 工具栏左侧（标题等）与右侧（下载等），由页面组合 */
   heading?: ReactNode;
   actions?: ReactNode;
+  /** 对照模式下译文在左边还是右边 */
+  side?: "left" | "right";
 }
 
 const PADDING = 48; // .pages 左右内边距之和
 const SPINE = 2; // 对照模式两页之间的装订线
 
-export function ReaderView({ doc, jobId, selectedSegment, onSelectSegment, heading, actions }: Props) {
+export function ReaderView({
+  doc,
+  jobId,
+  selectedSegment,
+  onSelectSegment,
+  heading,
+  actions,
+  side = "right",
+}: Props) {
   const [mode, setMode] = useState<ViewMode>("both");
   const [zoom, setZoom] = useState<number | null>(null); // null = 自适应宽度
   const [width, setWidth] = useState(1200);
@@ -109,6 +119,7 @@ export function ReaderView({ doc, jobId, selectedSegment, onSelectSegment, headi
             hovered={hovered}
             selected={selectedSegment}
             fontsVersion={fontsVersion}
+            side={side}
             onHover={setHovered}
             onSelect={onSelectSegment}
           />
@@ -128,6 +139,7 @@ interface RowProps {
   hovered: string | null;
   selected: string | null;
   fontsVersion: number;
+  side: "left" | "right";
   onHover: (id: string | null) => void;
   onSelect: (id: string) => void;
 }
@@ -156,6 +168,7 @@ function PageRow({
   hovered,
   selected,
   fontsVersion,
+  side,
   onHover,
   onSelect,
 }: RowProps) {
@@ -165,7 +178,7 @@ function PageRow({
   const mark = (segId: string) => (segId === selected ? " selected" : segId === hovered ? " hovered" : "");
 
   return (
-    <div className={`page-row${mode === "both" ? "" : " single"}`} ref={ref}>
+    <div className={`page-row${mode === "both" ? "" : " single"}${side === "left" ? " side-left" : ""}`} ref={ref}>
       {mode !== "translated" && (
         <div className="page" style={size} aria-label={`原文第 ${page.index + 1} 页`}>
           {near && original && <PdfCanvas doc={original} page={page.index} scale={scale} />}

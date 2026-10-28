@@ -108,9 +108,14 @@ _export_slot = asyncio.Semaphore(1)
 
 
 @router.get("/{job_id}/export")
-async def export_job(job_id: str, p: PipelineDep, mode: Literal["mono", "dual"] = "mono") -> Response:
+async def export_job(
+    job_id: str,
+    p: PipelineDep,
+    mode: Literal["mono", "dual"] = "mono",
+    side: Literal["left", "right"] = "right",  # 双语对照时译文放在左边还是右边
+) -> Response:
     async with _export_slot:
-        filename, data = await asyncio.to_thread(usecases.export_job, p, job_id, mode)
+        filename, data = await asyncio.to_thread(usecases.export_job, p, job_id, mode, side)
     disposition = f"attachment; filename=\"translated.pdf\"; filename*=UTF-8''{quote(filename)}"
     return Response(data, media_type="application/pdf", headers={"Content-Disposition": disposition})
 

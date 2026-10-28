@@ -847,6 +847,9 @@ input[type="radio"] {
 .page-row.single {
   gap: 0;
 }
+.page-row.side-left {
+  flex-direction: row-reverse; /* 译文在左：DOM 里原文仍在前，阴影规则按 DOM 顺序写，下面调换方向 */
+}
 .page {
   position: relative;
   flex: none;
@@ -871,6 +874,16 @@ input[type="radio"] {
 .page-row:not(.single) .page:last-child::after {
   left: 0;
   background: linear-gradient(270deg, transparent, rgb(30 35 40 / 0.08));
+}
+.page-row.side-left .page:first-child::after {
+  right: auto;
+  left: 0;
+  background: linear-gradient(270deg, transparent, rgb(30 35 40 / 0.08));
+}
+.page-row.side-left .page:last-child::after {
+  left: auto;
+  right: 0;
+  background: linear-gradient(90deg, transparent, rgb(30 35 40 / 0.08));
 }
 .pdf-canvas {
   position: absolute;

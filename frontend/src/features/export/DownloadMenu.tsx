@@ -34,9 +34,13 @@ export function DownloadMenu({ jobId }: { jobId: string }) {
             <span>中文版</span>
             <small>保留原版式，正文换成译文</small>
           </a>
-          <a role="menuitem" href={exportUrl(jobId, "dual")} download onClick={() => setOpen(false)}>
-            <span>双语对照版</span>
+          <a role="menuitem" href={exportUrl(jobId, "dual", "right")} download onClick={() => setOpen(false)}>
+            <span>双语对照版（译文在右）</span>
             <small>每页左边原文、右边译文</small>
+          </a>
+          <a role="menuitem" href={exportUrl(jobId, "dual", "left")} download onClick={() => setOpen(false)}>
+            <span>双语对照版（译文在左）</span>
+            <small>每页左边译文、右边原文</small>
           </a>
         </div>
       )}

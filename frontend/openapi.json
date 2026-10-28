@@ -514,6 +514,20 @@
        "default": "mono",
        "title": "Mode"
       }
+     },
+     {
+      "name": "side",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "enum": [
+        "left",
+        "right"
+       ],
+       "type": "string",
+       "default": "right",
+       "title": "Side"
+      }
      }
     ],
     "responses": {

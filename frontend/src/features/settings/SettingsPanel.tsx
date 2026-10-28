@@ -149,6 +149,29 @@ export function SettingsPanel({ onClose }: Props) {
           </label>
         </section>
 
+        <section>
+          <h3>双语对照</h3>
+          <label className="choice">
+            <input
+              type="radio"
+              checked={form.translationSide === "right"}
+              onChange={() => set("translationSide", "right")}
+            />
+            <span>译文在右边</span>
+          </label>
+          <label className="choice">
+            <input
+              type="radio"
+              checked={form.translationSide === "left"}
+              onChange={() => set("translationSide", "left")}
+            />
+            <span>
+              译文在左边
+              <small>阅读器的“对照”模式按这里的设置排列；下载双语 PDF 时两种都可以选。</small>
+            </span>
+          </label>
+        </section>
+
         {config && <p className="hint">使用的开源组件：{config.attributions.join("；")}</p>}
 
         <div className="dialog-actions">

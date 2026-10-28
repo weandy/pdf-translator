@@ -808,6 +808,7 @@ export interface operations {
         parameters: {
             query?: {
                 mode?: "mono" | "dual";
+                side?: "left" | "right";
             };
             header?: never;
             path: {
