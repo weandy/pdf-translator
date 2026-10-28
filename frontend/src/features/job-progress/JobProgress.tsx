@@ -71,7 +71,7 @@ export function JobProgress({ job, onRetried }: Props) {
                   >
                     <span style={fraction === null ? undefined : { width: `${fraction * 100}%` }} />
                   </div>
-                  {stage === "parse" && (
+                  {stage === "parse" && job.options.parser === "mineru-cloud" && (
                     <p className="wait-note">
                       MinerU 免费额度在高峰时可能要排队 10 分钟以上。可以先关闭这个页面，之后在首页“我的任务”里打开。
                     </p>

@@ -169,5 +169,9 @@ def test_proxy_setting_reaches_parser(tmp_path: Path):
     settings = Settings(data_dir=tmp_path, glossary_sources="", mineru_proxy="socks5h://u:p@127.0.0.1:1080")
     deps = build_container(settings).pipeline.deps
     secrets = Secrets(llm_base_url="https://api.deepseek.com", llm_api_key="k", llm_model="m", parser_token="t")
-    parser = deps.parser_factory(secrets)
+    parser = deps.parser_factory(secrets, "mineru-cloud")
     assert isinstance(parser, MinerUCloudParser) and parser._proxy == "socks5h://u:p@127.0.0.1:1080"
+    from pdftr.parsing.paddle_vl import PaddleVLParser
+
+    paddle = deps.parser_factory(Secrets(**{**secrets.__dict__, "paddle_token": "pt"}), "paddleocr-vl")
+    assert isinstance(paddle, PaddleVLParser) and paddle._proxy is None  # 默认不走代理

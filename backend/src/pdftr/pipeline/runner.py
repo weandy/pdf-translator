@@ -33,7 +33,7 @@ from pdftr.translation.service import TranslateOptions, default_concurrency, tra
 
 log = logging.getLogger(__name__)
 
-ParserFactory = Callable[[Secrets], LayoutParser]
+ParserFactory = Callable[[Secrets, str], LayoutParser]  # （密钥, 解析服务名）→ 解析器
 ChatFactory = Callable[[Secrets], ChatModel]
 MatcherLoader = Callable[[], TermMatcher | None]
 
@@ -149,7 +149,7 @@ class Pipeline:
         out = self.deps.artifacts.path(job.id, "layout.json")
         if out.exists():
             return
-        parser = self.deps.parser_factory(secrets)
+        parser = self.deps.parser_factory(secrets, job.options.parser)
         raw_dir = self.deps.artifacts.job_dir(job.id) / "parser"
 
         def progress(message: str, fraction: float | None = None) -> None:

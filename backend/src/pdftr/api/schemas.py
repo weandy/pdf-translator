@@ -23,6 +23,7 @@ class ConfigOut(BaseModel):
     default_model: str
     server_has_llm_key: bool
     server_has_parser_token: bool
+    server_has_paddle_token: bool
     max_upload_mb: int
     max_pages: int
     retention_days: int

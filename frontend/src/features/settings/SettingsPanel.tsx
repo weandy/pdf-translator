@@ -82,6 +82,28 @@ export function SettingsPanel({ onClose }: Props) {
 
         <section>
           <h3>版面解析</h3>
+          <label className="choice">
+            <input
+              type="radio"
+              checked={form.parser === "mineru-cloud"}
+              onChange={() => set("parser", "mineru-cloud")}
+            />
+            <span>
+              MinerU（推荐）
+              <small>版面坐标最完整，公式与段落位置最准。</small>
+            </span>
+          </label>
+          <label className="choice">
+            <input
+              type="radio"
+              checked={form.parser === "paddleocr-vl"}
+              onChange={() => set("parser", "paddleocr-vl")}
+            />
+            <span>
+              百度 PaddleOCR-VL
+              <small>公式识别更干净、解析更快；行内公式位置由本站推算，约 90% 能对上，其余按原文显示。</small>
+            </span>
+          </label>
           <label className="field">
             <span>MinerU Token</span>
             <input
@@ -98,6 +120,23 @@ export function SettingsPanel({ onClose }: Props) {
               mineru.net
             </a>{" "}
             免费申请，每天 1000 页优先额度。
+          </p>
+          <label className="field">
+            <span>PaddleOCR Token</span>
+            <input
+              type="password"
+              autoComplete="off"
+              value={form.paddleKey}
+              onChange={(e) => set("paddleKey", e.target.value.trim())}
+              placeholder={config?.server_has_paddle_token ? "留空则使用本站提供的 Token" : "选用 PaddleOCR 时填写"}
+            />
+          </label>
+          <p className="hint">
+            在{" "}
+            <a href="https://aistudio.baidu.com/paddleocr" target="_blank" rel="noreferrer">
+              飞桨星河社区
+            </a>{" "}
+            获取，目前限时免费、每日有调用次数限制。
           </p>
         </section>
 
@@ -180,7 +219,7 @@ export function SettingsPanel({ onClose }: Props) {
             className="quiet danger"
             onClick={() => {
               clearKeys();
-              setForm((f) => ({ ...f, llmKey: "", parserKey: "" }));
+              setForm((f) => ({ ...f, llmKey: "", parserKey: "", paddleKey: "" }));
             }}
           >
             清除已保存的 Key

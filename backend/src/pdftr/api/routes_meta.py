@@ -29,6 +29,7 @@ def config(request: Request) -> ConfigOut:
         default_model=s.llm_model,
         server_has_llm_key=bool(s.llm_api_key),
         server_has_parser_token=bool(s.mineru_api_token),
+        server_has_paddle_token=bool(s.paddle_token),
         max_upload_mb=s.max_upload_mb,
         max_pages=s.max_pages,
         retention_days=s.retention_days,

@@ -8,7 +8,11 @@ class Secrets:
     llm_base_url: str
     llm_api_key: str
     llm_model: str
-    parser_token: str
+    parser_token: str  # MinerU Token
+    paddle_token: str = ""  # PaddleOCR（星河社区）Token
+
+    def token_for(self, parser: str) -> str:
+        return self.paddle_token if parser == "paddleocr-vl" else self.parser_token
 
     def __repr__(self) -> str:  # 防止密钥被打进日志
         return f"Secrets(llm_base_url={self.llm_base_url!r}, llm_model={self.llm_model!r}, keys=***)"

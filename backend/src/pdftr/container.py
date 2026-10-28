@@ -9,6 +9,7 @@ from pdftr.config import Settings
 from pdftr.glossary import sources as glossary_sources
 from pdftr.glossary.matcher import TermMatcher
 from pdftr.parsing.mineru_cloud import MinerUCloudParser
+from pdftr.parsing.paddle_vl import PaddleVLParser
 from pdftr.pipeline.events import EventBus
 from pdftr.pipeline.runner import Pipeline, PipelineDeps
 from pdftr.pipeline.secrets import Secrets, SecretStore
@@ -54,7 +55,13 @@ class Container:
     pipeline: Pipeline
 
     def secrets(
-        self, *, base_url: str | None, api_key: str | None, model: str | None, parser_token: str | None
+        self,
+        *,
+        base_url: str | None,
+        api_key: str | None,
+        model: str | None,
+        parser_token: str | None,
+        paddle_token: str | None = None,
     ) -> Secrets:
         """请求头里的 Key（来自用户浏览器）优先，其次是部署者在 .env 配置的共享 Key。"""
         s = self.settings
@@ -63,6 +70,7 @@ class Container:
             llm_api_key=api_key or s.llm_api_key,
             llm_model=model or s.llm_model,
             parser_token=parser_token or s.mineru_api_token,
+            paddle_token=paddle_token or s.paddle_token,
         )
 
 
@@ -76,7 +84,11 @@ def build_container(settings: Settings | None = None, deps_override: dict | None
         "cache": SqliteTranslationCache(db),
         "events": EventBus(),
         "secrets": SecretStore(),
-        "parser_factory": lambda sec: MinerUCloudParser(sec.parser_token, proxy=s.mineru_proxy),
+        "parser_factory": lambda sec, name: (
+            PaddleVLParser(sec.paddle_token, proxy=s.paddle_proxy)
+            if name == "paddleocr-vl"
+            else MinerUCloudParser(sec.parser_token, proxy=s.mineru_proxy)
+        ),
         "chat_factory": lambda sec: OpenAICompatChat(
             base_url=sec.llm_base_url, api_key=sec.llm_api_key, model=sec.llm_model
         ),

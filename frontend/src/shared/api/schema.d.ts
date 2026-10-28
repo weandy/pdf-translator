@@ -294,6 +294,8 @@ export interface components {
             server_has_llm_key: boolean;
             /** Server Has Parser Token */
             server_has_parser_token: boolean;
+            /** Server Has Paddle Token */
+            server_has_paddle_token: boolean;
             /** Max Upload Mb */
             max_upload_mb: number;
             /** Max Pages */
@@ -358,9 +360,9 @@ export interface components {
             /**
              * Parser
              * @default mineru-cloud
-             * @constant
+             * @enum {string}
              */
-            parser: "mineru-cloud";
+            parser: "mineru-cloud" | "paddleocr-vl";
             /**
              * Quality
              * @default default
@@ -620,6 +622,7 @@ export interface operations {
                 "x-llm-key"?: string | null;
                 "x-llm-model"?: string | null;
                 "x-parser-key"?: string | null;
+                "x-paddle-key"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -846,6 +849,7 @@ export interface operations {
                 "x-llm-key"?: string | null;
                 "x-llm-model"?: string | null;
                 "x-parser-key"?: string | null;
+                "x-paddle-key"?: string | null;
             };
             path: {
                 job_id: string;
@@ -917,6 +921,7 @@ export interface operations {
                 "x-llm-key"?: string | null;
                 "x-llm-model"?: string | null;
                 "x-parser-key"?: string | null;
+                "x-paddle-key"?: string | null;
             };
             path: {
                 segment_id: string;

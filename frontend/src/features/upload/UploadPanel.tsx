@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState, type DragEvent } from "react";
 
 import { rememberJob } from "@/entities/job/model";
-import { useSettings } from "@/entities/settings/model";
+import { PARSER_NAMES, useSettings } from "@/entities/settings/model";
 import { api, type Job } from "@/shared/api/client";
 
 interface Props {
@@ -50,7 +50,12 @@ export function UploadPanel({ onCreated, onNeedSettings }: Props) {
   });
 
   const missingKey = config && !settings.llmKey && !config.server_has_llm_key;
-  const missingToken = config && !settings.parserKey && !config.server_has_parser_token;
+  const service = PARSER_NAMES[settings.parser];
+  const missingToken =
+    config &&
+    (settings.parser === "paddleocr-vl"
+      ? !settings.paddleKey && !config.server_has_paddle_token
+      : !settings.parserKey && !config.server_has_parser_token);
   const tooManyPages = config && pages !== null && pages > config.max_pages;
 
   const pick = async (f: File | undefined) => {
@@ -87,6 +92,7 @@ export function UploadPanel({ onCreated, onNeedSettings }: Props) {
     try {
       const job = await api.createJob(file, {
         cloud_consent: consent,
+        parser: settings.parser,
         quality: settings.quality,
         include_references: settings.includeReferences,
         translate_figures: settings.translateFigures,
@@ -167,10 +173,10 @@ export function UploadPanel({ onCreated, onNeedSettings }: Props) {
         <p className="setup-hint">
           开始前，先在设置里填写
           {missingKey && missingToken
-            ? "翻译服务的 API Key 和 MinerU Token"
+            ? `翻译服务的 API Key 和 ${service} Token`
             : missingKey
               ? "翻译服务的 API Key"
-              : "MinerU Token"}
+              : `${service} Token`}
           ，两者都可以免费申请。
           <button type="button" className="link" onClick={onNeedSettings}>
             打开设置
@@ -179,7 +185,7 @@ export function UploadPanel({ onCreated, onNeedSettings }: Props) {
       )}
 
       <p className="notice">
-        文件会上传到 MinerU 云端解析版面，正文会发给你设置的翻译服务，请不要上传涉密或未公开的文档。
+        文件会上传到 {service} 云端解析版面，正文会发给你设置的翻译服务，请不要上传涉密或未公开的文档。
         {config &&
           config.retention_days > 0 &&
           `文件在本站保留 ${config.retention_days} 天后自动删除，也可以随时手动删除。`}
@@ -188,7 +194,7 @@ export function UploadPanel({ onCreated, onNeedSettings }: Props) {
 
       <label className="consent">
         <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
-        我知道文件会上传到 MinerU 云端解析
+        我知道文件会上传到 {service} 云端解析
       </label>
 
       {error && <p className="error">{error}</p>}

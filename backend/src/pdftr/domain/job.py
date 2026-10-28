@@ -22,7 +22,8 @@ Stage = Literal["parse", "fuse", "segment", "glossary", "translate", "render", "
 
 
 class JobOptions(BaseModel):
-    parser: Literal["mineru-cloud"] = "mineru-cloud"
+    # 版面解析服务：默认 MinerU（有行级与行内公式坐标）；PaddleOCR-VL 公式更干净、海外服务器不走代理也能用
+    parser: Literal["mineru-cloud", "paddleocr-vl"] = "mineru-cloud"
     quality: Quality = "default"
     include_references: bool = False
     translate_figures: bool = True  # 翻译图里的矢量文字（坐标轴、图例、框图标签）

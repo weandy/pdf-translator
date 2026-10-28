@@ -45,11 +45,15 @@ class Limits(BaseModel):
     data_dir: Path = Path(".")
 
 
-def _require_secrets(secrets: Secrets, *, need_parser: bool) -> None:
+PARSER_NAMES = {"mineru-cloud": "MinerU", "paddleocr-vl": "PaddleOCR"}
+
+
+def _require_secrets(secrets: Secrets, *, parser: str | None) -> None:
+    """parser 为本次要用的解析服务；不需要解析（已解析过）时为 None。"""
     if not secrets.llm_api_key:
         raise UserError("请先在设置中填写翻译服务的 API Key")
-    if need_parser and not secrets.parser_token:
-        raise UserError("请先在设置中填写 MinerU Token")
+    if parser and not secrets.token_for(parser):
+        raise UserError(f"请先在设置中填写 {PARSER_NAMES.get(parser, parser)} Token")
 
 
 def create_job(
@@ -59,9 +63,9 @@ def create_job(
         raise UserError(f"文件超过 {limits.max_upload_mb} MB")
     if not data.startswith(b"%PDF"):
         raise UserError("只支持 PDF 文件")
-    if options.parser == "mineru-cloud" and not options.cloud_consent:
-        raise UserError("使用云端解析前需要确认文件会上传到 MinerU")
-    _require_secrets(secrets, need_parser=True)
+    if not options.cloud_consent:  # 两个解析服务都在云端
+        raise UserError(f"使用云端解析前需要确认文件会上传到 {PARSER_NAMES.get(options.parser, options.parser)}")
+    _require_secrets(secrets, parser=options.parser)
     if pipeline.active_count() >= limits.max_active_jobs:
         raise ServiceBusy("服务器正忙，排队的任务太多，请稍后再试")
     if shutil.disk_usage(limits.data_dir).free < limits.min_free_disk_mb * 1024 * 1024:
@@ -137,7 +141,7 @@ def retry_job(pipeline: Pipeline, job_id: str, secrets: Secrets) -> Job:
         raise UserError("任务正在进行中")
     if job.status is JobStatus.DONE and not pipeline.deps.store.count_segments(job_id, SegmentStatus.FAILED):
         raise UserError("任务已完成")
-    _require_secrets(secrets, need_parser=job.stage == "parse")
+    _require_secrets(secrets, parser=job.options.parser if job.stage == "parse" else None)
     if job.stage == "done":
         job.stage = "translate"  # 已完成但有失败段落：只重跑翻译和背景页
     job.status, job.error = JobStatus.QUEUED, ""
@@ -175,7 +179,7 @@ def edit_segment(pipeline: Pipeline, segment_id: str, target: str) -> Segment:
 
 
 async def retranslate_segment(pipeline: Pipeline, segment_id: str, quality: Quality, secrets: Secrets) -> Segment:
-    _require_secrets(secrets, need_parser=False)
+    _require_secrets(secrets, parser=None)
     seg = _segment(pipeline, segment_id)
     seg.status = SegmentStatus.PENDING
     deps = pipeline.deps

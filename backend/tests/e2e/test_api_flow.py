@@ -79,7 +79,7 @@ def _client(data_dir: Path, font_dir: Path):
     FakeChat.fail = False
     settings = Settings(data_dir=data_dir, glossary_sources="", font_dir=font_dir)
     container = build_container(
-        settings, {"parser_factory": lambda s: FakeParser(), "chat_factory": lambda s: FakeChat()}
+        settings, {"parser_factory": lambda s, name: FakeParser(), "chat_factory": lambda s: FakeChat()}
     )
     return TestClient(create_app(container))
 
@@ -248,3 +248,12 @@ def test_export_uses_gbt_fonts(tmp_path: Path):
         text = "".join(str(p.get_text()) for p in pdf)
     assert any("Tinos" in f for f in fonts)
     assert "\xa0" not in text and "A normal paragraph." in text
+
+
+def test_paddle_parser_requires_its_own_token(client: TestClient):
+    options = json.dumps({"cloud_consent": True, "parser": "paddleocr-vl"})
+    files = {"file": ("paper.pdf", make_pdf(), "application/pdf")}
+    r = client.post("/api/jobs", files=files, data={"options": options}, headers=HEADERS)
+    assert r.status_code == 400 and "PaddleOCR Token" in r.json()["detail"]
+    r = client.post("/api/jobs", files=files, data={"options": options}, headers={**HEADERS, "X-Paddle-Key": "pt"})
+    assert r.status_code == 202 and r.json()["options"]["parser"] == "paddleocr-vl"

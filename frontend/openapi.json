@@ -238,6 +238,22 @@
        ],
        "title": "X-Parser-Key"
       }
+     },
+     {
+      "name": "x-paddle-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Paddle-Key"
+      }
      }
     ],
     "requestBody": {
@@ -632,6 +648,22 @@
        ],
        "title": "X-Parser-Key"
       }
+     },
+     {
+      "name": "x-paddle-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Paddle-Key"
+      }
      }
     ],
     "responses": {
@@ -789,6 +821,22 @@
         }
        ],
        "title": "X-Parser-Key"
+      }
+     },
+     {
+      "name": "x-paddle-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Paddle-Key"
       }
      }
     ],
@@ -976,6 +1024,10 @@
       "type": "boolean",
       "title": "Server Has Parser Token"
      },
+     "server_has_paddle_token": {
+      "type": "boolean",
+      "title": "Server Has Paddle Token"
+     },
      "max_upload_mb": {
       "type": "integer",
       "title": "Max Upload Mb"
@@ -1003,6 +1055,7 @@
      "default_model",
      "server_has_llm_key",
      "server_has_parser_token",
+     "server_has_paddle_token",
      "max_upload_mb",
      "max_pages",
      "retention_days",
@@ -1168,7 +1221,10 @@
     "properties": {
      "parser": {
       "type": "string",
-      "const": "mineru-cloud",
+      "enum": [
+       "mineru-cloud",
+       "paddleocr-vl"
+      ],
       "title": "Parser",
       "default": "mineru-cloud"
      },
