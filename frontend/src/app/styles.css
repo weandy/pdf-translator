@@ -946,8 +946,18 @@ input[type="radio"] {
 .tblock.overflow {
   outline: 1px dotted #c98a00;
 }
+/* 行内公式与上下标不撑高所在的行，否则带下标的行比别的行稀（实测差 1–3.4 px）。
+   公式按 KaTeX 片段（.katex-base）计高度为 0，片段之间仍可换行；字形照常显示在原位置 */
 .tblock .math .katex {
   font-size: 1em;
+  line-height: 0;
+}
+.tblock .math .katex-base {
+  height: 0;
+}
+.tblock sub,
+.tblock sup {
+  line-height: 0;
 }
 .math-fallback {
   height: 1.1em;
@@ -1303,12 +1313,23 @@ input[type="radio"] {
   font-family: var(--serif);
 }
 .segment-terms {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--rule);
+}
+.segment-terms > summary {
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.segment-terms[open] > summary {
+  margin-bottom: 6px;
+}
+.segment-terms-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 .segment-terms .hint {
   margin: 0;

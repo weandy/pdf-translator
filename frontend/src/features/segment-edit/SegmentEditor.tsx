@@ -26,6 +26,7 @@ export function SegmentEditor({ segment, onChange, onClose, history }: Props) {
   const terms = useTerms();
   const [term, setTerm] = useState({ source: "", target: "", note: "" });
   const [termSaved, setTermSaved] = useState<string | null>(null);
+  const [termsOpen, setTermsOpen] = useState(false); // 默认折叠，在原文框里选中文字时自动展开
   // 这一段原文里出现的“我的术语库”词条（整词、不分大小写）
   const hits = useMemo(() => {
     const text = segment.source.toLowerCase();
@@ -43,6 +44,7 @@ export function SegmentEditor({ segment, onChange, onClose, history }: Props) {
     const old = findTerm(picked);
     setTerm({ source: picked, target: old?.target ?? "", note: old?.note ?? "" });
     setTermSaved(null);
+    setTermsOpen(true);
   };
   const saveTerm = () => {
     upsertTerms([term]);
@@ -116,50 +118,52 @@ export function SegmentEditor({ segment, onChange, onClose, history }: Props) {
           {busy === "save" ? "保存中…" : "保存修改"}
         </button>
       </div>
-      <section className="segment-terms">
-        <h3>术语</h3>
-        {hits.length > 0 && (
-          <p className="hint">
-            本段用到术语库里的：
-            {hits.map((t) => (
-              <span key={t.source} className="term-chip" title={t.note || undefined}>
-                {t.source} → {t.target}
-              </span>
-            ))}
-          </p>
-        )}
-        <p className="hint">在原文框里选中一个术语，填上正确译法，存进“我的术语库”，以后的任务都会用上。</p>
-        <form
-          className="term-quick"
-          onSubmit={(e) => {
-            e.preventDefault();
-            saveTerm();
-          }}
-        >
-          <input
-            value={term.source}
-            onChange={(e) => setTerm({ ...term, source: e.target.value })}
-            placeholder="英文术语"
-            aria-label="英文术语"
-          />
-          <input
-            value={term.target}
-            onChange={(e) => setTerm({ ...term, target: e.target.value })}
-            placeholder="正确译法"
-            aria-label="正确译法"
-          />
-          <input
-            value={term.note}
-            onChange={(e) => setTerm({ ...term, note: e.target.value })}
-            placeholder="说明（可选，如为什么这样译）"
-            aria-label="说明"
-          />
-          <button type="submit" disabled={!term.source.trim() || !term.target.trim()}>
-            加入术语库
-          </button>
-        </form>
-        {termSaved && <p className="check-ok">{termSaved}</p>}
-      </section>
+      <details className="segment-terms" open={termsOpen} onToggle={(e) => setTermsOpen(e.currentTarget.open)}>
+        <summary>术语{hits.length > 0 ? `（本段用到术语库 ${hits.length} 条）` : ""}</summary>
+        <div className="segment-terms-body">
+          {hits.length > 0 && (
+            <p className="hint">
+              本段用到术语库里的：
+              {hits.map((t) => (
+                <span key={t.source} className="term-chip" title={t.note || undefined}>
+                  {t.source} → {t.target}
+                </span>
+              ))}
+            </p>
+          )}
+          <p className="hint">在原文框里选中一个术语，填上正确译法，存进“我的术语库”，以后的任务都会用上。</p>
+          <form
+            className="term-quick"
+            onSubmit={(e) => {
+              e.preventDefault();
+              saveTerm();
+            }}
+          >
+            <input
+              value={term.source}
+              onChange={(e) => setTerm({ ...term, source: e.target.value })}
+              placeholder="英文术语"
+              aria-label="英文术语"
+            />
+            <input
+              value={term.target}
+              onChange={(e) => setTerm({ ...term, target: e.target.value })}
+              placeholder="正确译法"
+              aria-label="正确译法"
+            />
+            <input
+              value={term.note}
+              onChange={(e) => setTerm({ ...term, note: e.target.value })}
+              placeholder="说明（可选，如为什么这样译）"
+              aria-label="说明"
+            />
+            <button type="submit" disabled={!term.source.trim() || !term.target.trim()}>
+              加入术语库
+            </button>
+          </form>
+          {termSaved && <p className="check-ok">{termSaved}</p>}
+        </div>
+      </details>
       {history && (
         <section className="segment-history">
           <h3>这一段的修改记录</h3>
