@@ -55,9 +55,9 @@
 
 | 实验 | 状态 | 阻塞 |
 |---|---|---|
-| S1 BabelDOC 基线 | 被 OOM 中断 | 需要更多内存（临时 swap 或换机器） |
-| S2 MinerU 本地 CPU | 未开始 | 同上；MinerU basic 官方最低 2 GB |
-| S2 MinerU 云端 API | 未开始 | 需要 mineru.net API Key |
-| S3 Doc2X | 未开始 | 付费 Key，可后置 |
+| S1 BabelDOC 基线 | 被 OOM 中断 | 需要更多内存；可改用沉浸式翻译 BabelDOC 在线版人工对比 |
+| S2 MinerU 云端 API | 未开始（默认解析器，优先做） | 需要 mineru.net API Token |
+| S3 Doc2X | 未开始 | 付费 Key（¥10 起） |
+| MinerU 本地 CPU | 后置到 P4（本地模式） | 需要更大内存的机器 |
 | S4 块与 span 对齐 | 未开始 | 依赖 S2 输出 |
 | S7 术语系统 | 未开始 | 需要真实 LLM Key |

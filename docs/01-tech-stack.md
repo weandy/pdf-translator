@@ -1,6 +1,6 @@
 # 自建网页端 PDF 翻译 · 技术选型
 
-> 日期：2026-10-28（v3：定位改为开源项目，仓库更名 pdf-translator）
+> 日期：2026-10-28（v4：默认改为轻量模式——版面解析走 MinerU 云端，Doc2X 作为付费可选，本地解析作为隐私选项）
 > 依据：[00-research.md](00-research.md)
 > 状态：草案。§8 验证实验完成后转为正式决策
 
@@ -13,15 +13,27 @@
 | R1 | 网页端使用 | 上传 PDF → 浏览器里原文/译文对照阅读，类似沉浸式翻译 |
 | R2 | 整体保留原版式 | 译文按原位置、原字号风格排回页面，图片和矢量图形不动 |
 | R3 | 公式、图表重新渲染 | 公式不被翻坏；行内公式随译文重新排布；表格、图内文字可翻译并重新渲染 |
-| R4 | 可接外部 API | 翻译：任意 OpenAI 兼容 LLM，可选 DeepL；解析：MinerU 云端 API（可选）、Doc2X（可选） |
+| R4 | 可接外部 API | 翻译：任意 OpenAI 兼容 LLM，可选 DeepL；解析：**MinerU 云端 API（默认）**、**Doc2X 付费 API（支持）** |
 | R5 | **开源给大家自部署** | AGPL-3.0；一条 `docker compose up` 能跑起来；用户自带 API Key；可放心使用 AGPL 组件（PyMuPDF、BabelDOC） |
 | R6 | 可导出 | 导出纯译文 PDF、双语对照 PDF |
 | R7 | **论文术语一致** | 以学术论文为主，引入领域术语库 + 文档级术语抽取 |
 | R8 | **通用输入** | 原生文本 PDF、扫描件、混合文档、文字提取乱码的 PDF 都要能处理 |
 | R9 | **翻译方向** | 其他语言 → 简体中文，英文为主 |
-| R10 | **云端上传要提醒** | 选择云端解析时，明确告知用户文件会上传到第三方 |
+| R10 | **云端上传要提醒** | 默认就是云端解析，所以每次上传都要明确告知文件会上传到哪个第三方，并提供切换到本地模式的入口 |
+| R11 | **小机器能跑** | 默认模式不在本地跑模型，1 核 1 GB 级别的机器即可部署 |
 
-**约束**：**不能假设有 GPU**（我们自己没有，多数自部署用户也没有），本地只跑 CPU 推理；有 GPU 的用户可以自行换用 MinerU 更强的等级。
+**约束**：**不能假设有 GPU，也不能假设内存充足**（我们自己的机器 2 核 3.8 GB，跑 BabelDOC 单页就被 OOM，见 [02-spikes.md](02-spikes.md)）。因此重型的版面识别默认交给云端；本地模式只在 CPU 上跑，有 GPU 的用户可自行换用 MinerU 更强的等级。
+
+### 1.1 两种运行模式
+
+| | **轻量模式（默认）** | **本地模式（隐私选项）** |
+|---|---|---|
+| 版面解析 | MinerU 云端精准解析 API（免费，每天 1000 页优先额度）；可切换 Doc2X（付费，约 ¥0.02/页） | 本机 CPU 跑 MinerU basic（ONNX）或 DocLayout-YOLO |
+| 文件去向 | PDF 上传到 MinerU / Doc2X（上传前提醒） | 不离开本机（翻译文本仍会发给所选 LLM） |
+| 本地资源 | PyMuPDF + 浏览器排版，实测 2 页峰值约 150 MB | 至少 2 GB 空闲内存，推荐 4 核 8 GB |
+| 需要的 Key | MinerU Token（或 Doc2X Key）+ LLM Key | 只要 LLM Key |
+
+两种模式共用同一套 IR、翻译、渲染和导出，只是解析适配器不同；同一部署里可按任务切换。
 
 非目标（当前阶段）：公共 SaaS、多租户、计费、中文译成其他语言、Word/PPT 等非 PDF 格式。
 
@@ -34,7 +46,7 @@
 | 能力 | 交给谁 | 理由 |
 |---|---|---|
 | 字符级坐标、字体、字号、颜色 | **PyMuPDF** | 原生文本 PDF 坐标直接取自文件，零误差、CPU 秒级 |
-| 版面语义（块类型、阅读顺序、公式 LaTeX、表格结构、OCR） | **本地 CPU 解析器** 或 **云端 MinerU / Doc2X** | 可插拔；无 GPU 时重型识别交给云端（需提醒） |
+| 版面语义（块类型、阅读顺序、公式 LaTeX、表格结构、OCR） | **云端 MinerU（默认）/ Doc2X**，或本地 CPU 解析器 | 可插拔；默认交给云端，本地机器不跑模型 |
 | 排版（换行、缩放、公式渲染） | **浏览器**（HTML/CSS + KaTeX） | 排版能力远强于在 PDF 里手写绘制指令，还能逐段编辑 |
 | 术语一致 | **术语系统**（领域词库 + 文档抽取 + 命中注入） | 见 §4.5 |
 
@@ -43,9 +55,9 @@ flowchart LR
   PDF[上传 PDF] --> C[逐页分类<br/>原生 / 扫描 / 乱码]
   C --> N[PyMuPDF<br/>字符/样式/坐标]
   C --> L{版面解析器}
-  L -->|默认·本地 CPU| M0[MinerU basic ONNX<br/>或 DocLayout-YOLO]
-  L -->|可选·云端 ⚠️上传提醒| M1[mineru.net API]
-  L -->|可选·云端 ⚠️上传提醒| D[Doc2X API]
+  L -->|默认·云端 ⚠️上传提醒| M1[MinerU 精准解析 API]
+  L -->|付费·云端 ⚠️上传提醒| D[Doc2X API]
+  L -->|本地模式·CPU| M0[MinerU basic ONNX<br/>或 DocLayout-YOLO]
   N --> F[融合对齐]
   M0 --> F
   M1 --> F
@@ -62,7 +74,7 @@ flowchart LR
   B -.-> E
 ```
 
-**为什么不直接用 BabelDOC？** 它只产出 PDF，API 是内部接口，难以做网页上的逐段编辑、重翻、对照联动；也接不了 MinerU/Doc2X 的结构结果。但它效果是现成的，**作为基线和备选引擎接入**（BabelDOC 本身在 CPU 上就能跑）。
+**为什么不直接用 BabelDOC？** 它只产出 PDF，API 是内部接口，难以做网页上的逐段编辑、重翻、对照联动；也接不了 MinerU/Doc2X 的结构结果。但它效果是现成的，**作为基线和备选引擎接入**（BabelDOC 在 CPU 上能跑，但单页峰值内存约 1.5 GB，只适合本地模式）。
 
 **为什么不走"转 Markdown 再翻"？** 丢原版式，不满足 R2。只取 MinerU/Doc2X 的**结构**（LaTeX、表格 HTML、阅读顺序），不取它们的 Markdown 排版。
 
@@ -79,8 +91,8 @@ flowchart LR
 | 数据库 | **SQLite**（SQLModel） | PostgreSQL | 任务、翻译缓存、术语库、API 配置 |
 | 文件存储 | 本地目录 `data/jobs/<id>/` | — | 原文件、IR、背景页、导出物 |
 | PDF 读写 | **PyMuPDF** | pikepdf | 文字提取、去字、叠加合成、栅格化 |
-| 本地版面解析（CPU） | **MinerU basic + ONNX** | DocLayout-YOLO ONNX（只有块类型，更轻） | MinerU basic 约 0.8 GB 模型、最低 2 GB 内存、CPU 可跑；速度和公式/表格能力待 §8 S2 实测 |
-| 云端版面解析（可选） | **mineru.net API** | Doc2X v3-2026（按页付费） | 公式密集、扫描件推荐；**每次使用弹出上传提醒** |
+| 版面解析（默认，云端） | **MinerU 精准解析 API** | **Doc2X v3-2026 API**（付费） | MinerU 免费、每天 1000 页优先额度、单文件 ≤200 页（超出自动分段）；Doc2X ¥0.01–0.02/页；**上传前提醒** |
+| 版面解析（本地模式，CPU） | MinerU basic + ONNX | DocLayout-YOLO ONNX（只有块类型，更轻） | MinerU basic 约 0.8 GB 模型、最低 2 GB 内存；速度待 §8 S2 实测 |
 | 图像处理 | OpenCV（headless） | — | 扫描页文字擦除（inpaint）、颜色估计 |
 | 翻译 | **OpenAI 兼容客户端**（官方 `openai` SDK + 自定义 base_url） | DeepL API | 覆盖 DeepSeek、通义千问、GLM、Kimi、硅基流动、OpenRouter、Ollama 等 |
 | 术语匹配 | **pyahocorasick** + 简单词形归一 | — | 原文多模式匹配，见 §4.5 |
@@ -91,7 +103,7 @@ flowchart LR
 | 样式 | Tailwind CSS | — | — |
 | PDF 导出 | **Playwright（Chromium）打印叠加层** + PyMuPDF 合成 | PyMuPDF `insert_htmlbox` | 见 §5.4 |
 | 字体 | Noto Sans/Serif CJK SC | 用户自定义 | 前端 @font-face 与导出共用 |
-| 部署 | **Docker Compose**：`web`（Caddy）+ `app`（API+worker）+ `mineru`（可选，CPU） | — | 见 §6 |
+| 部署 | **Docker Compose**：`web`（Caddy）+ `app`（API+worker）；本地模式另加 `mineru`（profile 可选） | — | 见 §6 |
 
 ---
 
@@ -178,10 +190,12 @@ class LayoutParser(Protocol):
 
 | 适配器 | 位置 | 何时用 | 备注 |
 |---|---|---|---|
-| `MinerULocalCPU` | 本地 | **默认** | `mineru server`（basic + ONNX）独立容器，HTTP 调用；含 OCR，扫描页也能处理，速度待实测 |
-| `DocLayoutYOLO` | 本地 | MinerU CPU 太慢时的轻量方案 | 只给块类型，没有 LaTeX/OCR；BabelDOC 同款模型 |
-| `MinerUCloud` | 云端 ⚠️ | 公式密集、扫描件、追求质量 | `MINERU_API_KEY`；用云端更强的模型拿 LaTeX 和表格 |
-| `Doc2X` | 云端 ⚠️ | 公式质量要求最高 | ¥0.01–0.02/页；v3-2026 返回带坐标的版面块；结果 24h 过期需立即取回 |
+| `MinerUCloud` | 云端 ⚠️ | **默认（轻量模式）** | `MINERU_API_TOKEN`；精准解析 API，开启公式、表格识别，扫描页开 OCR；单文件 >200 页自动按页码分段提交再合并；记录当日已用页数，接近 1000 页时提示"超出后排队变慢" |
+| `Doc2X` | 云端 ⚠️ | 付费可选：公式质量要求最高、或 MinerU 额度/服务不可用 | `DOC2X_API_KEY`；v3-2026 返回带坐标的版面块；结果 24h 过期需立即取回；默认并发 10；不支持旋转 PDF（提交前先用 PyMuPDF 归正） |
+| `MinerULocalCPU` | 本地 | 本地模式 | `mineru server`（basic + ONNX）独立容器，HTTP 调用；含 OCR |
+| `DocLayoutYOLO` | 本地 | 本地模式、机器较小时 | 只给块类型，没有 LaTeX/OCR；BabelDOC 同款模型 |
+
+**云端调用的公共处理**：上传前只截取需要的页（用户选了页码范围时不传整本）；提交—轮询—下载结果统一封装，失败重试并可一键改用另一个服务；下载的原始结果（Zip/JSON）存到 `data/jobs/<id>/parser/`，以后改进融合算法可直接重放，不必再上传。
 
 **融合对齐**（`fusion.py`，原生页）：
 
@@ -244,7 +258,7 @@ class Translator(Protocol):
 page.add_redact_annot(block.bbox)
 page.apply_redactions(
     images=fitz.PDF_REDACT_IMAGE_NONE,     # 不动图片
-    graphics=fitz.PDF_REDACT_LINE_ART_NONE,# 不动矢量线条（表格线、图表）
+    graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,  # 只删完全落在块内的线条（行内公式的分数线、根号），表格线和图表不受影响（S5 实测）
     text=fitz.PDF_REDACT_TEXT_REMOVE,      # 只删文字
 )
 ```
@@ -258,6 +272,7 @@ page.apply_redactions(
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | POST | `/api/jobs` | 上传 PDF + 选项（解析器、翻译服务、页码范围、领域）；云端解析器需带 `cloud_consent=true` |
+| GET | `/api/parsers/usage` | 各云端解析服务的当日用量 / 余额（MinerU 已用页数、Doc2X 剩余页数） |
 | GET | `/api/jobs/{id}/events` | SSE 进度（分类 → 解析 → 融合 → 术语 → 翻译 n/m → 背景页） |
 | GET | `/api/jobs/{id}/ir` | 获取 IR（可按页分片） |
 | GET | `/api/jobs/{id}/files/{name}` | 原文、背景页、导出物 |
@@ -286,7 +301,12 @@ page.apply_redactions(
 - 只渲染可视区附近的页（虚拟列表），大文档不卡。
 - 坐标换算：`css_px = pt × viewport.scale`；Layer 1 整体 `transform: scale()`，块内始终按 pt 排版，保证网页与导出一致。
 
-**上传页的云端提醒（R10）**：选择 MinerU 云端或 Doc2X 时，弹出提示："本文件将上传至 ××（第三方服务）进行解析，请勿上传涉密或未公开文档"，需勾选确认后才能提交；任务详情里显示本次是否使用了云端服务。默认选中本地解析器。
+**上传页的云端提醒（R10）**：轻量模式是默认，所以提醒是常驻的：
+
+- 上传区上方始终显示提示条："本文件将上传至 **MinerU 云端**（或 Doc2X）进行版面解析，请勿上传涉密或未公开文档"，旁边是"切换到本地模式"入口（本地模式未部署时显示部署说明链接）。
+- 提交按钮旁有确认勾选框，**每次提交都要勾选**（`cloud_consent=true`）；首次使用额外弹窗说明各服务的隐私政策链接。
+- 选 Doc2X 时同时显示预计费用（页数 × 单价）。
+- 任务详情里记录本次使用了哪个服务。
 
 ### 5.2 公式与图表的渲染策略（R3）
 
@@ -331,14 +351,15 @@ services:
   web:      # Caddy：静态前端 + 反向代理 + Basic Auth
   app:      # FastAPI + worker + Playwright Chromium + OpenCV + 字体
     volumes: ["./data:/data"]
-  mineru:   # 可选：mineru server（basic + ONNX，纯 CPU）
+  mineru:   # 仅本地模式：mineru server（basic + ONNX，纯 CPU），profiles: ["local"]
 ```
 
-- **无 GPU**：所有本地推理走 CPU。建议机器 ≥4 核、≥8 GB 内存（MinerU basic 最低 2 GB，加上 Chromium 和 worker）。
+- **轻量模式（默认）**：`docker compose up` 只起 `web` + `app`，本地不跑任何模型；最低约 1 核 / 1 GB，推荐 2 核 / 2 GB（主要是 Chromium 导出）。首次打开进入设置向导：填 MinerU Token（附免费申请链接）或 Doc2X Key，再填 LLM 的 base_url / Key / 模型。
+- **本地模式**：`docker compose --profile local up`，额外起 `mineru` 容器；推荐 4 核 / 8 GB，最低 2 核 / 4 GB 空闲内存。
 - 不做账号系统；部署在公网时用 Caddy Basic Auth（`.env` 配置用户名密码），内网/Tailscale 可关闭。
 - 提供 `.env.example`：翻译服务、云端解析 Key、访问密码，全部由部署者自己填写，仓库里不含任何 Key。
 - 界面“关于”页注明使用了 MinerU、PyMuPDF、BabelDOC 等组件（满足 MinerU 许可中“提供在线服务需署名”的要求）。
-- 模型在构建镜像时预拉，走国内镜像（`HF_ENDPOINT=https://hf-mirror.com` 或 ModelScope）；字体打进镜像，避免调研中最常见的下载失败问题。
+- 本地模式的模型在构建镜像时预拉，走国内镜像（`HF_ENDPOINT=https://hf-mirror.com` 或 ModelScope）；字体打进镜像（两种模式都需要），避免调研中最常见的下载失败问题。
 - 第三方词库在首次启动时由脚本下载到 `glossaries/vendor/`，不进镜像也不进仓库。
 
 ---
@@ -347,11 +368,11 @@ services:
 
 | 阶段 | 内容 | 验收标准 |
 |---|---|---|
-| **P0 验证**（§8） | 跑通验证实验，选定本地解析器、导出方案 | 每个实验有结论写进文档 |
-| **P1 MVP** | 原生 PDF：PyMuPDF + 本地 MinerU（CPU）/ 云端 MinerU（带提醒）→ IR → OpenAI 兼容翻译 → 网页双栏对照；GIST 词库 + 文档术语抽取；独立公式保留原样，行内公式用裁剪图 | 5 篇英文论文完整翻译，无漏页，正文版式不乱，核心术语前后一致 |
-| **P2 可用** | KaTeX 行内公式、排版拟合与向下扩展、用户术语表与术语面板、翻译缓存、单段编辑/重翻、导出纯译文和双语 PDF | 导出 PDF 与网页视觉一致；同一文档二次打开不再调用 LLM |
+| **P0 验证**（§8） | 跑通验证实验，摸清 MinerU 云端 / Doc2X 输出格式，确定导出方案 | 每个实验有结论写进文档 |
+| **P1 MVP** | 原生 PDF：PyMuPDF + **MinerU 云端**（带提醒）→ IR → OpenAI 兼容翻译 → 网页双栏对照；GIST 词库 + 文档术语抽取；独立公式保留原样，行内公式用裁剪图 | 5 篇英文论文完整翻译，无漏页，正文版式不乱，核心术语前后一致 |
+| **P2 可用** | KaTeX 行内公式、排版拟合与向下扩展、用户术语表与术语面板、翻译缓存、单段编辑/重翻、导出纯译文和双语 PDF、**Doc2X 适配器**、设置向导与用量显示 | 导出 PDF 与网页视觉一致；同一文档二次打开不再调用 LLM；MinerU 与 Doc2X 可随时切换 |
 | **P3 通用** | 逐页分类、扫描页/乱码页 OCR 路径与背景擦除、表格单元格翻译、图内矢量文字、跨页段落合并 | 白底扫描论文和混合文档可用 |
-| **P4 扩展** | Doc2X 适配器、DeepL 适配器、Wikidata 兜底、BabelDOC 备选引擎、更多领域词库包、书签目录保留 | — |
+| **P4 扩展** | 本地模式（MinerU CPU / DocLayout-YOLO）、DeepL 适配器、Wikidata 兜底、BabelDOC 备选引擎、更多领域词库包、书签目录保留 | 本地模式在 4 核 8 GB 机器上可用 |
 
 ---
 
@@ -362,8 +383,8 @@ services:
 | # | 实验 | 要回答的问题 |
 |---|---|---|
 | S1 | pdf2zh-next / BabelDOC（CPU）跑全部样本 | 现成方案做到什么程度？作为对比基线 |
-| S2 | MinerU basic + ONNX（CPU）与 mineru.net API 跑同样样本 | **CPU 每页耗时**；basic 是否有公式 LaTeX / 表格结构 / OCR；**bbox 单位与坐标系**；块类型枚举与字段名；云端相比好多少 |
-| S3 | Doc2X v3-2026 跑 3 个公式密集样本 | 坐标格式；LaTeX 质量是否明显优于 MinerU 云端，值不值得付费 |
+| S2 | **MinerU 精准解析 API** 跑全部样本（本地 CPU 版后置到 P4） | 返回 JSON 的**块类型枚举、bbox 单位与坐标系**、行内公式是否有 bbox + LaTeX、表格 HTML/单元格坐标；每页耗时；pipeline 与 vlm 模型差别 |
+| S3 | Doc2X v3-2026 跑 3 个公式密集样本（需充值 ¥10） | 坐标格式；LaTeX 质量与 MinerU 对比，用于在界面上给用户选择建议 |
 | S4 | 解析器块 ↔ PyMuPDF span 对齐 | 对齐准确率；漏归属 span 比例 |
 | S5 | PyMuPDF redaction 只删文字；扫描页擦除 | 是否误删公式字符、表格线；擦除后背景是否干净 |
 | S6 | Chromium 打印透明叠加层 + `show_pdf_page` 合成 | 是否全矢量、字体嵌入、坐标与网页一致、文件大小 |
@@ -377,11 +398,12 @@ services:
 
 | 问题 | 结论 |
 |---|---|
-| GPU | 没有。本地只跑 CPU，MinerU 云端 API 作为可选项 |
+| GPU / 内存 | 没有 GPU，内存也小 → **默认轻量模式**：版面解析走 MinerU 云端，本地只做 PyMuPDF + 浏览器排版 |
+| 云端解析服务 | **默认 MinerU 精准解析 API（免费）**，**支持 Doc2X 付费 API**；本地解析作为隐私选项 |
 | 文档类型 | 以学术论文为主 → 引入论文术语系统（§4.5） |
 | 扫描件 | 不确定占比 → 设计成通用：逐页分类，扫描页和乱码页走 OCR（§4.2） |
 | 翻译方向 | 其他语言 → 简体中文，英文为主 |
-| 云端解析 | 可以用，但每次都要提醒用户（§5.1） |
+| 云端提醒 | 每次上传都提醒并勾选确认（§5.1） |
 | 代码仓库 | 公开仓库 [weandy/pdf-translator](https://github.com/weandy/pdf-translator)（原名 doc-translator，旧地址自动跳转） |
 | 项目定位 | 开源给大家自部署使用，不只是自用 |
 | 许可证 | AGPL-3.0（与 PyMuPDF、BabelDOC 一致） |
@@ -389,8 +411,7 @@ services:
 
 **待定**
 
-1. **推荐配置**：给自部署用户的最低/推荐 CPU、内存，S2 实测后写进 README。
-2. **Doc2X 是否接入**：付费服务，S3 结果出来再决定（用户自带 Key，接入成本不高）。
+1. **本地模式推荐配置**：需要在更大的机器上实测 MinerU CPU 后确定（目前估计 4 核 8 GB）。
 
 ---
 
@@ -398,12 +419,14 @@ services:
 
 | 风险 | 影响 | 缓解 |
 |---|---|---|
-| MinerU CPU 推理太慢 | 本地解析一篇论文要很久 | S2 实测；慢则改用 DocLayout-YOLO + PyMuPDF（原生页够用），公式/扫描页交给云端 |
+| MinerU 云端额度或政策变化 | 免费额度缩水、开始收费、服务不可用 | 适配器可插拔，一键切换 Doc2X 或本地模式；原始解析结果本地缓存可重放 |
+| 依赖第三方云服务 | 默认模式离线不可用 | 本地模式兜底；文档中写清两种模式的取舍 |
+| MinerU CPU 推理太慢（本地模式） | 本地解析一篇论文要很久 | 慢则改用 DocLayout-YOLO + PyMuPDF（原生页够用） |
 | MinerU 4.0 输出 schema 文档不全、变化快 | 适配器反复改 | 适配器内判断 schema 版本；锁定版本；S2 先摸清 |
 | 行内公式混排位置不准 | 公式错位、重叠 | 优先 KaTeX 随文字流动渲染，不按原坐标硬贴 |
 | 扫描页样式估算不准 | 译文字号、颜色与原文有偏差 | 统一样式 + 允许手动调整；扫描件本来就不追求像素级还原 |
 | 术语库译法不适合上下文 | 错译被强制统一 | 术语只作为"推荐译法"注入；术语面板可改；文档内锁定优先级最高 |
 | 第三方词库许可 | 再分发不合规 | 只集成允许再分发的数据（GIST，Apache-2.0，保留署名）；NC 许可的数据只给链接 |
 | LLM 改坏占位符或漏翻 | 公式丢失 | 占位符校验 + 单条重试 + 失败保留原文 |
-| 云端 API 隐私 | 文档外泄 | 默认本地；云端每次确认；任务记录使用了哪个服务 |
+| 云端 API 隐私 | 文档外泄 | 常驻提醒 + 每次勾选确认；只上传需要的页；提供本地模式；任务记录使用了哪个服务 |
 | 许可 | 部署者对外提供服务时：AGPL 要求公开修改后的源码，MinerU 要求署名 | 项目本身 AGPL-3.0；“关于”页内置署名；README 说明部署者义务 |
