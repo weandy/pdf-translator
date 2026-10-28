@@ -29,7 +29,7 @@ from pdftr.storage.port import ArtifactStore, JobStore
 from pdftr.translation.port import TranslationCache
 from pdftr.translation.prompt import DocContext
 from pdftr.translation.segmenter import segment
-from pdftr.translation.service import TranslateOptions, translate
+from pdftr.translation.service import TranslateOptions, default_concurrency, translate
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +50,7 @@ class PipelineDeps:
     term_matcher: MatcherLoader
     max_concurrent_jobs: int = 2
     font_dir: Path | None = None  # 导出 PDF 用的字体目录
+    llm_concurrency: int = 0  # 0 = 按服务商自动选择（translation.service.default_concurrency）
 
 
 # 各阶段开始时显示的说明；阶段内有更具体的进度时会覆盖
@@ -201,13 +202,17 @@ class Pipeline:
         out, report = await translate(
             segs, chat=chat, cache=self.deps.cache, ctx=load_context(self.deps, job.id),
             lookup_terms=matcher.match if matcher else None,
-            opts=TranslateOptions(quality=job.options.quality), on_progress=progress,
+            opts=TranslateOptions(quality=job.options.quality, concurrency=self._concurrency(secrets)),
+            on_progress=progress,
         )  # fmt: skip
         self.deps.store.save_segments(out)
         cost = report.cost_cny
         total = None if cost is None and job.cost_cny is None else (job.cost_cny or 0) + (cost or 0)
         failed = f"，{report.failed} 段未通过校验，可在阅读器中重试" if report.failed else ""
         self._update(job, model=chat.model, cost_cny=total, message=f"已翻译 {report.translated} 段{failed}")
+
+    def _concurrency(self, secrets: Secrets) -> int:
+        return self.deps.llm_concurrency or default_concurrency(secrets.llm_base_url)
 
     async def _render(self, job: Job, _: Secrets) -> None:
         doc = load_document(self.deps, job.id)

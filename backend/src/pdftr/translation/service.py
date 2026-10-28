@@ -10,6 +10,7 @@ import hashlib
 import json
 from collections.abc import Callable, Sequence
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
@@ -23,6 +24,17 @@ from pdftr.translation.prompt import PROMPT_VERSION, DocContext, expand_formulas
 Quality = Literal["default", "careful"]
 TermLookup = Callable[[str], dict[str, str]]
 Progress = Callable[[int, int], None]
+
+
+def default_concurrency(base_url: str) -> int:
+    """按服务商选默认并发数：DeepSeek 官方不限并发，用 4 路；本机模型（Ollama 等）通常只有一块显卡，
+    并发反而更慢，用 1 路；其他服务商限额差别大，保守用 2 路。部署者可用 PDFTR_LLM_CONCURRENCY 覆盖。"""
+    host = (urlparse(base_url).hostname or "").lower()
+    if host == "deepseek.com" or host.endswith(".deepseek.com"):
+        return 4
+    if host in ("localhost", "127.0.0.1", "::1", "host.docker.internal") or host.endswith(".local"):
+        return 1
+    return 2
 
 
 class TranslateOptions(BaseModel):

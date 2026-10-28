@@ -78,5 +78,6 @@ def build_container(settings: Settings | None = None, deps_override: dict | None
         "term_matcher": GistLoader(s),
         "max_concurrent_jobs": s.max_concurrent_jobs,
         "font_dir": s.font_dir,
+        "llm_concurrency": s.llm_concurrency,
     } | (deps_override or {})  # 测试时替换解析器、大模型等
     return Container(settings=s, pipeline=Pipeline(PipelineDeps(**deps)))

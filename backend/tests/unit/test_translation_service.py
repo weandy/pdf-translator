@@ -141,3 +141,13 @@ def test_chat_error_propagates():
         asyncio.run(
             translate(SEGS, chat=FakeChat(error=ChatError("API Key 无效")), cache=DictCache(), ctx=DocContext())
         )
+
+
+def test_default_concurrency_by_provider():
+    from pdftr.translation.service import default_concurrency
+
+    assert default_concurrency("https://api.deepseek.com") == 4
+    assert default_concurrency("https://api.deepseek.com/v1") == 4
+    assert default_concurrency("http://localhost:11434/v1") == 1  # Ollama
+    assert default_concurrency("https://dashscope.aliyuncs.com/compatible-mode/v1") == 2
+    assert default_concurrency("https://notdeepseek.com.example.org") == 2
