@@ -8,7 +8,7 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pdftr.domain.ir import Segment, SegmentStatus
+from pdftr.domain.ir import Revision, Segment, SegmentStatus
 from pdftr.domain.job import Job, JobStatus
 
 _SCHEMA = """
@@ -26,6 +26,13 @@ CREATE TABLE IF NOT EXISTS segments (
     data TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS segments_job ON segments (job_id, idx);
+CREATE TABLE IF NOT EXISTS revisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    segment_id TEXT NOT NULL,
+    data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS revisions_job ON revisions (job_id, id);
 """
 
 
@@ -58,6 +65,7 @@ class SqliteStore:
     def delete_job(self, job_id: str) -> None:
         with self._lock:
             self._db.execute("DELETE FROM segments WHERE job_id = ?", (job_id,))
+            self._db.execute("DELETE FROM revisions WHERE job_id = ?", (job_id,))
             self._db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
             self._db.commit()
 
@@ -105,6 +113,34 @@ class SqliteStore:
                 "SELECT COUNT(*) FROM segments WHERE job_id = ? AND status = ?", (job_id, status)
             ).fetchone()
         return int(row[0])
+
+    # ---- 修改记录 ----
+    def add_revision(self, rev: Revision) -> Revision:
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT INTO revisions (job_id, segment_id, data) VALUES (?, ?, '')", (rev.job_id, rev.segment_id)
+            )
+            rev = rev.model_copy(update={"id": cur.lastrowid})
+            self._db.execute("UPDATE revisions SET data = ? WHERE id = ?", (rev.model_dump_json(), rev.id))
+            self._db.commit()
+        return rev
+
+    def save_revisions(self, revs: list[Revision]) -> None:
+        with self._lock:
+            self._db.executemany(
+                "UPDATE revisions SET data = ? WHERE id = ?", [(r.model_dump_json(), r.id) for r in revs]
+            )
+            self._db.commit()
+
+    def revisions(self, job_id: str) -> list[Revision]:
+        with self._lock:
+            rows = self._db.execute("SELECT data FROM revisions WHERE job_id = ? ORDER BY id", (job_id,)).fetchall()
+        return [Revision.model_validate_json(r[0]) for r in rows]
+
+    def revision(self, revision_id: int) -> Revision | None:
+        with self._lock:
+            row = self._db.execute("SELECT data FROM revisions WHERE id = ?", (revision_id,)).fetchone()
+        return Revision.model_validate_json(row[0]) if row else None
 
     def close(self) -> None:
         with self._lock:

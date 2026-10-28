@@ -4,6 +4,7 @@
 IR 在解析完成后不再改动；译文单独存放在段落（Segment）里。
 """
 
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
 
@@ -155,3 +156,24 @@ class Segment(BaseModel):
     target: str | None = None
     status: SegmentStatus = SegmentStatus.PENDING
     quality: Quality = "default"
+
+
+RevisionAction = Literal["edit", "retranslate", "careful", "revert"]
+
+
+class Revision(BaseModel):
+    """一次手动操作（保存修改、重翻、精修、撤回）前后的译文：修改记录与按步撤回的依据。"""
+
+    id: int = 0  # 存储时分配，按时间递增
+    job_id: str
+    segment_id: str
+    action: RevisionAction
+    before: str | None
+    before_status: SegmentStatus
+    before_quality: Quality = "default"
+    after: str | None
+    after_status: SegmentStatus
+    after_quality: Quality = "default"
+    reverts: int | None = None  # action=revert 时，撤回的是哪一步
+    reverted_by: int | None = None  # 这一步已被哪一次撤回作废
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

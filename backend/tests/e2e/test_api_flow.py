@@ -257,3 +257,33 @@ def test_paddle_parser_requires_its_own_token(client: TestClient):
     assert r.status_code == 400 and "PaddleOCR Token" in r.json()["detail"]
     r = client.post("/api/jobs", files=files, data={"options": options}, headers={**HEADERS, "X-Paddle-Key": "pt"})
     assert r.status_code == 202 and r.json()["options"]["parser"] == "paddleocr-vl"
+
+
+def test_revisions_record_manual_changes_and_revert_per_step(client: TestClient):
+    job = _wait(client, _upload(client).json()["id"])
+    segs = client.get(f"/api/jobs/{job['id']}/document").json()["segments"]
+    a, b = segs[0], segs[1]
+    client.patch(f"/api/segments/{a['id']}", json={"target": "第一次修改"})
+    client.patch(f"/api/segments/{b['id']}", json={"target": "另一段的修改"})
+    client.post(f"/api/segments/{a['id']}/retranslate", json={"quality": "careful"}, headers=HEADERS)
+    client.patch(f"/api/segments/{a['id']}", json={"target": "第二次修改"})
+    revs = client.get(f"/api/jobs/{job['id']}/revisions").json()
+    assert [r["action"] for r in revs] == ["edit", "edit", "careful", "edit"]
+    assert revs[0]["before"] == a["target"] and revs[0]["after"] == "第一次修改"
+
+    # 撤回 a 的第一步：a 回到机器译文，a 之后的两步一并作废；b 不受影响
+    seg = client.post(f"/api/segments/revisions/{revs[0]['id']}/revert").json()
+    assert seg["target"] == a["target"] and seg["status"] == "done"
+    revs = client.get(f"/api/jobs/{job['id']}/revisions").json()
+    undo = revs[-1]
+    assert undo["action"] == "revert" and undo["reverts"] == revs[0]["id"] and undo["before"] == "第二次修改"
+    assert [r["reverted_by"] for r in revs[:4]] == [undo["id"], None, undo["id"], undo["id"]]
+    doc = client.get(f"/api/jobs/{job['id']}/document").json()
+    assert {s["id"]: s["target"] for s in doc["segments"]}[b["id"]] == "另一段的修改"
+
+    # 已撤回的步骤不能再撤回；撤回 b 的那一步后 b 也回到机器译文
+    assert client.post(f"/api/segments/revisions/{revs[0]['id']}/revert").status_code == 400
+    assert client.post(f"/api/segments/revisions/{revs[1]['id']}/revert").json()["target"] == b["target"]
+    assert client.post("/api/segments/revisions/99999/revert").status_code == 404
+    client.delete(f"/api/jobs/{job['id']}")
+    assert client.get(f"/api/jobs/{job['id']}/revisions").status_code == 404

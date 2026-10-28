@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from pdftr.domain.ir import Segment, SegmentStatus
+from pdftr.domain.ir import Revision, Segment, SegmentStatus
 from pdftr.domain.job import Job, JobStatus
 
 
@@ -36,3 +36,11 @@ class JobStore(Protocol):
     def segment(self, segment_id: str) -> Segment | None: ...
 
     def count_segments(self, job_id: str, status: SegmentStatus) -> int: ...
+
+    def add_revision(self, rev: Revision) -> Revision: ...
+
+    def save_revisions(self, revs: list[Revision]) -> None: ...
+
+    def revisions(self, job_id: str) -> list[Revision]: ...
+
+    def revision(self, revision_id: int) -> Revision | None: ...

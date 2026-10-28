@@ -13,6 +13,7 @@ export type BlockData = components["schemas"]["BlockOut"];
 export type SegmentData = components["schemas"]["SegmentOut"];
 export type ServerConfig = components["schemas"]["ConfigOut"];
 export type Estimate = components["schemas"]["Estimate"];
+export type Revision = components["schemas"]["RevisionOut"];
 export type Quality = "default" | "careful";
 
 export class ApiError extends Error {
@@ -81,6 +82,9 @@ export const api = {
     request<SegmentData>(`/api/segments/${id}`, { method: "PATCH", ...json({ target }) }),
   retranslate: (id: string, quality: Quality) =>
     request<SegmentData>(`/api/segments/${id}/retranslate`, { method: "POST", ...json({ quality }) }),
+  revisions: (jobId: string) => request<Revision[]>(`/api/jobs/${jobId}/revisions`),
+  revert: (revisionId: number) =>
+    request<SegmentData>(`/api/segments/revisions/${revisionId}/revert`, { method: "POST" }),
 };
 
 export const fileUrl = (jobId: string, name: "original.pdf" | "background.pdf") => `/api/jobs/${jobId}/files/${name}`;

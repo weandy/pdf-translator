@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import ValidationError
 
 from pdftr.api.deps import pipeline, secrets
-from pdftr.api.schemas import DocumentOut, JobOut
+from pdftr.api.schemas import DocumentOut, JobOut, RevisionOut
 from pdftr.domain.job import JobOptions, JobStatus
 from pdftr.pipeline import usecases
 from pdftr.pipeline.runner import Pipeline
@@ -118,6 +118,12 @@ async def export_job(
         filename, data = await asyncio.to_thread(usecases.export_job, p, job_id, mode, side)
     disposition = f"attachment; filename=\"translated.pdf\"; filename*=UTF-8''{quote(filename)}"
     return Response(data, media_type="application/pdf", headers={"Content-Disposition": disposition})
+
+
+@router.get("/{job_id}/revisions", response_model=list[RevisionOut])
+def list_revisions(job_id: str, p: PipelineDep) -> list[RevisionOut]:
+    """手动修改记录（保存修改、重翻、精修、撤回），按时间先后。"""
+    return [RevisionOut.of(r) for r in usecases.revisions(p, job_id)]
 
 
 @router.post("/{job_id}/retry", response_model=JobOut, status_code=202)

@@ -12,7 +12,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from pdftr.domain.ids import new_job_id
-from pdftr.domain.ir import Document, Quality, Segment, SegmentStatus
+from pdftr.domain.ir import Document, Quality, Revision, RevisionAction, Segment, SegmentStatus
 from pdftr.domain.job import STAGES, Job, JobOptions, JobStatus
 from pdftr.extraction.chars import page_count
 from pdftr.pipeline.runner import Pipeline, load_context, load_document
@@ -171,16 +171,68 @@ def _segment(pipeline: Pipeline, segment_id: str) -> Segment:
     return seg
 
 
+def _record(
+    pipeline: Pipeline, before: Segment, after: Segment, action: RevisionAction, reverts: int | None = None
+) -> None:
+    pipeline.deps.store.add_revision(
+        Revision(
+            job_id=after.job_id, segment_id=after.id, action=action, reverts=reverts,
+            before=before.target, before_status=before.status, before_quality=before.quality,
+            after=after.target, after_status=after.status, after_quality=after.quality,
+        )
+    )  # fmt: skip
+
+
 def edit_segment(pipeline: Pipeline, segment_id: str, target: str) -> Segment:
     seg = _segment(pipeline, segment_id)
+    before = seg.model_copy()
     seg.target, seg.status = target.strip(), SegmentStatus.EDITED
     pipeline.deps.store.save_segments([seg])
+    _record(pipeline, before, seg, "edit")
+    return seg
+
+
+def revisions(pipeline: Pipeline, job_id: str) -> list[Revision]:
+    get_job(pipeline, job_id)
+    return pipeline.deps.store.revisions(job_id)
+
+
+def revert_revision(pipeline: Pipeline, revision_id: int) -> Segment:
+    """把这一段恢复到这一步之前的样子；这一段在这一步之后的修改一并作废（不同段落互不影响）。"""
+    store = pipeline.deps.store
+    rev = store.revision(revision_id)
+    if rev is None:
+        raise NotFound("修改记录不存在")
+    if rev.action == "revert" or rev.reverted_by is not None:
+        raise UserError("这一步已经撤回过了")
+    seg = _segment(pipeline, rev.segment_id)
+    before = seg.model_copy()
+    seg.target, seg.status, seg.quality = rev.before, rev.before_status, rev.before_quality
+    store.save_segments([seg])
+    undo = store.add_revision(
+        Revision(
+            job_id=seg.job_id, segment_id=seg.id, action="revert", reverts=rev.id,
+            before=before.target, before_status=before.status, before_quality=before.quality,
+            after=seg.target, after_status=seg.status, after_quality=seg.quality,
+        )
+    )  # fmt: skip
+    later = [
+        r.model_copy(update={"reverted_by": undo.id})
+        for r in store.revisions(seg.job_id)
+        if r.segment_id == seg.id
+        and r.id >= rev.id
+        and r.id != undo.id
+        and r.action != "revert"
+        and r.reverted_by is None
+    ]
+    store.save_revisions(later)
     return seg
 
 
 async def retranslate_segment(pipeline: Pipeline, segment_id: str, quality: Quality, secrets: Secrets) -> Segment:
     _require_secrets(secrets, parser=None)
     seg = _segment(pipeline, segment_id)
+    before = seg.model_copy()
     seg.status = SegmentStatus.PENDING
     deps = pipeline.deps
     chat = deps.chat_factory(secrets)
@@ -191,6 +243,7 @@ async def retranslate_segment(pipeline: Pipeline, segment_id: str, quality: Qual
         opts=TranslateOptions(quality=quality, use_cache=False),
     )  # fmt: skip
     deps.store.save_segments([out])
+    _record(pipeline, before, out, "careful" if quality == "careful" else "retranslate")
     return out
 
 

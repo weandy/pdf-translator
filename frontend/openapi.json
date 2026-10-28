@@ -568,6 +568,53 @@
     }
    }
   },
+  "/api/jobs/{job_id}/revisions": {
+   "get": {
+    "tags": [
+     "jobs"
+    ],
+    "summary": "List Revisions",
+    "description": "手动修改记录（保存修改、重翻、精修、撤回），按时间先后。",
+    "operationId": "list_revisions_api_jobs__job_id__revisions_get",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/RevisionOut"
+         },
+         "title": "Response List Revisions Api Jobs  Job Id  Revisions Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/jobs/{job_id}/retry": {
    "post": {
     "tags": [
@@ -850,6 +897,49 @@
       }
      }
     },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SegmentOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/segments/revisions/{revision_id}/revert": {
+   "post": {
+    "tags": [
+     "segments"
+    ],
+    "summary": "Revert",
+    "description": "撤回某一步：这一段恢复到那一步之前，之后对这一段的修改一并作废。",
+    "operationId": "revert_api_segments_revisions__revision_id__revert_post",
+    "parameters": [
+     {
+      "name": "revision_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Revision Id"
+      }
+     }
+    ],
     "responses": {
      "200": {
       "description": "Successful Response",
@@ -1460,6 +1550,111 @@
     },
     "type": "object",
     "title": "RetranslateIn"
+   },
+   "RevisionOut": {
+    "properties": {
+     "id": {
+      "type": "integer",
+      "title": "Id"
+     },
+     "segment_id": {
+      "type": "string",
+      "title": "Segment Id"
+     },
+     "action": {
+      "type": "string",
+      "enum": [
+       "edit",
+       "retranslate",
+       "careful",
+       "revert"
+      ],
+      "title": "Action"
+     },
+     "before": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Before"
+     },
+     "before_status": {
+      "type": "string",
+      "enum": [
+       "pending",
+       "done",
+       "failed",
+       "edited"
+      ],
+      "title": "Before Status"
+     },
+     "after": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "After"
+     },
+     "after_status": {
+      "type": "string",
+      "enum": [
+       "pending",
+       "done",
+       "failed",
+       "edited"
+      ],
+      "title": "After Status"
+     },
+     "reverts": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Reverts"
+     },
+     "reverted_by": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Reverted By"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Created At"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "segment_id",
+     "action",
+     "before",
+     "before_status",
+     "after",
+     "after_status",
+     "reverts",
+     "reverted_by",
+     "created_at"
+    ],
+    "title": "RevisionOut"
    },
    "SegmentOut": {
     "properties": {

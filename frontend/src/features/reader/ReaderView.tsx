@@ -27,6 +27,8 @@ interface Props {
   actions?: ReactNode;
   /** 对照模式下译文在左边还是右边 */
   side?: "left" | "right";
+  /** 每次变化时，若选中的段落不在视野里就滚过去（从修改记录打开段落时用） */
+  revealKey?: number;
 }
 
 const PADDING = 48; // .pages 左右内边距之和
@@ -40,6 +42,7 @@ export function ReaderView({
   heading,
   actions,
   side = "right",
+  revealKey = 0,
 }: Props) {
   const [mode, setMode] = useState<ViewMode>("both");
   const [zoom, setZoom] = useState<number | null>(null); // null = 自适应宽度
@@ -51,6 +54,18 @@ export function ReaderView({
   const background = usePdf(mode !== "original" ? fileUrl(jobId, "background.pdf") : null);
   const texts = useMemo(() => blockTexts(doc), [doc]);
   const fontsVersion = useFontsVersion();
+
+  // 从别处（如修改记录）打开的段落不在视野里时，滚到它所在的页；在阅读器里点选的本来就在视野里，不滚动
+  useEffect(() => {
+    const el = scroller.current;
+    const seg = doc.segments.find((s) => s.id === selectedSegment);
+    const page = doc.pages.find((p) => p.blocks.some((b) => b.id === seg?.block_ids[0]));
+    const row = el && page ? el.querySelector<HTMLElement>(`.page-row[data-page="${page.index}"]`) : null;
+    if (!el || !row) return;
+    const view = el.getBoundingClientRect();
+    const box = row.getBoundingClientRect();
+    if (box.bottom < view.top || box.top > view.bottom) row.scrollIntoView({ block: "start" });
+  }, [selectedSegment, doc, revealKey]);
 
   useEffect(() => {
     const el = scroller.current;
@@ -107,7 +122,9 @@ export function ReaderView({
         {actions}
       </div>
       <div className="pages" ref={scroller}>
-        {(original.error || background.error) && <p className="error">PDF 加载失败：{original.error ?? background.error}</p>}
+        {(original.error || background.error) && (
+          <p className="error">PDF 加载失败：{original.error ?? background.error}</p>
+        )}
         {doc.pages.map((page) => (
           <PageRow
             key={page.index}
@@ -179,7 +196,11 @@ function PageRow({
   const mark = (segId: string) => (segId === selected ? " selected" : segId === hovered ? " hovered" : "");
 
   return (
-    <div className={`page-row${mode === "both" ? "" : " single"}${side === "left" ? " side-left" : ""}`} ref={ref}>
+    <div
+      className={`page-row${mode === "both" ? "" : " single"}${side === "left" ? " side-left" : ""}`}
+      ref={ref}
+      data-page={page.index}
+    >
       {mode !== "translated" && (
         <div className="page" style={size} aria-label={`原文第 ${page.index + 1} 页`}>
           {near && original && <PdfCanvas doc={original} page={page.index} scale={scale} />}
@@ -208,10 +229,7 @@ function PageRow({
         <div className="page" style={size} aria-label={`译文第 ${page.index + 1} 页`}>
           {near && background && <PdfCanvas doc={background} page={page.index} scale={scale} />}
           {near && (
-            <div
-              className="overlay"
-              style={{ width: page.width * scale, height: page.height * scale }}
-            >
+            <div className="overlay" style={{ width: page.width * scale, height: page.height * scale }}>
               {blocks.map((b) => {
                 const t = texts.get(b.id);
                 return t ? (

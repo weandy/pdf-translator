@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import { api, type Quality, type SegmentData } from "@/shared/api/client";
 
@@ -6,6 +6,8 @@ interface Props {
   segment: SegmentData;
   onChange: (seg: SegmentData) => void;
   onClose: () => void;
+  /** 这一段的修改记录（由页面组合） */
+  history?: ReactNode;
 }
 
 const STATUS: Record<SegmentData["status"], string> = {
@@ -16,7 +18,7 @@ const STATUS: Record<SegmentData["status"], string> = {
 };
 
 /** 切换段落或译文更新时由调用方用 key 重新挂载，草稿从 props 初始化。 */
-export function SegmentEditor({ segment, onChange, onClose }: Props) {
+export function SegmentEditor({ segment, onChange, onClose, history }: Props) {
   const [draft, setDraft] = useState(segment.target ?? "");
   const [busy, setBusy] = useState<"save" | Quality | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,10 +47,15 @@ export function SegmentEditor({ segment, onChange, onClose }: Props) {
           关闭
         </button>
       </header>
-      <h3>原文</h3>
-      <p className="source">{segment.source}</p>
-      <h3>译文</h3>
-      <textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={8} />
+      {/* 原文与译文用同样大小的框，原文只读 */}
+      <div className="panes">
+        <h3>
+          原文 <small className="muted">只读</small>
+        </h3>
+        <textarea className="source" value={segment.source} readOnly aria-label="原文" />
+        <h3>译文</h3>
+        <textarea value={draft} onChange={(e) => setDraft(e.target.value)} aria-label="译文" />
+      </div>
       <p className="hint">公式显示为 &lt;m1/&gt; 这样的占位符，修改时请保留。</p>
       {error && <p className="error">{error}</p>}
       <div className="actions">
@@ -73,6 +80,12 @@ export function SegmentEditor({ segment, onChange, onClose }: Props) {
           {busy === "save" ? "保存中…" : "保存修改"}
         </button>
       </div>
+      {history && (
+        <section className="segment-history">
+          <h3>这一段的修改记录</h3>
+          {history}
+        </section>
+      )}
     </aside>
   );
 }

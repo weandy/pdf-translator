@@ -175,6 +175,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/{job_id}/revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Revisions
+         * @description 手动修改记录（保存修改、重翻、精修、撤回），按时间先后。
+         */
+        get: operations["list_revisions_api_jobs__job_id__revisions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/{job_id}/retry": {
         parameters: {
             query?: never;
@@ -220,6 +240,26 @@ export interface paths {
         put?: never;
         /** Retranslate */
         post: operations["retranslate_api_segments__segment_id__retranslate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/segments/revisions/{revision_id}/revert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revert
+         * @description 撤回某一步：这一段恢复到那一步之前，之后对这一段的修改一并作废。
+         */
+        post: operations["revert_api_segments_revisions__revision_id__revert_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -460,6 +500,41 @@ export interface components {
              * @enum {string}
              */
             quality: "default" | "careful";
+        };
+        /** RevisionOut */
+        RevisionOut: {
+            /** Id */
+            id: number;
+            /** Segment Id */
+            segment_id: string;
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "edit" | "retranslate" | "careful" | "revert";
+            /** Before */
+            before: string | null;
+            /**
+             * Before Status
+             * @enum {string}
+             */
+            before_status: "pending" | "done" | "failed" | "edited";
+            /** After */
+            after: string | null;
+            /**
+             * After Status
+             * @enum {string}
+             */
+            after_status: "pending" | "done" | "failed" | "edited";
+            /** Reverts */
+            reverts: number | null;
+            /** Reverted By */
+            reverted_by: number | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
         };
         /** SegmentOut */
         SegmentOut: {
@@ -841,6 +916,37 @@ export interface operations {
             };
         };
     };
+    list_revisions_api_jobs__job_id__revisions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevisionOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     retry_job_api_jobs__job_id__retry_post: {
         parameters: {
             query?: never;
@@ -933,6 +1039,37 @@ export interface operations {
                 "application/json": components["schemas"]["RetranslateIn"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SegmentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revert_api_segments_revisions__revision_id__revert_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                revision_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

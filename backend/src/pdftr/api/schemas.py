@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from pdftr.domain.ir import Document, Segment
+from pdftr.domain.ir import Document, Revision, Segment
 from pdftr.domain.job import Job, JobOptions
 
 
@@ -133,6 +133,26 @@ class DocumentOut(BaseModel):
             for p in doc.pages
         ]  # fmt: skip
         return cls(job=JobOut.of(job), title=doc.meta.title, pages=pages, segments=[SegmentOut.of(s) for s in segments])
+
+
+SegStatus = Literal["pending", "done", "failed", "edited"]
+
+
+class RevisionOut(BaseModel):
+    id: int
+    segment_id: str
+    action: Literal["edit", "retranslate", "careful", "revert"]
+    before: str | None
+    before_status: SegStatus
+    after: str | None
+    after_status: SegStatus
+    reverts: int | None
+    reverted_by: int | None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, r: Revision) -> "RevisionOut":
+        return cls(**r.model_dump(exclude={"job_id", "before_quality", "after_quality"}))
 
 
 class EditIn(BaseModel):

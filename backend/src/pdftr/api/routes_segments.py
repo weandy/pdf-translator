@@ -28,6 +28,12 @@ async def retranslate(
     return SegmentOut.of(await usecases.retranslate_segment(p, segment_id, body.quality, sec))
 
 
+@router.post("/revisions/{revision_id}/revert", response_model=SegmentOut)
+def revert(revision_id: int, p: PipelineDep) -> SegmentOut:
+    """撤回某一步：这一段恢复到那一步之前，之后对这一段的修改一并作废。"""
+    return SegmentOut.of(usecases.revert_revision(p, revision_id))
+
+
 @router.get("/{segment_id}/formulas/{key}.png")
 def formula_png(segment_id: str, key: str, p: PipelineDep) -> Response:
     png = usecases.formula_crop(p, segment_id, key)
