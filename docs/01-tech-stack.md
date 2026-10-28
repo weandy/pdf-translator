@@ -1,8 +1,8 @@
 # 自建网页端 PDF 翻译 · 技术选型
 
-> 日期：2026-10-28
+> 日期：2026-10-28（v2，已纳入当天确认的需求）
 > 依据：[00-research.md](00-research.md)
-> 状态：草案，待 §8 的验证实验和 §9 的待确认问题落定后转为决策
+> 状态：草案。§8 验证实验完成后转为正式决策
 
 ---
 
@@ -13,41 +13,48 @@
 | R1 | 网页端使用 | 上传 PDF → 浏览器里原文/译文对照阅读，类似沉浸式翻译 |
 | R2 | 整体保留原版式 | 译文按原位置、原字号风格排回页面，图片和矢量图形不动 |
 | R3 | 公式、图表重新渲染 | 公式不被翻坏；行内公式随译文重新排布；表格、图内文字可翻译并重新渲染 |
-| R4 | 可接外部 API | 翻译：任意 OpenAI 兼容 LLM，可选 DeepL/Google；解析：MinerU（本地/云端）、Doc2X |
-| R5 | 自用、非商用 | 可直接使用 AGPL 组件（PyMuPDF、BabelDOC）；单用户或少量用户 |
+| R4 | 可接外部 API | 翻译：任意 OpenAI 兼容 LLM，可选 DeepL；解析：MinerU 云端 API（可选）、Doc2X（可选） |
+| R5 | 自用、非商用 | 可使用 AGPL 组件（PyMuPDF、BabelDOC）；代码仓库公开 |
 | R6 | 可导出 | 导出纯译文 PDF、双语对照 PDF |
+| R7 | **论文术语一致** | 以学术论文为主，引入领域术语库 + 文档级术语抽取 |
+| R8 | **通用输入** | 原生文本 PDF、扫描件、混合文档、文字提取乱码的 PDF 都要能处理 |
+| R9 | **翻译方向** | 其他语言 → 简体中文，英文为主 |
+| R10 | **云端上传要提醒** | 选择云端解析时，明确告知用户文件会上传到第三方 |
 
-非目标（当前阶段）：多租户、计费、公网 SaaS、Word/PPT 等非 PDF 格式。
+**约束**：部署机器**没有 GPU**，本地只跑 CPU 推理。
+
+非目标（当前阶段）：多租户、计费、中文译成其他语言、Word/PPT 等非 PDF 格式。
 
 ---
 
 ## 2. 总体思路
 
-调研结论是：**保版式 = 字符级坐标 + 版面语义 + 好的排版引擎**。三者分别交给最擅长的组件：
+**保版式 = 字符级坐标 + 版面语义 + 好的排版引擎**，分别交给最擅长的组件：
 
 | 能力 | 交给谁 | 理由 |
 |---|---|---|
-| 字符级坐标、字体、字号、颜色 | **PyMuPDF**（原生文本 PDF） | 坐标直接来自 PDF，误差为 0；速度快 |
-| 版面语义（块类型、阅读顺序、公式 LaTeX、表格结构、OCR） | **MinerU / Doc2X**（可插拔） | 模型识别，结构比规则可靠；扫描件也能处理 |
+| 字符级坐标、字体、字号、颜色 | **PyMuPDF** | 原生文本 PDF 坐标直接取自文件，零误差、CPU 秒级 |
+| 版面语义（块类型、阅读顺序、公式 LaTeX、表格结构、OCR） | **本地 CPU 解析器** 或 **云端 MinerU / Doc2X** | 可插拔；无 GPU 时重型识别交给云端（需提醒） |
 | 排版（换行、缩放、公式渲染） | **浏览器**（HTML/CSS + KaTeX） | 排版能力远强于在 PDF 里手写绘制指令，还能逐段编辑 |
-
-两者融合后形成**自有中间表示（IR）**，解析器、翻译器、渲染器都围绕 IR 插拔：
+| 术语一致 | **术语系统**（领域词库 + 文档抽取 + 命中注入） | 见 §4.5 |
 
 ```mermaid
 flowchart LR
-  PDF[上传 PDF] --> N[PyMuPDF<br/>字符/样式/坐标]
-  PDF --> L{版面解析器}
-  L -->|本地| M1[MinerU server]
-  L -->|云端| M2[mineru.net API]
-  L -->|云端| D[Doc2X v3 API]
+  PDF[上传 PDF] --> C[逐页分类<br/>原生 / 扫描 / 乱码]
+  C --> N[PyMuPDF<br/>字符/样式/坐标]
+  C --> L{版面解析器}
+  L -->|默认·本地 CPU| M0[MinerU basic ONNX<br/>或 DocLayout-YOLO]
+  L -->|可选·云端 ⚠️上传提醒| M1[mineru.net API]
+  L -->|可选·云端 ⚠️上传提醒| D[Doc2X API]
   N --> F[融合对齐]
+  M0 --> F
   M1 --> F
-  M2 --> F
   D --> F
   F --> IR[(IR 中间表示)]
+  G[(术语系统)] --> T
   IR --> T[翻译器<br/>OpenAI 兼容 / DeepL]
   T --> IR
-  IR --> BG[去字背景页<br/>PyMuPDF redaction]
+  IR --> BG[去字背景页<br/>原生: redaction<br/>扫描: 擦除重绘]
   IR --> W[网页叠加渲染<br/>pdf.js + HTML + KaTeX]
   BG --> W
   W --> E[导出 PDF<br/>Chromium 打印叠加层 + 合成]
@@ -55,9 +62,9 @@ flowchart LR
   B -.-> E
 ```
 
-**为什么不直接用 BabelDOC？** 它只产出 PDF，API 是内部接口，难以做网页上的逐段编辑、重翻、对照联动；只支持 OpenAI 兼容接口；也接不了 MinerU/Doc2X 的结构结果。但它效果是现成的，**作为基线和备选引擎接入**（自用不受 AGPL 影响）。
+**为什么不直接用 BabelDOC？** 它只产出 PDF，API 是内部接口，难以做网页上的逐段编辑、重翻、对照联动；也接不了 MinerU/Doc2X 的结构结果。但它效果是现成的，**作为基线和备选引擎接入**（BabelDOC 本身在 CPU 上就能跑）。
 
-**为什么不走"转 Markdown 再翻"？** 丢原版式，不满足 R2。但 MinerU/Doc2X 的结构化结果（LaTeX、表格 HTML）正是 R3 需要的，所以只取它们的**结构**，不取它们的 Markdown 排版。
+**为什么不走"转 Markdown 再翻"？** 丢原版式，不满足 R2。只取 MinerU/Doc2X 的**结构**（LaTeX、表格 HTML、阅读顺序），不取它们的 Markdown 排版。
 
 ---
 
@@ -66,22 +73,25 @@ flowchart LR
 | 层 | 选型 | 备选 | 说明 |
 |---|---|---|---|
 | 后端语言 | **Python 3.12** + uv | — | PDF/解析生态全在 Python |
-| Web 框架 | **FastAPI** + Pydantic v2 | Litestar | IR 直接用 Pydantic 模型定义，自带 JSON Schema，前端可生成 TS 类型 |
-| 任务执行 | **SQLite 任务表 + 进程内 worker**（asyncio + ProcessPool） | Redis + arq / Celery | 自用规模不必上 Redis；接口抽象好，以后可替换 |
-| 进度推送 | **SSE** | WebSocket | 单向推送足够，实现简单 |
-| 数据库 | **SQLite**（SQLModel） | PostgreSQL | 任务、翻译缓存、术语表、API 配置 |
-| 文件存储 | 本地目录 `data/jobs/<id>/` | MinIO | 原文件、IR、背景页、导出物 |
-| PDF 读写 | **PyMuPDF** | pikepdf（底层修补） | 文字提取、去字、叠加合成、栅格化 |
-| 版面解析 | **MinerU 4.0**（独立服务，本地或 `--remote`） | Doc2X v3-2026 API；PaddleOCR-VL（扫描件） | 适配器模式，见 §4.2 |
-| 翻译 | **OpenAI 兼容客户端**（官方 `openai` SDK，自定义 base_url） | DeepL API、Google | 覆盖 DeepSeek、通义千问、GLM、Kimi、硅基流动、OpenRouter、Ollama、vLLM 等 |
-| 前端框架 | **React + Vite + TypeScript** | Vue 3 | 生态和 pdf.js 集成资料最多 |
-| PDF 渲染 | **pdfjs-dist**（直接用，不套 react-pdf） | — | 需要精确控制 viewport 和坐标换算 |
-| 公式渲染 | **KaTeX** | MathJax 3 | 快、同步渲染、输出可打印；MathJax 覆盖面更广作兜底 |
+| Web 框架 | **FastAPI** + Pydantic v2 | Litestar | IR 用 Pydantic 定义，可导出 JSON Schema 生成前端 TS 类型 |
+| 任务执行 | **SQLite 任务表 + 进程内 worker**（asyncio + ProcessPool） | Redis + arq | 自用规模不必上 Redis；接口抽象好，以后可替换 |
+| 进度推送 | **SSE** | WebSocket | 单向推送足够 |
+| 数据库 | **SQLite**（SQLModel） | PostgreSQL | 任务、翻译缓存、术语库、API 配置 |
+| 文件存储 | 本地目录 `data/jobs/<id>/` | — | 原文件、IR、背景页、导出物 |
+| PDF 读写 | **PyMuPDF** | pikepdf | 文字提取、去字、叠加合成、栅格化 |
+| 本地版面解析（CPU） | **MinerU basic + ONNX** | DocLayout-YOLO ONNX（只有块类型，更轻） | MinerU basic 约 0.8 GB 模型、最低 2 GB 内存、CPU 可跑；速度和公式/表格能力待 §8 S2 实测 |
+| 云端版面解析（可选） | **mineru.net API** | Doc2X v3-2026（按页付费） | 公式密集、扫描件推荐；**每次使用弹出上传提醒** |
+| 图像处理 | OpenCV（headless） | — | 扫描页文字擦除（inpaint）、颜色估计 |
+| 翻译 | **OpenAI 兼容客户端**（官方 `openai` SDK + 自定义 base_url） | DeepL API | 覆盖 DeepSeek、通义千问、GLM、Kimi、硅基流动、OpenRouter、Ollama 等 |
+| 术语匹配 | **pyahocorasick** + 简单词形归一 | — | 原文多模式匹配，见 §4.5 |
+| 前端框架 | **React + Vite + TypeScript** | Vue 3 | — |
+| PDF 渲染 | **pdfjs-dist**（直接用） | — | 需要精确控制 viewport 和坐标换算 |
+| 公式渲染 | **KaTeX** | MathJax 3 | 快、同步、可打印；MathJax 作兜底 |
 | 状态/请求 | Zustand + TanStack Query | — | — |
 | 样式 | Tailwind CSS | — | — |
-| PDF 导出 | **Playwright（Chromium）打印叠加层** + PyMuPDF 合成 | PyMuPDF `insert_htmlbox` | 见 §5.3 |
-| 字体 | Noto Sans/Serif CJK SC（思源） | 用户自定义 | 前端 @font-face 与导出共用同一字体 |
-| 部署 | **Docker Compose**：`web`（Caddy）+ `app`（API+worker）+ `mineru`（可选，GPU） | — | Caddy 顺带做 Basic Auth |
+| PDF 导出 | **Playwright（Chromium）打印叠加层** + PyMuPDF 合成 | PyMuPDF `insert_htmlbox` | 见 §5.4 |
+| 字体 | Noto Sans/Serif CJK SC | 用户自定义 | 前端 @font-face 与导出共用 |
+| 部署 | **Docker Compose**：`web`（Caddy）+ `app`（API+worker）+ `mineru`（可选，CPU） | — | 见 §6 |
 
 ---
 
@@ -89,13 +99,13 @@ flowchart LR
 
 ### 4.1 IR（中间表示）
 
-统一坐标：**PDF point，左上角原点**（与 PyMuPDF 一致）。MinerU/Doc2X 的坐标在适配器里换算（单位需验证，见 §8 S2/S3）。
+统一坐标：**PDF point，左上角原点**（与 PyMuPDF 一致）。各解析器坐标在适配器里换算（单位需验证，见 §8 S2/S3）。
 
 ```python
-class Span(BaseModel):          # 来自 PyMuPDF，原生文本才有
+class Span(BaseModel):          # 原生页来自 PyMuPDF；扫描页来自 OCR（样式为估算值）
     text: str
     bbox: Rect
-    font: str
+    font: str | None
     size: float
     color: int
     flags: int                  # 粗体/斜体/上下标
@@ -118,7 +128,7 @@ class Block(BaseModel):
     formulas: list[InlineFormula] = []
     latex: str | None = None    # 独立公式
     table_html: str | None = None
-    style: BlockStyle           # 主字体、主字号、颜色、对齐、行距（由 spans 统计）
+    style: BlockStyle           # 主字体、主字号、颜色、对齐、行距
     translatable: bool
 
 class Segment(BaseModel):       # 翻译单元，可跨栏/跨页合并多个 Block
@@ -126,61 +136,112 @@ class Segment(BaseModel):       # 翻译单元，可跨栏/跨页合并多个 Bl
     block_ids: list[str]
     source: str                 # 含占位符：'如 <m1/> 所示，<b>重要</b>'
     target: str | None
+    terms: list[str] = []       # 命中的术语 id
     status: Literal["pending", "done", "failed", "edited"]
 
+class Page(BaseModel):
+    index: int
+    width: float
+    height: float
+    rotation: int
+    kind: Literal["native", "scanned", "garbled"]   # 见 §4.2
+    blocks: list[Block]
+
 class Document(BaseModel):
-    pages: list[Page]           # 每页宽高、旋转、blocks
+    pages: list[Page]
     segments: list[Segment]
-    meta: DocMeta               # 标题、语言、解析器、版本
+    meta: DocMeta               # 标题、源语言、领域、解析器、是否用了云端
 ```
 
-IR 落盘为 `ir.json`，每个阶段只读写 IR，阶段之间可单独重跑（换翻译模型不必重新解析）。
+IR 落盘为 `ir.json`，每个阶段只读写 IR，可单独重跑（换翻译模型不必重新解析）。
 
-### 4.2 解析适配器
+### 4.2 逐页分类（通用输入的关键）
+
+同一份 PDF 里可能混有原生页、扫描页、乱码页，所以**按页**判断走哪条路：
+
+| 类型 | 判定（PyMuPDF，CPU 毫秒级） | 处理路径 |
+|---|---|---|
+| `native` 原生文本 | 有足量文字，且乱码字符比例低 | PyMuPDF 取字符 + 解析器给版面 → 融合 |
+| `scanned` 扫描 | 几乎没有文字，且整页被大图覆盖 | 栅格化 → 解析器 OCR + 版面 → 样式估算 |
+| `garbled` 提取乱码 | 有文字但大量 `U+FFFD`、私用区字符、无 ToUnicode 的 CID | **当作扫描页处理**（解决调研中的"CID 字体漏翻"问题） |
+
+用户也可以在界面上强制某页走 OCR。
+
+### 4.3 解析适配器
 
 ```python
 class LayoutParser(Protocol):
     name: str
-    async def parse(self, pdf: Path, pages: range | None) -> LayoutResult: ...
+    is_cloud: bool              # True 时前端必须展示上传提醒
+    async def parse(self, pdf: Path, pages: list[int], ocr_pages: list[int]) -> LayoutResult: ...
 ```
 
-| 适配器 | 何时用 | 备注 |
-|---|---|---|
-| `MinerULocal` | 默认；有 GPU 用 standard/advanced，无 GPU 用 basic + ONNX（CPU） | 以独立容器运行 `mineru server`，HTTP 调用，隔离重依赖 |
-| `MinerUCloud` | 本机算力不够或想快速验证 | 需 `MINERU_API_KEY`；文件会上传云端 |
-| `Doc2X` | 公式密集、要高质量 LaTeX | 按页付费 ¥0.01–0.02；v3-2026 返回带坐标的版面块；结果 24h 过期，立即取回 |
-| `DocLayoutYOLO`（可选） | 纯离线、只要块类型不要 LaTeX | BabelDOC/pdf2zh 同款，ONNX 体积小 |
+| 适配器 | 位置 | 何时用 | 备注 |
+|---|---|---|---|
+| `MinerULocalCPU` | 本地 | **默认** | `mineru server`（basic + ONNX）独立容器，HTTP 调用；含 OCR，扫描页也能处理，速度待实测 |
+| `DocLayoutYOLO` | 本地 | MinerU CPU 太慢时的轻量方案 | 只给块类型，没有 LaTeX/OCR；BabelDOC 同款模型 |
+| `MinerUCloud` | 云端 ⚠️ | 公式密集、扫描件、追求质量 | `MINERU_API_KEY`；用云端更强的模型拿 LaTeX 和表格 |
+| `Doc2X` | 云端 ⚠️ | 公式质量要求最高 | ¥0.01–0.02/页；v3-2026 返回带坐标的版面块；结果 24h 过期需立即取回 |
 
-**融合对齐**（`fusion.py`）：
+**融合对齐**（`fusion.py`，原生页）：
 
 1. PyMuPDF `page.get_text("rawdict")` 取字符/span。
 2. 版面块与 span 按 bbox 重叠率归属；未被任何块覆盖的 span 自成文本块（防漏翻）。
-3. 块类型、阅读顺序、LaTeX、表格 HTML 取自解析器；文字内容和样式以 PyMuPDF 为准（原生 PDF）。
-4. 行内公式：落在文本块内、被解析器标为公式的区域 → 生成 `InlineFormula` 和占位符。
-5. 扫描件（无文本层）：退化为纯解析器结果，样式用估算值（字号 ≈ 行高 × 系数）。
-6. 跨栏/跨页段落合并：上一块末尾无句末标点 + 下一块首字母小写/同字号 → 合并为同一 Segment。
+3. 块类型、阅读顺序、LaTeX、表格 HTML 取自解析器；文字和样式以 PyMuPDF 为准。
+4. 行内公式：文本块内被标为公式的区域 → `InlineFormula` + 占位符。
+5. 跨栏/跨页段落合并：上一块末尾无句末标点 + 下一块同字号、首字母小写 → 合并为同一 Segment。
 
-### 4.3 翻译
+**扫描页**：文字和行框来自 OCR；字号 ≈ 行高 × 系数；颜色取行内深色像素中位数；字体统一映射为衬线/无衬线。
+
+### 4.4 翻译
 
 ```python
 class Translator(Protocol):
     async def translate(self, batch: list[Segment], ctx: TranslateContext) -> list[str]: ...
 ```
 
-- **OpenAI 兼容为主**：配置项只有 `base_url`、`api_key`、`model`、`max_concurrency`、`rpm`，能覆盖绝大多数国内外 LLM 和本地 Ollama/vLLM。
-- **批量 + 上下文**：每次请求打包多个相邻 Segment（按 token 预算），要求 JSON 返回 `{id: 译文}`；系统提示词带文档标题、摘要、术语表。
-- **占位符用 XML 风格**（`<m1/>`、`<b>…</b>`），比 `{v1}` 更不易被 LLM 改坏；返回后校验占位符集合一致，不一致单条重试，仍失败则标 `failed` 并保留原文。
-- **术语表**：用户导入 CSV + 首轮自动抽取（让 LLM 从摘要/高频名词中提取，用户可审阅）。
-- **缓存**：`sha256(source + model + prompt_version + glossary_hash)` → 译文，存 SQLite；重开同一文档、换渲染方式都不重复花钱。
-- **限流与重试**：信号量控并发，令牌桶控 RPM，指数退避；记录每个任务的 token 用量。
-- **API Key 存储**：放 `.env` 或 SQLite（本机加密），前端只显示掩码。
+- **方向固定为 → 简体中文**。源语言自动识别（LLM 顺带判断即可，无需单独模型），记录在 `DocMeta`；英文以外的源语言暂不提供术语库。
+- **OpenAI 兼容为主**：配置 `base_url`、`api_key`、`model`、`max_concurrency`、`rpm`。
+- **批量 + 上下文**：每次请求打包相邻多个 Segment（按 token 预算），要求 JSON 返回 `{id: 译文}`；系统提示词带标题、摘要、领域和**本批命中的术语**。
+- **中文输出规范**：学术书面语；中文标点；中英文之间加空格（可选）；数字、单位、引用编号原样保留。
+- **占位符用 XML 风格**（`<m1/>`、`<b>…</b>`），返回后校验占位符集合一致，不一致单条重试，仍失败标 `failed` 保留原文。
+- **缓存**：`sha256(source + model + prompt_version + glossary_hash)` → 译文。
+- **限流与重试**：信号量控并发，令牌桶控 RPM，指数退避；记录 token 用量。
+- **API Key**：`.env` 或 SQLite（本机加密），前端只显示掩码；不入 Git。
 
-### 4.4 去字背景页
+### 4.5 术语系统（论文场景）
 
-对每页所有 `translatable` 块：
+参考 BabelDOC（文档自动抽取 + CSV 术语表）、GIST（领域术语库 + 提示词注入）、Kim et al.（trie 匹配后只注入命中项），设计为**五层来源，优先级从高到低**：
+
+| 优先级 | 来源 | 说明 |
+|---|---|---|
+| 1 | **文档内锁定** | 用户在本篇里手动改过的译法，只对本篇生效 |
+| 2 | **用户术语表** | 界面维护或 CSV 导入，兼容 BabelDOC 格式 `source,target,tgt_lng` |
+| 3 | **文档自动抽取** | 翻译前让 LLM 读标题、摘要、章节标题和高频名词短语，产出候选术语 + 译法；候选先查第 4、5 层，库里有就用库里的。可选"翻译前确认术语"步骤 |
+| 4 | **领域词库包** | 提供下载脚本，统一转成内部格式；首批：**GIST AI 术语 6426 条**（Apache-2.0）、**机器之心 AI 术语库约 2442 条**（CC BY-NC-SA，只在本地下载，**不提交到公开仓库**）；按领域启用 |
+| 5 | **Wikidata 在线兜底** | 第 3 层抽到、但 4 层没有的术语，用英文标签查中文标签（CC0）；结果缓存并标记"待确认" |
+
+此外维护**不译清单**：模型名、数据集名、算法缩写（如 BERT、ImageNet、ResNet），由抽取阶段分类 + 正则（全大写缩写、驼峰词）识别，保持原文。可选"**首次出现写作 中文（English）**，之后只写中文"，符合中文学术写作习惯。
+
+**匹配与注入**
+
+- 原文先做小写和简单词形归一（复数、-ing/-ed 等规则），再用 Aho-Corasick 多模式匹配，最长匹配优先。
+- 每个翻译批次只注入命中的术语（通常几条到几十条），不把整个词库塞进提示词。
+- 领域自动判断：LLM 读标题摘要给出领域（或用 arXiv 分类号），决定启用哪些词库包。
+
+**译后校验**
+
+- 检查命中术语的指定译法是否出现在译文中；不一致的段落标黄，可一键按术语重翻。
+- 术语面板：列出全文术语和实际译法分布；修改一个术语 → 批量重翻包含它的段落（走缓存外的新请求）。
+
+**存储**：SQLite 表 `glossary_entries(source, source_norm, target, domain, origin, priority, note)`，第三方词库文件放 `glossaries/vendor/`（已在 `.gitignore`）。
+
+### 4.6 去字背景页
+
+**原生页**：对 `translatable` 块做 redaction，只删文字、不动图片和矢量图：
 
 ```python
-page.add_redact_annot(block.bbox)          # 只框文字块
+page.add_redact_annot(block.bbox)
 page.apply_redactions(
     images=fitz.PDF_REDACT_IMAGE_NONE,     # 不动图片
     graphics=fitz.PDF_REDACT_LINE_ART_NONE,# 不动矢量线条（表格线、图表）
@@ -188,21 +249,24 @@ page.apply_redactions(
 )
 ```
 
-输出 `background.pdf`：保留图片、矢量图、独立公式（公式块不删，原样保留最忠实），只抹掉要翻译的文字。注意按字符 bbox 判定，块框需略收缩，避免误删相邻公式字符。
+独立公式块不删，原样保留。按字符 bbox 判定删除，块框需略收缩，避免误删相邻公式字符。
 
-### 4.5 API 概要
+**扫描页 / 乱码页**：页面本身就是图片，redaction 不适用。改为：栅格化（约 200 DPI）→ 对 OCR 文字框做擦除（背景均匀时用框边缘的中位色填充，不均匀时用 OpenCV `inpaint`）→ 作为该页背景图。
+
+### 4.7 API 概要
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| POST | `/api/jobs` | 上传 PDF + 选项（解析器、翻译服务、语言、页码范围） |
-| GET | `/api/jobs/{id}/events` | SSE 进度（解析 → 融合 → 翻译 n/m → 背景页） |
+| POST | `/api/jobs` | 上传 PDF + 选项（解析器、翻译服务、页码范围、领域）；云端解析器需带 `cloud_consent=true` |
+| GET | `/api/jobs/{id}/events` | SSE 进度（分类 → 解析 → 融合 → 术语 → 翻译 n/m → 背景页） |
 | GET | `/api/jobs/{id}/ir` | 获取 IR（可按页分片） |
 | GET | `/api/jobs/{id}/files/{name}` | 原文、背景页、导出物 |
+| GET/PUT | `/api/jobs/{id}/terms` | 本篇术语（确认、修改、锁定） |
 | PATCH | `/api/segments/{id}` | 手动修改译文 |
-| POST | `/api/segments/{id}/retranslate` | 单段重翻（可换模型/提示词） |
+| POST | `/api/segments/{id}/retranslate` | 单段重翻 |
 | POST | `/api/jobs/{id}/export` | 导出纯译文 / 双语 PDF |
-| GET/PUT | `/api/settings/providers` | 管理外部 API 配置 |
-| GET/PUT | `/api/glossaries` | 术语表 |
+| GET/PUT | `/api/settings/providers` | 外部 API 配置 |
+| GET/PUT | `/api/glossaries` | 用户术语表、词库包启用状态 |
 
 ---
 
@@ -211,58 +275,51 @@ page.apply_redactions(
 ### 5.1 页面结构
 
 ```
-┌──────────── 工具栏：缩放 / 双栏·单栏·只看译文 / 导出 / 设置 ────────────┐
-│  原文（pdf.js 渲染 original.pdf）  │  译文（叠加渲染）                   │
-│                                  │  ┌ Layer 0：pdf.js 渲染 background.pdf
-│   悬停段落 ↔ 右侧对应段落高亮       │  └ Layer 1：绝对定位的译文 HTML 块
-│   同步滚动                        │     点击 → 显示原文 / 编辑 / 重翻     │
-└──────────────────────────────────┴──────────────────────────────────────┘
+┌──────────── 工具栏：缩放 / 双栏·单栏·只看译文 / 术语 / 导出 / 设置 ────────────┐
+│  原文（pdf.js 渲染 original.pdf）  │  译文（叠加渲染）                         │
+│                                  │  ┌ Layer 0：背景页（pdf.js 或背景图）        │
+│   悬停段落 ↔ 右侧对应段落高亮       │  └ Layer 1：绝对定位的译文 HTML 块         │
+│   同步滚动                        │     点击 → 原文 / 编辑 / 重翻 / 术语        │
+└──────────────────────────────────┴──────────────────────────────────────────┘
 ```
 
-- 两侧都用 pdf.js 渲染，背景页是矢量 PDF，任意缩放都清晰。
 - 只渲染可视区附近的页（虚拟列表），大文档不卡。
-- 坐标换算：`css_px = pt × viewport.scale`，Layer 1 用一个 `transform: scale()` 容器整体缩放，块内部始终按 pt 排版，保证网页和导出一致。
+- 坐标换算：`css_px = pt × viewport.scale`；Layer 1 整体 `transform: scale()`，块内始终按 pt 排版，保证网页与导出一致。
+
+**上传页的云端提醒（R10）**：选择 MinerU 云端或 Doc2X 时，弹出提示："本文件将上传至 ××（第三方服务）进行解析，请勿上传涉密或未公开文档"，需勾选确认后才能提交；任务详情里显示本次是否使用了云端服务。默认选中本地解析器。
 
 ### 5.2 公式与图表的渲染策略（R3）
 
 | 元素 | 默认策略 | 备选 / 兜底 |
 |---|---|---|
-| **独立公式** | 不翻译，**保留原矢量**（背景页里本来就在） | 扫描件或原公式是低清图片时，用 LaTeX + KaTeX 重新渲染替换 |
-| **行内公式** | 译文中的 `<m1/>` 替换为 **KaTeX 渲染的 LaTeX** | 无 LaTeX 或 KaTeX 报错 → 用原公式区域裁剪图（PyMuPDF 按 clip 高倍率栅格化）作为行内图片 |
-| **表格（原生文本）** | 保留表格线（背景页），按单元格把译文叠回原位置 | 单元格放不下 → 该表整体改用解析器的 `table_html` 重新渲染为 HTML 表格 |
-| **表格（扫描件）** | 用 `table_html` 翻译单元格后整体重新渲染 | — |
-| **图片里的矢量文字**（坐标轴、图例） | 图区域内 PyMuPDF 能取到的 span 单独翻译，小字号叠加 | 可按文档开关关闭 |
-| **图片里的栅格文字** | 后期：OCR 后叠加 | 当前不做 |
+| **独立公式** | 不翻译，**保留原矢量** | 扫描件或原公式是低清图片时，用 LaTeX + KaTeX 重新渲染 |
+| **行内公式** | `<m1/>` 替换为 **KaTeX 渲染的 LaTeX** | 无 LaTeX 或渲染失败 → 原公式区域裁剪图 |
+| **表格（原生）** | 保留表格线，按单元格把译文叠回原位置 | 单元格放不下 → 用 `table_html` 整表重新渲染 |
+| **表格（扫描）** | 用 `table_html` 翻译单元格后整表重新渲染 | — |
+| **图内矢量文字**（坐标轴、图例） | 图区域内 PyMuPDF 能取到的 span 单独翻译，小字号叠加 | 可按文档关闭 |
+| **图内栅格文字** | 后期：OCR 后叠加 | 当前不做 |
 | **图注 / 表注** | 当普通文本块翻译 | — |
 
-### 5.3 排版拟合（最容易出问题的环节）
+### 5.3 排版拟合
 
-每个译文块的目标是"放进原 bbox，且字号尽量接近原文"：
+英译中通常变短，主要风险在其他语言和长术语；目标是"放进原 bbox，字号尽量接近原文"：
 
-1. 初始字号 = 原文主字号，字体按原文衬线/无衬线映射到 Noto Serif/Sans CJK，粗体斜体沿用。
-2. 先调行距（1.0–1.3 区间），再二分查找字号（下限 = 原字号 × 0.7），用离屏 DOM 测量实际高度。
-3. 仍放不下 → **向下方空白扩展**：查同栏下方到下一个块之间的空隙，允许 bbox 下延（BabelDOC 的待做特性 "multi-available space typesetting"）。
-4. 还放不下 → 触底字号 + 显示溢出标记，用户可点开看全文或手动编辑。
-5. 拟合结果（字号、行距、扩展后 bbox）回写 IR，导出时直接复用，**不在导出端重新计算**，保证所见即所得。
+1. 初始字号 = 原文主字号，衬线/无衬线映射到 Noto Serif/Sans CJK，粗体斜体沿用。
+2. 先调行距（1.0–1.3），再二分查找字号（下限 = 原字号 × 0.7），离屏 DOM 测量高度。
+3. 仍放不下 → **向下方空白扩展**（同栏下方到下一块之间的空隙）。
+4. 还放不下 → 触底字号 + 溢出标记，用户可展开或编辑。
+5. 拟合结果写回 IR，导出时直接复用，保证所见即所得。
 
 ### 5.4 导出 PDF
 
 **主方案：Chromium 打印叠加层 + PyMuPDF 合成**
 
-1. 后端起 Playwright，打开一个专用的导出页面，只渲染 Layer 1（透明背景、每页尺寸 = 原页 pt 尺寸、使用 IR 中的拟合结果）。
-2. `page.pdf()` 输出 `overlay.pdf`（文字为矢量，Chromium 自动嵌入字体子集，KaTeX 公式也是矢量文字）。
-3. PyMuPDF 逐页：`background_page.show_pdf_page(rect, overlay, i)` 把叠加层盖到去字背景页上 → **纯译文 PDF**，全程矢量。
-4. 双语对照：新建双倍宽页面，左边 `show_pdf_page(original)`，右边贴纯译文页；或原文页、译文页交替。
+1. Playwright 打开专用导出页，只渲染 Layer 1（透明背景、每页尺寸 = 原页 pt 尺寸、使用 IR 中的拟合结果）。
+2. `page.pdf()` 输出 `overlay.pdf`（矢量文字，自动嵌入字体子集，KaTeX 公式也是矢量）。
+3. PyMuPDF 逐页把叠加层 `show_pdf_page` 到背景页上 → **纯译文 PDF**。
+4. 双语对照：双倍宽页面左原文右译文，或原文页、译文页交替。
 
-优点：网页和导出共用同一套 HTML 渲染，所见即所得；公式、表格、复杂样式都能导出。
-
-**备选方案：PyMuPDF `insert_htmlbox`**
-
-不依赖浏览器，直接把译文 HTML 排进背景页 bbox（`scale_low` 控制缩放下限，`Archive` 加载 CJK 字体）。缺点是不支持 KaTeX，行内公式只能用裁剪图；排版结果和网页可能不一致。适合作为无头浏览器不可用时的兜底。
-
-**备选引擎：BabelDOC**
-
-导出选项里加"BabelDOC 引擎"，直接调用 pdf2zh-next / BabelDOC 生成 PDF，用于效果对比和兜底。
+**备选**：PyMuPDF `insert_htmlbox` 直接排版（不支持 KaTeX，行内公式用裁剪图）；BabelDOC 引擎直接出 PDF（对比和兜底）。
 
 ---
 
@@ -272,14 +329,15 @@ page.apply_redactions(
 # docker-compose.yml（示意）
 services:
   web:      # Caddy：静态前端 + 反向代理 + Basic Auth
-  app:      # FastAPI + worker + Playwright Chromium + 字体
+  app:      # FastAPI + worker + Playwright Chromium + OpenCV + 字体
     volumes: ["./data:/data"]
-  mineru:   # 可选：mineru server；无 GPU 用 basic + ONNX；有 GPU 加 deploy.resources
+  mineru:   # 可选：mineru server（basic + ONNX，纯 CPU）
 ```
 
-- 自用场景通过 Caddy Basic Auth 或只在内网/Tailscale 访问即可，不做账号系统。
-- 模型下载走国内镜像（`HF_ENDPOINT=https://hf-mirror.com` 或 ModelScope），构建时预拉，避免调研中最常见的"模型下载失败"。
-- 字体打进镜像，不在运行时下载（同样是常见坑）。
+- **无 GPU**：所有本地推理走 CPU。建议机器 ≥4 核、≥8 GB 内存（MinerU basic 最低 2 GB，加上 Chromium 和 worker）。
+- 只在内网/Tailscale 访问，或用 Caddy Basic Auth，不做账号系统。
+- 模型在构建镜像时预拉，走国内镜像（`HF_ENDPOINT=https://hf-mirror.com` 或 ModelScope）；字体打进镜像，避免调研中最常见的下载失败问题。
+- 第三方词库在首次启动时由脚本下载到 `data/` 或 `glossaries/vendor/`，不进镜像也不进仓库。
 
 ---
 
@@ -287,37 +345,48 @@ services:
 
 | 阶段 | 内容 | 验收标准 |
 |---|---|---|
-| **P0 验证**（§8） | 跑通 6 个验证实验，选定解析器组合与导出方案 | 每个实验有结论写进文档 |
-| **P1 MVP** | 上传 → PyMuPDF + MinerU → IR → OpenAI 兼容翻译 → 网页双栏对照；独立公式保留原样，行内公式用裁剪图 | 5 篇英文论文能完整翻译，无漏页，正文版式不乱 |
-| **P2 可用** | KaTeX 行内公式、排版拟合与向下扩展、术语表、翻译缓存、单段编辑/重翻、导出纯译文和双语 PDF | 导出 PDF 与网页视觉一致；同一文档二次打开不再调用 LLM |
-| **P3 增强** | 表格单元格翻译、图内矢量文字、Doc2X 适配器、跨页段落合并、DeepL 适配器 | 含表格的技术文档可用 |
-| **P4 扩展** | 扫描件（MinerU OCR / PaddleOCR-VL）、BabelDOC 备选引擎、中译英方向优化、书签目录保留 | 白底扫描件可用 |
+| **P0 验证**（§8） | 跑通验证实验，选定本地解析器、导出方案 | 每个实验有结论写进文档 |
+| **P1 MVP** | 原生 PDF：PyMuPDF + 本地 MinerU（CPU）/ 云端 MinerU（带提醒）→ IR → OpenAI 兼容翻译 → 网页双栏对照；GIST 词库 + 文档术语抽取；独立公式保留原样，行内公式用裁剪图 | 5 篇英文论文完整翻译，无漏页，正文版式不乱，核心术语前后一致 |
+| **P2 可用** | KaTeX 行内公式、排版拟合与向下扩展、用户术语表与术语面板、翻译缓存、单段编辑/重翻、导出纯译文和双语 PDF | 导出 PDF 与网页视觉一致；同一文档二次打开不再调用 LLM |
+| **P3 通用** | 逐页分类、扫描页/乱码页 OCR 路径与背景擦除、表格单元格翻译、图内矢量文字、跨页段落合并 | 白底扫描论文和混合文档可用 |
+| **P4 扩展** | Doc2X 适配器、DeepL 适配器、Wikidata 兜底、BabelDOC 备选引擎、更多领域词库包、书签目录保留 | — |
 
 ---
 
-## 8. 待做的验证实验（P0）
+## 8. 验证实验（P0）
 
-样本：自选 8–10 个公开 PDF，覆盖单栏/双栏论文、公式密集、表格多、图表多、技术手册、扫描件各至少 1 个。
+样本：自选 8–10 个公开 PDF，覆盖单栏/双栏论文、公式密集、表格多、图表多、扫描件、非英文（如日文/德文）论文各至少 1 个。
 
 | # | 实验 | 要回答的问题 |
 |---|---|---|
-| S1 | 用 pdf2zh-next / BabelDOC 跑全部样本 | 现成方案做到什么程度？作为后续对比基线 |
-| S2 | MinerU 4.0 本地（basic/standard）+ 云端跑同样样本 | **bbox 单位与坐标系**、块类型枚举、公式 LaTeX 和表格 HTML 字段名、CPU 耗时 |
-| S3 | Doc2X v3-2026 API 跑 3 个公式密集样本 | 返回 JSON 的坐标格式；LaTeX 质量是否明显优于 MinerU |
-| S4 | MinerU 块 ↔ PyMuPDF span 对齐 | 对齐准确率；漏归属 span 的比例 |
-| S5 | PyMuPDF redaction 只删文字 | 是否误删公式字符、表格线；CID 字体页是否能处理 |
-| S6 | Chromium 打印透明叠加层 + `show_pdf_page` 合成 | 输出是否全矢量、字体是否嵌入、坐标是否与网页一致、文件大小 |
+| S1 | pdf2zh-next / BabelDOC（CPU）跑全部样本 | 现成方案做到什么程度？作为对比基线 |
+| S2 | MinerU basic + ONNX（CPU）与 mineru.net API 跑同样样本 | **CPU 每页耗时**；basic 是否有公式 LaTeX / 表格结构 / OCR；**bbox 单位与坐标系**；块类型枚举与字段名；云端相比好多少 |
+| S3 | Doc2X v3-2026 跑 3 个公式密集样本 | 坐标格式；LaTeX 质量是否明显优于 MinerU 云端，值不值得付费 |
+| S4 | 解析器块 ↔ PyMuPDF span 对齐 | 对齐准确率；漏归属 span 比例 |
+| S5 | PyMuPDF redaction 只删文字；扫描页擦除 | 是否误删公式字符、表格线；擦除后背景是否干净 |
+| S6 | Chromium 打印透明叠加层 + `show_pdf_page` 合成 | 是否全矢量、字体嵌入、坐标与网页一致、文件大小 |
+| S7 | 3 篇 AI 论文：有/无术语系统各翻一次 | 核心术语一致率；GIST 命中率；注入后提示词长度与成本 |
 
 ---
 
-## 9. 待确认问题
+## 9. 已确认事项与待定问题
 
-1. **硬件**：部署机器有没有 NVIDIA GPU、显存多大？决定 MinerU 用 basic（CPU）还是 standard/advanced（VLM）。
-2. **文档类型**：主要是学术论文，还是技术手册、专利、扫描件？扫描件占比多少？
-3. **语言方向**：只要英译中，还是也要中译英、日译中？（中译英的溢出问题更严重）
-4. **使用人数**：只有自己，还是团队几个人共用？决定是否需要简单的账号隔离。
-5. **云端解析可接受吗**：是否允许把文档上传到 mineru.net / Doc2X？涉密文档需强制走本地。
-6. **代码仓库**：是否像 web-monitor 一样建 Git 仓库并推送到远端？
+**已确认（2026-10-28）**
+
+| 问题 | 结论 |
+|---|---|
+| GPU | 没有。本地只跑 CPU，MinerU 云端 API 作为可选项 |
+| 文档类型 | 以学术论文为主 → 引入论文术语系统（§4.5） |
+| 扫描件 | 不确定占比 → 设计成通用：逐页分类，扫描页和乱码页走 OCR（§4.2） |
+| 翻译方向 | 其他语言 → 简体中文，英文为主 |
+| 云端解析 | 可以用，但每次都要提醒用户（§5.1） |
+| 代码仓库 | 公开仓库 [weandy/doc-translator](https://github.com/weandy/doc-translator) |
+
+**待定**
+
+1. **开源许可证**：仓库已公开但还没有 LICENSE。代码会链接 PyMuPDF（AGPL-3.0），建议直接用 **AGPL-3.0**。
+2. **部署机器配置**：CPU 核数和内存，决定本地 MinerU 是否够快（S2 后再定）。
+3. **Doc2X 是否接入**：付费服务，S3 结果出来再决定。
 
 ---
 
@@ -325,10 +394,12 @@ services:
 
 | 风险 | 影响 | 缓解 |
 |---|---|---|
-| MinerU 4.0 输出 schema 文档不全、版本变化快 | 适配器反复改 | 适配器内部做 schema 版本判断；锁定 MinerU 版本；S2 先摸清 |
-| 行内公式与译文混排位置不准 | 公式错位、重叠 | 优先 KaTeX 重新渲染（随文字流动），而不是按原坐标贴 |
-| 中译英 / 中日混排溢出 | 字号过小 | 向下扩展空白 + 字号下限 + 溢出标记 + 手动编辑 |
-| CID 字体无法提取文字 | 漏翻 | 检测到乱码/空文本时该页走 OCR 路径 |
+| MinerU CPU 推理太慢 | 本地解析一篇论文要很久 | S2 实测；慢则改用 DocLayout-YOLO + PyMuPDF（原生页够用），公式/扫描页交给云端 |
+| MinerU 4.0 输出 schema 文档不全、变化快 | 适配器反复改 | 适配器内判断 schema 版本；锁定版本；S2 先摸清 |
+| 行内公式混排位置不准 | 公式错位、重叠 | 优先 KaTeX 随文字流动渲染，不按原坐标硬贴 |
+| 扫描页样式估算不准 | 译文字号、颜色与原文有偏差 | 统一样式 + 允许手动调整；扫描件本来就不追求像素级还原 |
+| 术语库译法不适合上下文 | 错译被强制统一 | 术语只作为"推荐译法"注入；术语面板可改；文档内锁定优先级最高 |
+| 第三方词库许可 | 公开仓库误含 NC 数据 | 只提供下载脚本；`glossaries/vendor/` 已加入 `.gitignore` |
 | LLM 改坏占位符或漏翻 | 公式丢失 | 占位符校验 + 单条重试 + 失败保留原文 |
-| 云端 API 隐私 | 文档外泄 | 每次任务显式选择解析器；默认本地 |
-| 许可 | 自用无影响；若将来对外提供服务，PyMuPDF/BabelDOC 的 AGPL 要求公开源码，MinerU 要求署名 | 文档中记录，开放前重新评估 |
+| 云端 API 隐私 | 文档外泄 | 默认本地；云端每次确认；任务记录使用了哪个服务 |
+| 许可 | 若将来对外提供服务，AGPL 要求公开源码，MinerU 要求署名 | 仓库本身公开，基本满足；对外开放服务前重新评估 |
