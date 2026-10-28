@@ -22,3 +22,6 @@ glossaries/vendor/
 .idea/
 .vscode/
 .DS_Store
+
+# 回归测试样本（arXiv 论文与 MinerU 解析结果，由 backend/scripts/fetch_samples.py 生成）
+backend/.samples/

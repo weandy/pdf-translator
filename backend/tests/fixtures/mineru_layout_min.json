@@ -1,0 +1,48 @@
+{
+  "_backend": "hybrid",
+  "_version_name": "3.4.4",
+  "pdf_info": [
+    {
+      "page_idx": 0,
+      "page_size": [600, 800],
+      "para_blocks": [
+        {"type": "title", "index": 0, "level": 1, "bbox": [50, 40, 550, 60],
+         "lines": [{"bbox": [50, 40, 550, 60], "spans": [{"type": "text", "bbox": [50, 40, 550, 60], "content": "A Synthetic Title"}]}]},
+        {"type": "text", "index": 1, "bbox": [50, 600, 290, 700], "merge_prev": false,
+         "lines": [
+           {"bbox": [50, 600, 290, 612], "spans": [
+             {"type": "text", "bbox": [50, 600, 120, 612], "content": "Let"},
+             {"type": "inline_equation", "bbox": [122, 600, 150, 612], "content": "f(x)"},
+             {"type": "text", "bbox": [152, 600, 290, 612], "content": "be a function that"}]},
+           {"bbox": [310, 100, 550, 112], "spans": [{"type": "text", "bbox": [310, 100, 550, 112], "content": "continues in the next column"}]},
+           {"bbox": [50, 60, 290, 72], "spans": [{"type": "text", "bbox": [50, 60, 290, 72], "content": "and ends on the next page."}]}
+         ]},
+        {"type": "text", "index": 2, "bbox": [310, 95, 550, 115], "lines_deleted": true, "lines": []},
+        {"type": "interline_equation", "index": 3, "bbox": [200, 300, 400, 330],
+         "lines": [{"bbox": [200, 300, 400, 330], "spans": [{"type": "interline_equation", "bbox": [200, 300, 400, 330], "content": "E = mc^2"}]}]},
+        {"type": "image", "index": 4, "bbox": [50, 400, 290, 560], "blocks": [
+          {"type": "image_body", "index": 4, "bbox": [50, 400, 290, 540], "lines": []},
+          {"type": "image_caption", "index": 5, "bbox": [50, 545, 290, 560],
+           "lines": [{"bbox": [50, 545, 290, 560], "spans": [{"type": "text", "bbox": [50, 545, 290, 560], "content": "Figure 1: A caption."}]}]}
+        ]},
+        {"type": "ref_text", "index": 6, "bbox": [310, 700, 550, 720],
+         "lines": [{"bbox": [310, 700, 550, 720], "spans": [{"type": "text", "bbox": [310, 700, 550, 720], "content": "[1] Some reference."}]}]}
+      ],
+      "discarded_blocks": [
+        {"type": "header", "bbox": [50, 10, 300, 20], "lines": [{"bbox": [50, 10, 300, 20], "spans": [{"type": "text", "bbox": [50, 10, 300, 20], "content": "Running header"}]}]},
+        {"type": "page_number", "bbox": [290, 780, 310, 790], "lines": [{"bbox": [290, 780, 310, 790], "spans": [{"type": "text", "bbox": [290, 780, 310, 790], "content": "1"}]}]},
+        {"type": "page_footnote", "bbox": [50, 740, 290, 760], "lines": [{"bbox": [50, 740, 290, 760], "spans": [{"type": "text", "bbox": [50, 740, 290, 760], "content": "1 A footnote."}]}]}
+      ]
+    },
+    {
+      "page_idx": 1,
+      "page_size": [600, 800],
+      "para_blocks": [
+        {"type": "text", "index": 0, "bbox": [50, 55, 290, 75], "lines_deleted": true, "lines": []},
+        {"type": "text", "index": 1, "bbox": [50, 100, 290, 112],
+         "lines": [{"bbox": [50, 100, 290, 112], "spans": [{"type": "text", "bbox": [50, 100, 290, 112], "content": "A normal paragraph."}]}]}
+      ],
+      "discarded_blocks": []
+    }
+  ]
+}

@@ -10,7 +10,12 @@ dependencies = [
     "pydantic>=2.8",
     "pydantic-settings>=2.4",
     "sqlmodel>=0.0.22",
+    "pymupdf>=1.26",
+    "httpx>=0.28",
 ]
+
+[project.scripts]
+pdftr-dev = "pdftr.cli:main"
 
 [dependency-groups]
 dev = [

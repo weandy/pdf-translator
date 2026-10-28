@@ -37,7 +37,12 @@ TRANSLATABLE_TYPES = frozenset({BlockType.TEXT, BlockType.TITLE, BlockType.CAPTI
 
 
 class Span(BaseModel):
-    text: str
+    """块内按阅读顺序排列的片段：文字，或行内公式的位置（内容见 Block.formulas）。"""
+
+    kind: Literal["text", "formula"] = "text"
+    text: str = ""  # kind=formula 时为空
+    formula: str | None = None  # kind=formula 时为公式 key，如 "m1"
+    line: int = 0  # 块内行号，用于拼接时判断换行与断词
     bbox: Rect
     font: str | None = None
     size: float
@@ -69,10 +74,12 @@ class Block(BaseModel):
     spans: list[Span] = Field(default_factory=list)
     formulas: list[InlineFormula] = Field(default_factory=list)
     latex: str | None = None  # 独立公式的 LaTeX
-    continues_on: str | None = None  # 跨页段落：续行所在下一页空块的 id
-    split_ratio: float | None = None  # 本页部分占原文行数的比例
+    # 跨栏/跨页段落：本块接在哪个块后面（同一段落的前一部分）。
+    # 段落切分时沿这条链合并成一个翻译单元，渲染时按各块原文长度拆分译文。
+    continues_from: str | None = None
     style: BlockStyle
     translatable: bool
+    orphan: bool = False  # 解析器漏掉、由未归属字符补出来的块
 
 
 class Page(BaseModel):
@@ -98,6 +105,9 @@ class Document(BaseModel):
     pages: list[Page]
     meta: DocMeta = Field(default_factory=DocMeta)
 
+    def blocks(self) -> list[Block]:
+        return [b for page in self.pages for b in page.blocks]
+
     def block(self, block_id: str) -> Block | None:
         for page in self.pages:
             for b in page.blocks:
@@ -121,7 +131,7 @@ class Segment(BaseModel):
 
     id: str
     job_id: str
-    block_ids: list[str]
+    block_ids: list[str]  # 跨栏/跨页时按 continues_from 链的顺序排列
     source: str  # 含 <mN/> 占位符
     formulas: dict[str, str] = Field(default_factory=dict)  # 占位符 key → LaTeX
     section: str = ""  # 所在章节，作为批次上下文

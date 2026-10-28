@@ -64,7 +64,7 @@ api  →  pipeline  →  { parsing, extraction, fusion, translation, glossary, r
                 ↘  storage（经端口）
 ```
 
-- **domain** 只有数据结构和纯函数，不依赖任何其他模块、不做 IO。
+- **domain** 只有数据结构和纯函数，不依赖任何其他模块、不做 IO。能力模块之间传递的中间结构（版面结果 `layout.py`、字符数据 `chars.py`）也放在 domain，否则产出方和消费方就得互相导入（M2 调整）。
 - 六个能力模块**互不导入**：它们之间的数据只经 domain 的 IR 传递，由 pipeline 串起来。
 - 能力模块对外部服务（MinerU、LLM、文件、数据库）只依赖自己声明的**端口（Protocol）**；具体实现（适配器）在启动时由 `container.py` 注入。
 - api 只做“HTTP ↔ 用例”转换，不含业务逻辑。
@@ -107,6 +107,9 @@ backend/
     domain/                       # 纯数据结构与纯函数
       geometry.py                 #   Rect、坐标换算（0–1000 归一化 ↔ pt）
       ir.py                       #   Document / Page / Block / Span / InlineFormula / Segment
+      layout.py                   #   LayoutResult：解析器统一输出（parsing 产出、fusion 消费）
+      chars.py                    #   CharPage：PyMuPDF 字符（extraction 产出、fusion 消费）
+      text.py                     #   文字纯函数（坏字符判断等）
       ids.py                      #   稳定 ID 生成
     parsing/                      # 版面解析
       port.py                     #   LayoutParser 协议、LayoutResult
@@ -116,10 +119,11 @@ backend/
       chars.py                    #   rawdict 字符/样式提取
       classify.py                 #   逐页分类 native / scanned / garbled
     fusion/                       # 融合为 IR
+      relocate.py                 #   续行归位：把并进前一块的跨栏/跨页续行搬回占位块，建立 continues_from 链
       align.py                    #   字符归属到块（中心点 + 容差，S4 验证 99.8%）
-      cross_page.py               #   跨页段落拆分信息（续行属于下一页空块）
-      text_fix.py                 #   以 PyMuPDF 文字纠正 MinerU 文本（如 “≲ 1” 被识别为 “b1”）
+      text_fix.py                 #   只修“确定坏了”的解析器文字（控制字符、替换符、私用区）
       style.py                    #   块主字号/字体/粗体统计
+      build.py                    #   融合入口 fuse()：生成 Document 与 FusionReport
     glossary/                     # 术语
       port.py                     #   TermSource 协议
       extract.py                  #   LLM 抽取（TERMS_V3：领域 + 术语）
@@ -165,8 +169,11 @@ backend/
 在 [01-tech-stack §4.1](01-tech-stack.md#41-ir中间表示) 的基础上，按实验结论补充字段。坐标统一为 **PDF point、左上角原点**。
 
 ```python
-class Span(BaseModel):
-    text: str
+class Span(BaseModel):            # 块内按阅读顺序排列的片段
+    kind: Literal["text", "formula"]
+    text: str                      # kind=formula 时为空
+    formula: str | None            # kind=formula 时为公式 key，如 "m1"
+    line: int                      # 块内行号，拼接时判断换行与断词
     bbox: Rect
     font: str | None
     size: float
@@ -188,15 +195,15 @@ class Block(BaseModel):
     spans: list[Span] = []
     formulas: list[InlineFormula] = []
     latex: str | None = None       # 独立公式
-    continues_on: str | None = None  # 跨页段落：续行所在下一页空块的 id（S4）
-    split_ratio: float | None = None # 本页部分占原文行数的比例
+    continues_from: str | None = None  # 跨栏/跨页段落：本块接在哪个块后面（M2：续行已搬回各自位置）
     style: BlockStyle
     translatable: bool
+    orphan: bool = False           # 解析器漏掉、由未归属字符补出的块
 
 class Segment(BaseModel):
     id: str
     job_id: str
-    block_ids: list[str]           # 跨页时为 [本页块, 下一页空块]
+    block_ids: list[str]           # 沿 continues_from 链合并的各块；渲染时按各块原文长度拆分译文
     source: str                    # 含 <mN/> 占位符
     formulas: dict[str, str]       # key → LaTeX（请求时展开成 <mN>LaTeX</mN>）
     section: str                   # 所在章节，作为批次上下文
@@ -252,7 +259,7 @@ class CacheRepo(Protocol):
 | `classify` | original.pdf | page_kinds.json | §4.2 规则；P1 遇到 scanned/garbled 页给出提示并跳过 |
 | `parse` | original.pdf | parser/raw.zip、layout.json | S2：`model_version=vlm`、公式/表格开、>200 页分段 |
 | `extract` | original.pdf | chars.json | S4 |
-| `fuse` | layout.json、chars.json | ir.json | S4 对齐、跨页拆分、文字纠正 |
+| `fuse` | layout.json、chars.json | ir.json | S4 对齐；续行归位（MinerU 的 `lines_deleted` 占位块）；只修确定坏了的文字 |
 | `segment` | ir.json | segments 表 | S7 切分规则：参考文献默认不翻 |
 | `glossary` | ir.json | glossary.json | S10：TERMS_V3 + 程序校正 + GIST 命中 |
 | `translate` | segments、glossary | segments 表（译文） | S7/S9：v2 提示词、约 1500 token 一批、温度 0.3、默认不思考 |
@@ -362,7 +369,7 @@ ReaderView
 ```
 
 - **坐标**：容器内部始终用 pt 排版，外层整体 `transform: scale(zoom)`，保证不同缩放下排版一致（也为 P2 的导出复用同一套 HTML）。
-- **跨页段落**：按 `split_ratio` 在标点处拆分译文，分别放进本页块和下一页空块（S5b 已验证）。
+- **跨页段落**：一个段落的各块按原文长度占比，在标点处拆分译文，分别放进各自位置（S5b 已验证拆分方法）。
 - **拟合**：每块渲染后在 `requestAnimationFrame` 中计算一次，结果缓存在内存，缩放时不重算。
 - **状态**：`failed` 段显示原文（灰色）+ 重试按钮；`edited` 段右上角小标记。
 
@@ -410,7 +417,14 @@ CI：GitHub Actions 跑 ruff、pyright、import-linter、pytest（单元 + 契�
 
 ---
 
-## 7. 开发顺序（第一阶段内部里程碑）
+## 7. 开发记录
+
+**M2（2026-10-28）**：5 篇论文融合回归全部通过（覆盖率 99.84%–100%，续接链 6/10/5/13/10 条，无未归属的续行）。实现中的两处调整：
+
+1. **续行归位**：MinerU 把跨栏/跨页段落的续行并进前一块，原位置留下 `lines_deleted` 占位块。原设计是记录“拆分比例”，改为把续行搬回占位块并用 `continues_from` 串链——每个块的文字都在自己的坐标里，渲染更简单。
+2. **文字纠正收窄**：试过“与 PDF 文字相似就替换”，能修好 `ε`、`L2` 等个别错误，但也会把相邻行公式的重音符、求和号拼进正文，或丢掉单独成行的章节编号。改为只修含控制字符/替换符/私用区字符的文字（5 篇共 2 处）；“≲ 1 识别成 b1”这类看似正常的识别错误留作已知问题。
+
+## 8. 开发顺序（第一阶段内部里程碑）
 
 | 步骤 | 内容 | 完成标志 |
 |---|---|---|
