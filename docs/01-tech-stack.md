@@ -1,6 +1,6 @@
 # 自建网页端 PDF 翻译 · 技术选型
 
-> 日期：2026-10-28（v4：默认改为轻量模式——版面解析走 MinerU 云端，Doc2X 作为付费可选，本地解析作为隐私选项）
+> 日期：2026-10-28（v5：补充省 token 策略与实测开销、API Key 存浏览器；v4 起默认轻量模式）
 > 依据：[00-research.md](00-research.md)
 > 状态：草案。§8 验证实验完成后转为正式决策
 
@@ -221,7 +221,31 @@ class Translator(Protocol):
 - **占位符用 XML 风格**（`<m1/>`、`<b>…</b>`），返回后校验占位符集合一致，不一致单条重试，仍失败标 `failed` 保留原文。
 - **缓存**：`sha256(source + model + prompt_version + glossary_hash)` → 译文。
 - **限流与重试**：信号量控并发，令牌桶控 RPM，指数退避；记录 token 用量。
-- **API Key**：`.env` 或 SQLite（本机加密），前端只显示掩码；不入 Git。
+- **API Key 保存在用户浏览器**（见 §4.4.2），服务端不落盘。
+
+#### 4.4.1 省 token 策略（已用 DeepSeek 实测，见 [02-spikes.md](02-spikes.md#s7-一篇论文的翻译开销)）
+
+实测结论：按 DeepSeek Flash 价格，**输出 token 占费用约 75%**，输入侧的固定说明在大批次下只占约 20%。所以按效果排序：
+
+| # | 策略 | 实测/预估效果 | 参考来源 |
+|---|---|---|---|
+| 1 | **关闭思考模式**（`thinking: disabled`） | DeepSeek V4 系列默认开启思考，思考 token 按输出计费，不关会成倍增加费用 | DeepSeek 文档 |
+| 2 | **只翻该翻的** | 参考文献默认不翻（两篇论文分别占可翻文本的 15%、26%，可在界面开启）；公式、算法框、图表、页眉页码直接跳过；纯数字/少于 2 个单词的片段跳过 | MinerU 已给出块类型 |
+| 3 | **大批次 + 紧凑行格式** | 每批约 1500 token 原文，「编号\|原文」一行一段，只要求输出「编号\|译文」，不回显原文、不用缩进 JSON。输入 token 比逐段请求或 BabelDOC 式小批次（≤200 token/批）**少约 64%**（8.2k vs 22.6k–23.8k） | 对比 BabelDOC `il_translator_llm_only` |
+| 4 | **术语只抽一次、只看摘要和章节标题** | 一次约 600 token 的小调用；本地词库（GIST）匹配不花 token。BabelDOC 的自动术语抽取会扫全文 | BabelDOC AutoTermExtractor |
+| 5 | **译文缓存 + 去重** | 同段落（含跨文档、重复页眉）只翻一次；重开文档、换渲染方式、导出都不再花钱；单段重翻只发这一段 | BabelDOC 翻译缓存 |
+| 6 | **失败只重试失败段落** | 占位符校验不通过的段落单独重试，不整批重来；`max_tokens = 2 × 输入 + 200` 防止失控输出 | — |
+| 7 | **默认 Flash，Pro 只用于"精翻"** | Pro 价格约为 Flash 的 3.4 倍，作为单段/整篇的可选升级 | — |
+| 8 | **空闲时段半价**（可选） | DeepSeek 工作日 9–12、14–18 点外半价；非急用任务可勾选"闲时翻译"排队 | DeepSeek 价格页 |
+| 9 | **固定前缀利用上下文缓存** | 系统提示（规则 + 标题摘要 + 全文术语表）在同一文档内完全一致，放在最前面；实测命中有限（0–512 token），收益小但零成本 | DeepSeek 上下文硬盘缓存 |
+| 10 | **开始前预估费用** | 按 token 数 × 当前时段价格显示预计花费，用户确认后再翻 | — |
+
+#### 4.4.2 API Key 存储（开源部署）
+
+- 用户在设置页填写的 Key（LLM、MinerU、Doc2X）**只保存在该用户浏览器的 localStorage**，每次创建任务时随请求以请求头发给后端。
+- 后端只把 Key 放在内存里供本次任务使用，**不写数据库、不写日志、不写磁盘**；任务结束即丢弃。服务重启导致任务中断时，前端重新提交 Key 继续。
+- 部署者也可以在 `.env` 里配置共享 Key（自己用或给团队用），浏览器里填写的优先。
+- 安全措施：严格 CSP、不加载第三方脚本（降低 XSS 窃取 localStorage 的风险）；设置页提供"清除已保存的 Key"；界面提示"不要在公用电脑上保存 Key"；部署在公网必须走 HTTPS。
 
 ### 4.5 术语系统（论文场景）
 
@@ -280,7 +304,8 @@ page.apply_redactions(
 | PATCH | `/api/segments/{id}` | 手动修改译文 |
 | POST | `/api/segments/{id}/retranslate` | 单段重翻 |
 | POST | `/api/jobs/{id}/export` | 导出纯译文 / 双语 PDF |
-| GET/PUT | `/api/settings/providers` | 外部 API 配置 |
+| GET | `/api/settings/providers` | 服务端是否配置了共享 Key、可用模型列表（不返回 Key 本身）；用户 Key 在浏览器，随请求头 `X-LLM-Key` / `X-Parser-Key` 发送 |
+| POST | `/api/jobs/estimate` | 按页数、token 数和当前时段价格预估费用 |
 | GET/PUT | `/api/glossaries` | 用户术语表、词库包启用状态 |
 
 ---
@@ -404,6 +429,8 @@ services:
 | 扫描件 | 不确定占比 → 设计成通用：逐页分类，扫描页和乱码页走 OCR（§4.2） |
 | 翻译方向 | 其他语言 → 简体中文，英文为主 |
 | 云端提醒 | 每次上传都提醒并勾选确认（§5.1） |
+| API Key 存储 | 保存在用户浏览器 localStorage，服务端不落盘（§4.4.2） |
+| 翻译成本 | 尽量降低 token 开销（§4.4.1）；默认 DeepSeek Flash，实测一篇 15 页论文约 ¥0.03–0.07 |
 | 代码仓库 | 公开仓库 [weandy/pdf-translator](https://github.com/weandy/pdf-translator)（原名 doc-translator，旧地址自动跳转） |
 | 项目定位 | 开源给大家自部署使用，不只是自用 |
 | 许可证 | AGPL-3.0（与 PyMuPDF、BabelDOC 一致） |

@@ -8,7 +8,7 @@
 |---|---|
 | 机器 | 2 核 CPU、3.8 GB 内存（其他服务已占约 2.7 GB）、无 GPU、无 swap |
 | Python | 3.12，PyMuPDF 2.0，Playwright 1.64.1（Chromium 156） |
-| 翻译 | 无真实 LLM Key，用 [`spikes/mock_llm.py`](../spikes/mock_llm.py) 伪翻译：保留占位符/标签，其余按"英文字符数 × 0.4"换成中文素材，只用来测版式 |
+| 翻译 | S5/S6 用 [`spikes/mock_llm.py`](../spikes/mock_llm.py) 伪翻译（保留占位符，其余按"英文字符数 × 0.4"换成中文素材）；S7 用 DeepSeek 真实调用 |
 
 ## S5 + S6：去字背景页 + 浏览器叠加层导出（2026-10-28）
 
@@ -51,13 +51,59 @@
 
 → 对自部署推荐配置的启示：**仅 BabelDOC 级别的 CPU 推理就需要 ≥2 GB 空闲内存**，加上 MinerU basic（官方最低 2 GB）、Chromium、worker，推荐配置至少 **4 核 / 8 GB**，最低 **2 核 / 4 GB 空闲**。
 
+## S2：MinerU 精准解析 API（2026-10-28）
+
+脚本：[`spikes/s2_mineru.py`](../spikes/s2_mineru.py)。流程：`POST /api/v4/file-urls/batch` 申请上传链接 → `PUT` 上传（预签名地址，不带鉴权头）→ 轮询 `GET /api/v4/extract-results/batch/{id}` → 下载 Zip。参数 `model_version=vlm`、`enable_formula`、`enable_table`、`language=en`。
+
+| 样本 | 页数 | 耗时 | Zip | 块类型统计（content_list） |
+|---|---|---|---|---|
+| 1412.6980（公式密集） | 15 | 47 s | 1.3 MB | text 94、equation 34、ref_text 23、chart 9、code 2、header 15、page_number 15 |
+| 1706.03762（单栏） | 15 | 26 s | — | text 103、ref_text 40、table 4、image 3、chart 2、equation 5、page_footnote 7 |
+
+**结论：MinerU 云端的输出完全满足融合需要 ✅**
+
+- 云端实际版本：`layout.json` 里 `_backend=hybrid`、`_version_name=3.4.4`（不是开源仓库的 4.0），Zip 内含 `layout.json`、`*_content_list.json`、`*_content_list_v2.json`、`*_model.json`、`full.md`、`images/`、原 PDF。
+- **坐标**：`layout.json` 用 **PDF point**（`page_size` 如 `[595, 841]`），可直接和 PyMuPDF 对齐；`content_list.json` 是 **0–1000 归一化**。适配器以 `layout.json` 为准。
+- **行内公式**：`layout.json` 的 span 分 `text` / `inline_equation` / `interline_equation`，**行内公式自带 bbox 和 LaTeX**（如 `f ( \theta )`），正好用于占位符 + KaTeX 重新渲染。
+- **段落合并**：块上有 `merge_prev` 标记，跨栏/跨页段落可直接拼接。
+- **不翻译的内容已分开**：页眉、页码、侧边 arXiv 标识在 `discarded_blocks`；算法框为 `code`（`sub_type=algorithm`）；独立公式 `interline_equation` 带 LaTeX；图表、表格有 body/caption 子块。
+- 注意：`page_footnote` 被放进 `discarded_blocks`，需要手动捞回来翻译。
+
+## S7：一篇论文的翻译开销（2026-10-28）
+
+脚本：[`spikes/s7_cost.py`](../spikes/s7_cost.py)。输入为 S2 的 `layout.json`，模型 `deepseek-flash`（DeepSeek-V4.1-Flash），**关闭思考模式**；流程：一次术语抽取（标题 + 摘要 + 章节标题）→ 按约 1500 token 分批 → 「编号|原文」紧凑格式 → 校验占位符。参考文献默认不翻。测试时间为工作日高峰时段（北京时间 11:40）。
+
+| 样本 | 翻译段数 | 批次 | 术语 | 校验失败 | 用时 | 输入 token | 输出 token | 费用（高峰 / 空闲） |
+|---|---|---|---|---|---|---|---|---|
+| 1412.6980（15 页） | 85 | 5 | 12 | 0 | 15.0 s | 8226（缓存命中 512） | 6278 | **¥0.066 / ¥0.033** |
+| 1706.03762（15 页） | 103 | 5 | 19 | 0 | 15.9 s | 7597（缓存命中 0） | 5652 | **¥0.060 / ¥0.030** |
+
+**不同请求组织方式的输入 token 对比**（1412.6980，tiktoken 估算）：
+
+| 方式 | 输入 token | 估算费用（高峰） |
+|---|---|---|
+| A 逐段请求，每段带完整说明 | ~23.8k | ~¥0.098 |
+| B BabelDOC 式（≤200 token 或 ≤5 段一批，说明 ~520 token，JSON 缩进） | ~22.6k | ~¥0.095 |
+| **C 本项目（约 1500 token 一批，紧凑格式）** | **8.2k（实测）** | **¥0.066（实测）** |
+
+**结论**
+
+- **一篇 15 页论文约 ¥0.03（空闲）～ ¥0.07（高峰）**，MinerU 解析免费；全文约 15 秒译完（4 并发）。
+- 翻参考文献会多 15%–26% 的原文 token，约多 ¥0.01–0.02。
+- 换 `deepseek-v4-pro`：按价格表约为 Flash 的 3.4 倍，即每篇约 ¥0.12–0.24。
+- 费用约 75% 来自输出 token；输入侧方案 C 比 A/B 少约 64%，总费用低约 1/3。
+- DeepSeek 上下文缓存在这种批量下命中很少（系统提示只有约 350 token），不作为主要手段。
+- 译文质量抽查正常（如 `Theorem 4.1. Assume that the function <m1/> has bounded gradients` → `定理 4.1. 假设函数 <m1/> 具有有界梯度`），占位符全部保留。未做系统的质量评估。
+- 账户余额 ¥8.11，测试后余额查询仍显示 ¥8.11（扣费有延迟或按分计）；按上面的单价可译约 120 篇（高峰）～ 250 篇（空闲）。
+
 ## 待做
 
 | 实验 | 状态 | 阻塞 |
 |---|---|---|
 | S1 BabelDOC 基线 | 被 OOM 中断 | 需要更多内存；可改用沉浸式翻译 BabelDOC 在线版人工对比 |
-| S2 MinerU 云端 API | 未开始（默认解析器，优先做） | 需要 mineru.net API Token |
+| S2 MinerU 云端 API | ✅ 完成（2 篇） | — |
 | S3 Doc2X | 未开始 | 付费 Key（¥10 起） |
 | MinerU 本地 CPU | 后置到 P4（本地模式） | 需要更大内存的机器 |
-| S4 块与 span 对齐 | 未开始 | 依赖 S2 输出 |
-| S7 术语系统 | 未开始 | 需要真实 LLM Key |
+| S4 块与 span 对齐 | 可以开始 | — |
+| S7 翻译开销 | ✅ 完成（2 篇） | — |
+| S7 术语系统效果（有/无 GIST 对比） | 未开始 | — |
