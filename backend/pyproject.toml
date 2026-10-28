@@ -11,7 +11,8 @@ dependencies = [
     "pydantic-settings>=2.4",
     "sqlmodel>=0.0.22",
     "pymupdf>=1.26",
-    "httpx>=0.28",
+    "httpx2>=2.16",  # openai SDK 与 Starlette 已改用 httpx2，统一用它
+    "openai>=1.60",
 ]
 
 [project.scripts]
@@ -20,7 +21,6 @@ pdftr-dev = "pdftr.cli:main"
 [dependency-groups]
 dev = [
     "pytest>=8.3",
-    "httpx2>=2.16",
     "ruff>=0.6",
     "pyright>=1.1.380",
     "import-linter>=2.1",
@@ -46,6 +46,10 @@ src = ["src", "tests"]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 # 中文注释与文档字符串里的全角标点是有意为之
 ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+# 提示词正文的长行是有意的：改动换行就是改动提示词，需要重跑翻译质量评测
+"src/pdftr/translation/prompt.py" = ["E501"]
 
 [tool.pyright]
 include = ["src", "tests"]

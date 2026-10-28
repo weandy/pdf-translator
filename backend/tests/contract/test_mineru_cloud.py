@@ -5,7 +5,7 @@ import io
 import zipfile
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 
 from pdftr.parsing.mineru_cloud import API, MinerUCloudParser
@@ -30,38 +30,38 @@ class FakeMinerU:
         self.polls = 0
         self.seen: list[str] = []
 
-    def __call__(self, request: httpx.Request) -> httpx.Response:
+    def __call__(self, request: httpx2.Request) -> httpx2.Response:
         url = str(request.url)
         self.seen.append(f"{request.method} {url}")
         if url.startswith(API):
             assert request.headers["Authorization"] == "Bearer tok"
             if not self.auth_ok:
-                return httpx.Response(401)
+                return httpx2.Response(401)
         if request.method == "POST" and url == f"{API}/file-urls/batch":
             body = request.read()
             assert b'"enable_formula": true' in body or b'"enable_formula":true' in body
-            return httpx.Response(200, json={"code": 0, "data": {"batch_id": "b1", "file_urls": [UPLOAD]}})
+            return httpx2.Response(200, json={"code": 0, "data": {"batch_id": "b1", "file_urls": [UPLOAD]}})
         if request.method == "PUT" and url == UPLOAD:
             assert "Authorization" not in request.headers  # 预签名地址不能带鉴权头
             assert request.read() == b"%PDF-fake"
-            return httpx.Response(200)
+            return httpx2.Response(200)
         if request.method == "GET" and url == f"{API}/extract-results/batch/b1":
             self.polls += 1
             if self.fail:
-                return httpx.Response(
+                return httpx2.Response(
                     200, json={"code": 0, "data": {"extract_result": [{"state": "failed", "err_msg": "坏文件"}]}}
                 )
             state = "running" if self.polls < 2 else "done"
-            return httpx.Response(
+            return httpx2.Response(
                 200, json={"code": 0, "data": {"extract_result": [{"state": state, "full_zip_url": ZIP}]}}
             )
         if request.method == "GET" and url == ZIP:
-            return httpx.Response(200, content=_zip(), headers={"content-type": "application/zip"})
-        return httpx.Response(404)
+            return httpx2.Response(200, content=_zip(), headers={"content-type": "application/zip"})
+        return httpx2.Response(404)
 
 
 def _parser(fake: FakeMinerU) -> MinerUCloudParser:
-    return MinerUCloudParser("tok", poll_interval=0, transport=httpx.MockTransport(fake))
+    return MinerUCloudParser("tok", poll_interval=0, transport=httpx2.MockTransport(fake))
 
 
 def test_full_flow(tmp_path: Path):

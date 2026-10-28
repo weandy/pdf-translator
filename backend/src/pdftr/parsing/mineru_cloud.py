@@ -11,7 +11,7 @@ import time
 import zipfile
 from pathlib import Path
 
-import httpx
+import httpx2
 
 from pdftr.domain.layout import LayoutResult
 from pdftr.parsing.mineru_normalize import normalize
@@ -32,7 +32,7 @@ class MinerUCloudParser:
         language: str = "en",
         poll_interval: float = 5.0,
         timeout: float = 900.0,
-        transport: httpx.AsyncBaseTransport | None = None,
+        transport: httpx2.AsyncBaseTransport | None = None,
     ) -> None:
         if not token:
             raise ParseError("未配置 MinerU Token")
@@ -46,8 +46,8 @@ class MinerUCloudParser:
     async def parse(self, pdf: Path, pages: list[int] | None = None, raw_dir: Path | None = None) -> LayoutResult:
         headers = {"Authorization": f"Bearer {self._token}"}
         async with (
-            httpx.AsyncClient(headers=headers, timeout=120, transport=self._transport) as api,
-            httpx.AsyncClient(timeout=300, transport=self._transport, follow_redirects=True) as plain,
+            httpx2.AsyncClient(headers=headers, timeout=120, transport=self._transport) as api,
+            httpx2.AsyncClient(timeout=300, transport=self._transport, follow_redirects=True) as plain,
         ):
             batch_id, upload_url = await self._request_upload(api, pdf, pages)
             r = await plain.put(upload_url, content=pdf.read_bytes())
@@ -61,7 +61,7 @@ class MinerUCloudParser:
             (raw_dir / "mineru.zip").write_bytes(data)
         return normalize(_read_layout(data))
 
-    async def _request_upload(self, api: httpx.AsyncClient, pdf: Path, pages: list[int] | None) -> tuple[str, str]:
+    async def _request_upload(self, api: httpx2.AsyncClient, pdf: Path, pages: list[int] | None) -> tuple[str, str]:
         # 始终整份解析：MinerU 按 page_ranges 解析时返回的页码是否相对子集未经验证，
         # 用户选择的页码范围在翻译阶段筛选（pages 参数在这里不使用）。
         del pages
@@ -82,7 +82,7 @@ class MinerUCloudParser:
         except (KeyError, IndexError, TypeError) as e:
             raise ParseError(f"MinerU 返回格式异常：{body}") from e
 
-    async def _wait(self, api: httpx.AsyncClient, batch_id: str) -> str:
+    async def _wait(self, api: httpx2.AsyncClient, batch_id: str) -> str:
         deadline = time.monotonic() + self._timeout
         while time.monotonic() < deadline:
             r = await api.get(f"{API}/extract-results/batch/{batch_id}")
@@ -97,7 +97,7 @@ class MinerUCloudParser:
         raise ParseError("MinerU 解析超时")
 
 
-def _check(r: httpx.Response, action: str) -> dict:
+def _check(r: httpx2.Response, action: str) -> dict:
     if r.status_code in (401, 403):
         raise ParseError("MinerU Token 无效或已过期")
     if r.status_code == 429:

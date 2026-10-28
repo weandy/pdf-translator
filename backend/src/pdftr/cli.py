@@ -2,6 +2,7 @@
 
 uv run pdftr-dev parse paper.pdf --out work/        # 调用 MinerU 云端（需 PDFTR_MINERU_API_TOKEN）
 uv run pdftr-dev fuse paper.pdf work/layout.json --out work/ir.json
+uv run pdftr-dev translate paper.pdf work/layout.json --out work/segments.json   # 需 PDFTR_LLM_API_KEY
 """
 
 import argparse
@@ -13,10 +14,20 @@ from pathlib import Path
 
 from pdftr.config import Settings
 from pdftr.domain.ids import new_job_id
+from pdftr.domain.ir import BlockType
 from pdftr.extraction.chars import extract
 from pdftr.fusion.build import fuse
+from pdftr.glossary import gist
+from pdftr.glossary.extract import extract_terms
+from pdftr.glossary.matcher import TermMatcher
+from pdftr.glossary.normalize import normalize_terms
 from pdftr.parsing.mineru_cloud import MinerUCloudParser
 from pdftr.parsing.mineru_normalize import normalize
+from pdftr.storage.cache import SqliteTranslationCache
+from pdftr.translation.openai_compat import OpenAICompatChat
+from pdftr.translation.prompt import DocContext
+from pdftr.translation.segmenter import segment
+from pdftr.translation.service import TranslateOptions, translate
 
 
 def _parse(args: argparse.Namespace) -> None:
@@ -41,6 +52,45 @@ def _fuse(args: argparse.Namespace) -> None:
     print(json.dumps(stats, ensure_ascii=False))
 
 
+def _translate(args: argparse.Namespace) -> None:
+    # 整个流程放在同一个事件循环里：异步 HTTP 客户端的连接池绑定在创建它的事件循环上
+    asyncio.run(_translate_async(args))
+
+
+async def _translate_async(args: argparse.Namespace) -> None:
+    settings = Settings()
+    layout = normalize(json.loads(Path(args.layout).read_text(encoding="utf-8")))
+    doc, _ = fuse(new_job_id(), layout, extract(Path(args.pdf)), used_cloud=True)
+    segments = segment(doc, include_references=args.refs)
+    chat = OpenAICompatChat(base_url=settings.llm_base_url, api_key=settings.llm_api_key, model=settings.llm_model)
+
+    headings = [s.source for s in segments if doc.block(s.block_ids[0]).type is BlockType.TITLE]  # type: ignore[union-attr]
+    body = " ".join(s.source for s in segments)
+    intro = next((s.source for s in segments if len(s.source.split()) >= 30 and s.source != doc.meta.abstract), "")
+    found = await extract_terms(chat, title=doc.meta.title, abstract=doc.meta.abstract, intro=intro, headings=headings)
+    terms = normalize_terms(found.terms, body, headings)
+
+    gist_file = settings.data_dir / "glossaries" / "vendor" / "gist_zh.csv"
+    if not gist_file.exists():
+        gist.download(gist_file)
+    matcher = TermMatcher(gist.load(gist_file))
+
+    ctx = DocContext(title=doc.meta.title, abstract=doc.meta.abstract, domain=found.domain, terms=terms)
+    cache = SqliteTranslationCache(settings.data_dir / "app.db")
+    progress = lambda done, total: print(f"\r翻译 {done}/{total}", end="", flush=True)  # noqa: E731
+    out, report = await translate(
+        segments, chat=chat, cache=cache, ctx=ctx, lookup_terms=matcher.match,
+        opts=TranslateOptions(quality=args.quality), on_progress=progress,
+    )  # fmt: skip
+    print()
+    if args.out:
+        Path(args.out).write_text(json.dumps([s.model_dump() for s in out], ensure_ascii=False, indent=1), "utf-8")
+    print(json.dumps({
+        "segments": len(out), "domain": found.domain, "terms": len(terms), "gist_entries": len(matcher),
+        "report": report.model_dump(), "term_extraction_usage": found.usage.model_dump(),
+    }, ensure_ascii=False, indent=1))  # fmt: skip
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="pdftr-dev")
     sub = ap.add_subparsers(required=True)
@@ -53,6 +103,13 @@ def main(argv: list[str] | None = None) -> None:
     f.add_argument("layout")
     f.add_argument("--out")
     f.set_defaults(func=_fuse)
+    t = sub.add_parser("translate", help="融合并翻译（需 PDFTR_LLM_API_KEY）")
+    t.add_argument("pdf")
+    t.add_argument("layout")
+    t.add_argument("--quality", choices=["default", "careful"], default="default")
+    t.add_argument("--refs", action="store_true", help="同时翻译参考文献")
+    t.add_argument("--out")
+    t.set_defaults(func=_translate)
     args = ap.parse_args(argv)
     args.func(args)
 

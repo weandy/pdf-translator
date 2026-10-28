@@ -1,4 +1,4 @@
-"""存储端口：任务工件文件、任务、段落与翻译缓存。"""
+"""存储端口：任务工件文件、任务与段落。翻译缓存的端口由 translation 定义，这里按结构实现。"""
 
 from pathlib import Path
 from typing import Protocol
@@ -20,9 +20,3 @@ class SegmentRepo(Protocol):
     def pending(self, job_id: str) -> list[Segment]: ...
 
     def update_target(self, segment_id: str, target: str, status: SegmentStatus) -> None: ...
-
-
-class CacheRepo(Protocol):
-    def get(self, key: str) -> str | None: ...
-
-    def put(self, key: str, target: str) -> None: ...
