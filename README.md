@@ -2,7 +2,7 @@
 
 开源、可自部署的网页端 PDF 保版式翻译工具：上传 PDF，在浏览器里按原版式对照阅读中文译文，公式、图表按原位置重新渲染，可导出纯译文或双语 PDF。
 
-> 当前阶段：调研、技术选型与验证实验，尚未开始编码。
+> 当前阶段：验证实验完成，MVP 第一阶段设计已定稿，准备编码。
 
 ## 目标
 
@@ -19,6 +19,7 @@
 - [docs/00-research.md](docs/00-research.md)：调研报告（沉浸式翻译/BabelDOC 原理、开源方案、不足、解析服务、术语库）
 - [docs/01-tech-stack.md](docs/01-tech-stack.md)：技术选型
 - [docs/02-spikes.md](docs/02-spikes.md)：验证实验记录
+- [docs/03-mvp-design.md](docs/03-mvp-design.md)：MVP 第一阶段设计（模块划分、接口、流水线、前端结构、里程碑）
 
 ## 相关资源
 
