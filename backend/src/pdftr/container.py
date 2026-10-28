@@ -5,7 +5,7 @@ import threading
 from dataclasses import dataclass
 
 from pdftr.config import Settings
-from pdftr.glossary import gist
+from pdftr.glossary import sources as glossary_sources
 from pdftr.glossary.matcher import TermMatcher
 from pdftr.parsing.mineru_cloud import MinerUCloudParser
 from pdftr.pipeline.events import EventBus
@@ -19,27 +19,25 @@ from pdftr.translation.openai_compat import OpenAICompatChat
 log = logging.getLogger(__name__)
 
 
-class GistLoader:
-    """首次需要时下载并加载 GIST 词库；失败时不影响翻译，只是少了词库术语。"""
+class GlossaryLoader:
+    """首次需要时下载并合并各术语库来源；某个来源失败只跳过它，不影响翻译。"""
 
     def __init__(self, settings: Settings) -> None:
-        self._file = settings.data_dir / "glossaries" / "vendor" / "gist_zh.csv"
-        self._enabled = settings.gist_enabled
+        self._vendor = settings.data_dir / "glossaries" / "vendor"
+        self._sources = glossary_sources.parse_ids(settings.glossary_sources)
         self._lock = threading.Lock()
         self._matcher: TermMatcher | None = None
         self._tried = False
 
     def __call__(self) -> TermMatcher | None:
         with self._lock:
-            if self._tried or not self._enabled:
+            if self._tried or not self._sources:
                 return self._matcher
             self._tried = True
-            try:
-                if not self._file.exists():
-                    gist.download(self._file)
-                self._matcher = TermMatcher(gist.load(self._file))
-            except Exception:
-                log.warning("GIST 词库加载失败，本次不使用词库术语", exc_info=True)
+            terms, loaded = glossary_sources.load_all(self._sources, self._vendor)
+            if terms:
+                self._matcher = TermMatcher(terms)
+                log.info("术语库：%s，共 %d 条", "、".join(s.id for s in loaded), len(terms))
             return self._matcher
 
 
@@ -75,7 +73,7 @@ def build_container(settings: Settings | None = None, deps_override: dict | None
         "chat_factory": lambda sec: OpenAICompatChat(
             base_url=sec.llm_base_url, api_key=sec.llm_api_key, model=sec.llm_model
         ),
-        "term_matcher": GistLoader(s),
+        "term_matcher": GlossaryLoader(s),
         "max_concurrent_jobs": s.max_concurrent_jobs,
         "font_dir": s.font_dir,
         "llm_concurrency": s.llm_concurrency,

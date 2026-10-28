@@ -77,7 +77,7 @@ class FakeChat:
 
 def _client(data_dir: Path, font_dir: Path):
     FakeChat.fail = False
-    settings = Settings(data_dir=data_dir, gist_enabled=False, font_dir=font_dir)
+    settings = Settings(data_dir=data_dir, glossary_sources="", font_dir=font_dir)
     container = build_container(
         settings, {"parser_factory": lambda s: FakeParser(), "chat_factory": lambda s: FakeChat()}
     )

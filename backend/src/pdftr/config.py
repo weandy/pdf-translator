@@ -23,7 +23,9 @@ class Settings(BaseSettings):
     max_queued_jobs: int = 10  # 排队中的任务超过这个数时拒绝新上传
     retention_days: int = 7  # 任务文件与译文缓存保留天数，0 表示不自动清理
     min_free_disk_mb: int = 1024  # 磁盘剩余空间低于此值时拒绝新上传
-    gist_enabled: bool = True  # 首次使用时下载 GIST AI 术语库（Apache-2.0）
+    # 论文术语库来源，逗号分隔，排在前面的优先；首次使用时下载（见 glossary/sources.py）。
+    # 机器之心术语库（aitd）为 CC BY-NC-SA 4.0，不可商用：商业部署请去掉 aitd；留空则不用术语库
+    glossary_sources: str = "aitd,d2l,ml-technical-term,ais-vocab,gist,computerese"
 
     font_dir: Path = Path("fonts")  # 导出 PDF 与网页阅读器用的字体（scripts/fetch_fonts.py 生成）
     cors_origins: list[str] = []  # 开发时前端单独运行可填 ["http://localhost:5173"]

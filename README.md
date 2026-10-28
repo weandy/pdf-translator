@@ -8,7 +8,7 @@
 
 - **保留原版式**：译文排回原位置，图片、矢量图形、独立公式、算法框、表格保持不动；跨栏、跨页的段落作为一段翻译后再拆回各自位置
 - **公式不被翻坏**：行内公式以 LaTeX 交给模型理解、译文中只保留占位符，逐段校验后用 KaTeX 重新渲染（失败时回退为原文裁剪图）
-- **论文术语一致**：自动抽取论文领域与术语，并匹配 [GIST](https://huggingface.co/datasets/Jerry999/multilingual-terminology) AI 术语库
+- **论文术语一致**：自动抽取论文领域与术语，并匹配聚合术语库（机器之心、《动手学深度学习》、GIST 等 6 个来源，约 7200 条，见下文）
 - **可接外部 API**：翻译走任意 OpenAI 兼容接口（默认 DeepSeek，也支持 OpenAI、通义千问、GLM、Ollama 等），版面解析用 [MinerU](https://mineru.net) 云端（免费）
 - **省钱**：默认不开模型思考、按约 1500 token 分批、只翻需要翻的内容、译文缓存；一篇 10–16 页论文约 ¥0.03–0.07（DeepSeek 空闲时段）
 - **可修改**：点击任一段落查看原文、修改译文、重翻或“精修”（开启低强度思考）
@@ -99,11 +99,25 @@ npm run lint && npm run typecheck && npm test
 
 - [MinerU](https://github.com/opendatalab/MinerU)：版面解析
 - [PyMuPDF](https://github.com/pymupdf/PyMuPDF)（AGPL-3.0）：PDF 文字提取与背景页生成
-- [GIST](https://huggingface.co/datasets/Jerry999/multilingual-terminology)（Apache-2.0）：AI 术语库
+- 字体：[思源宋体、思源黑体](https://github.com/notofonts/noto-cjk)（SIL OFL 1.1）、[Tinos](https://fonts.google.com/specimen/Tinos)（SIL OFL 1.1）
 - [pdf.js](https://github.com/mozilla/pdf.js)、[KaTeX](https://katex.org)：阅读器渲染
 - 参考了 [BabelDOC](https://github.com/funstory-ai/BabelDOC)、[PDFMathTranslate](https://github.com/PDFMathTranslate/PDFMathTranslate)、[KISS Translator](https://github.com/fishjar/kiss-translator)、[STranslate](https://github.com/STranslate/STranslate) 等项目的设计
 
-相关资源：[机器之心 AI 术语库](https://github.com/jiqizhixin/Artificial-Intelligence-Terminology-Database)（约 2400 条人工智能英汉术语，CC BY-NC-SA 4.0，本项目未集成，可人工查阅）。
+### 术语库来源
+
+首次使用时下载，按下表顺序合并（同一术语以排在前面的为准），可用 `PDFTR_GLOSSARY_SOURCES` 调整：
+
+| 名称 | 来源 | 许可证 | 条数 |
+|---|---|---|---|
+| `aitd` | [机器之心人工智能术语库](https://github.com/jiqizhixin/Artificial-Intelligence-Terminology-Database) | CC BY-NC-SA 4.0 | 约 2400 |
+| `d2l` | [《动手学深度学习》术语表](https://github.com/d2l-ai/d2l-zh/blob/master/TERMINOLOGY.md) | Apache-2.0 | 约 140 |
+| `ml-technical-term` | [机器学习与深度学习术语中英对照](https://github.com/luckycucu/ml-technical-term) | MIT | 约 90 |
+| `ais-vocab` | [AI 安全术语中英对照](https://github.com/YixiongHao/ais-vocab-cn)（只取“通行”“常用”条目） | MIT | 约 180 |
+| `gist` | [GIST 多语言 AI 术语数据集](https://huggingface.co/datasets/Jerry999/multilingual-terminology) | Apache-2.0 | 约 6400 |
+| `computerese` | [计算机专业术语中英对照](https://github.com/EarsEyesMouth/computerese-cross-references)（只取多词术语） | MIT | 约 600 |
+
+> **机器之心术语库禁止商业使用**（CC BY-NC-SA 4.0）。如果你的部署用于商业目的，请在 `.env` 里去掉 `aitd`，例如
+> `PDFTR_GLOSSARY_SOURCES=d2l,ml-technical-term,ais-vocab,gist,computerese`。
 
 ## 许可证
 

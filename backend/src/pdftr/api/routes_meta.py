@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 
 from pdftr import __version__
 from pdftr.api.schemas import ConfigOut, HealthOut
-from pdftr.glossary.gist import ATTRIBUTION as GIST_ATTRIBUTION
+from pdftr.glossary.sources import parse_ids
 from pdftr.pipeline import usecases
 
 router = APIRouter(prefix="/api", tags=["meta"])
@@ -32,7 +32,12 @@ def config(request: Request) -> ConfigOut:
         max_upload_mb=s.max_upload_mb,
         max_pages=s.max_pages,
         retention_days=s.retention_days,
-        attributions=["MinerU (https://github.com/opendatalab/MinerU)", "PyMuPDF (AGPL-3.0)", GIST_ATTRIBUTION],
+        attributions=[
+            "MinerU (https://github.com/opendatalab/MinerU)",
+            "PyMuPDF (AGPL-3.0)",
+            "思源宋体、思源黑体、Tinos（SIL OFL 1.1）",
+            *(f"术语库：{src.attribution}" for src in parse_ids(s.glossary_sources)),
+        ],
     )
 
 

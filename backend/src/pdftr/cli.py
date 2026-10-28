@@ -17,7 +17,7 @@ from pdftr.domain.ids import new_job_id
 from pdftr.domain.ir import BlockType
 from pdftr.extraction.chars import extract
 from pdftr.fusion.build import fuse
-from pdftr.glossary import gist
+from pdftr.glossary import sources as glossary_sources
 from pdftr.glossary.extract import extract_terms
 from pdftr.glossary.matcher import TermMatcher
 from pdftr.glossary.normalize import normalize_terms
@@ -70,10 +70,10 @@ async def _translate_async(args: argparse.Namespace) -> None:
     found = await extract_terms(chat, title=doc.meta.title, abstract=doc.meta.abstract, intro=intro, headings=headings)
     terms = normalize_terms(found.terms, body, headings)
 
-    gist_file = settings.data_dir / "glossaries" / "vendor" / "gist_zh.csv"
-    if not gist_file.exists():
-        gist.download(gist_file)
-    matcher = TermMatcher(gist.load(gist_file))
+    glossary, _ = glossary_sources.load_all(
+        glossary_sources.parse_ids(settings.glossary_sources), settings.data_dir / "glossaries" / "vendor"
+    )
+    matcher = TermMatcher(glossary)
 
     ctx = DocContext(title=doc.meta.title, abstract=doc.meta.abstract, domain=found.domain, terms=terms)
     cache = SqliteTranslationCache(settings.data_dir / "app.db")
