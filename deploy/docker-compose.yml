@@ -1,0 +1,28 @@
+# 轻量模式：只起后端 app 和前端 web，本地不跑任何模型（docs/01-tech-stack.md §6）
+# 启动：在仓库根目录执行  docker compose -f deploy/docker-compose.yml up -d --build
+name: pdf-translator
+
+services:
+  app:
+    build: ../backend
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      PDFTR_DATA_DIR: /data
+    volumes:
+      # 命名卷沿用镜像中 /data 的属主（非 root 用户），避免宿主机目录权限问题
+      - pdftr-data:/data
+    restart: unless-stopped
+
+  web:
+    build: ../frontend
+    ports:
+      - "${PDFTR_PORT:-8080}:80"
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pdftr-data:

@@ -1,0 +1,96 @@
+[project]
+name = "pdftr"
+version = "0.1.0"
+description = "开源可自部署的网页端 PDF 保版式翻译：后端"
+license = "AGPL-3.0-only"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "sqlmodel>=0.0.22",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "httpx2>=2.16",
+    "ruff>=0.6",
+    "pyright>=1.1.380",
+    "import-linter>=2.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pdftr"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+# 中文注释与文档字符串里的全角标点是有意为之
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"
+
+# 模块依赖规则（见 docs/03-mvp-design.md §2.1）：
+# api → pipeline → 能力模块 → domain；能力模块之间互不导入；domain 不依赖任何模块
+[tool.importlinter]
+root_package = "pdftr"
+
+[[tool.importlinter.contracts]]
+name = "分层：api → pipeline → 能力模块 → domain"
+type = "layers"
+layers = [
+    "pdftr.api",
+    "pdftr.pipeline",
+    "pdftr.parsing | pdftr.extraction | pdftr.fusion | pdftr.glossary | pdftr.translation | pdftr.rendering | pdftr.storage",
+    "pdftr.domain",
+]
+
+[[tool.importlinter.contracts]]
+name = "能力模块之间互不导入"
+type = "independence"
+modules = [
+    "pdftr.parsing",
+    "pdftr.extraction",
+    "pdftr.fusion",
+    "pdftr.glossary",
+    "pdftr.translation",
+    "pdftr.rendering",
+    "pdftr.storage",
+]
+
+[[tool.importlinter.contracts]]
+name = "domain 不依赖任何其他模块"
+type = "forbidden"
+source_modules = ["pdftr.domain"]
+forbidden_modules = [
+    "pdftr.api",
+    "pdftr.pipeline",
+    "pdftr.parsing",
+    "pdftr.extraction",
+    "pdftr.fusion",
+    "pdftr.glossary",
+    "pdftr.translation",
+    "pdftr.rendering",
+    "pdftr.storage",
+    "pdftr.config",
+    "pdftr.container",
+]

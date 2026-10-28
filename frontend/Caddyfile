@@ -1,0 +1,33 @@
+{
+	admin off
+}
+
+:80 {
+	encode zstd gzip
+
+	# 接口转发给后端容器（服务名 app）
+	handle /api/* {
+		reverse_proxy app:8000 {
+			# SSE 进度推送不缓冲
+			flush_interval -1
+		}
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+
+	# 前端不加载任何第三方资源；KaTeX 需要内联样式，pdf.js 需要 blob worker
+	header {
+		Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+	}
+
+	# 部署到公网时建议开启访问密码：生成哈希 `caddy hash-password`，去掉下面三行的注释并替换
+	# basic_auth {
+	# 	admin <bcrypt 哈希>
+	# }
+}
