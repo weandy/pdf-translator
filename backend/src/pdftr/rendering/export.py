@@ -16,6 +16,7 @@ import pymupdf
 from pdftr.domain.ir import Block, Document, Segment
 
 ExportMode = Literal["mono", "dual"]
+LINE_HEIGHT = 1.2  # 与论文正文的行距相近
 
 _BREAK_AFTER = set("，。；：、）！？,;:.)")
 _SEARCH = 40
@@ -62,7 +63,8 @@ def _to_html(text: str, seg: Segment, images: dict[str, tuple[str, float, float]
             img = images.get(f"{seg.id}:{piece}")
             if img:
                 name, w, h = img
-                out.append(f'<img src="{name}" style="width:{w:.1f}pt;height:{h:.1f}pt;vertical-align:middle"/>')
+                # 底边对齐文字底边：公式图比字高时只撑高本行；居中对齐会伸进下一行，与之重叠
+                out.append(f'<img src="{name}" style="width:{w:.1f}pt;height:{h:.1f}pt;vertical-align:text-bottom"/>')
             continue
         escaped = html.escape(piece, quote=False)
         out.append(re.sub(r"&lt;(/?)(sup|sub|b|i)&gt;", r"<\1\2>", escaped))
@@ -73,9 +75,21 @@ def _css(block: Block) -> str:
     color = f"#{block.style.color:06x}"
     weight = "bold" if block.style.bold else "normal"
     return (
-        f"* {{font-family: sans-serif; font-size: {block.style.font_size:.1f}pt; line-height: 1.35;"
-        f" color: {color}; font-weight: {weight}; margin: 0; padding: 0; text-align: justify}}"
+        # 左对齐：MuPDF 两端对齐只拉宽空格，中英混排时英文单词两侧会出现大空隙
+        f"* {{font-family: sans-serif; font-size: {block.style.font_size:.1f}pt; line-height: {LINE_HEIGHT};"
+        f" color: {color}; font-weight: {weight}; margin: 0; padding: 0; text-align: left}}"
+        # MuPDF 默认给 body 上下各 8pt 边距，且 body 选择器比 * 优先，必须单独清零，否则每个框都少 16pt
+        " html, body, p, div {margin: 0; padding: 0}"
     )
+
+
+def _box(block: Block) -> pymupdf.Rect:
+    """排版框：原文块的范围。解析器给单行文字的框只有字形高，装不下一整行时上下各补一半，
+    不再统一往下放宽（那样会压到紧挨着的表格线、图片，如表格标题）。"""
+    r = block.bbox
+    lack = block.style.font_size * LINE_HEIGHT + 0.5 - r.height
+    pad = max(lack, 0) / 2
+    return pymupdf.Rect(r.x0, r.y0 - pad, r.x1, r.y1 + pad)
 
 
 def _formula_archive(original: pymupdf.Document, seg: Segment) -> tuple[pymupdf.Archive | None, dict]:
@@ -117,7 +131,7 @@ def _overlay(src: pymupdf.Document, doc: Document, segments: list[Segment]) -> p
         dev = writer.begin_page(src[i].rect)
         for block, body, archive in boxes.get(i, []):
             r = block.bbox
-            target = pymupdf.Rect(r.x0, r.y0, r.x1, r.y1 + block.style.font_size * 0.6)
+            target = _box(block)
             story = pymupdf.Story(html=body, user_css=_css(block), archive=archive)
             # 排不下时把排版框按比例放大，再整体缩回目标框，相当于缩小字号
             fit = story.fit_scale(pymupdf.Rect(0, 0, target.width, target.height), scale_min=1, scale_max=None)

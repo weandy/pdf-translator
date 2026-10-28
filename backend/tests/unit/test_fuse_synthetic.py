@@ -77,3 +77,23 @@ def test_fuse(pdf: Path):
     assert orphan.spans[0].text == "This orphan line was missed by the parser"
     assert orphan.translatable
     assert orphan.style.font_size == pytest.approx(9, abs=0.1)
+
+
+def test_block_without_chars_estimates_size_from_line_height(tmp_path: Path):
+    """图表里用路径画出的标题提取不到字符：字号按行高估计，而不是统一当作 10pt。"""
+    doc = pymupdf.open()
+    for _ in range(2):
+        doc.new_page(width=600, height=800)
+    for page, x, y, text in TEXTS:
+        if text != "Figure 1: A caption.":  # 这一块不写入文字，模拟路径绘制
+            doc[page].insert_text((x, y), text, fontsize=9, fontname="tiro")
+    path = tmp_path / "no_caption_chars.pdf"
+    doc.save(path)
+
+    layout = normalize(json.loads(FIXTURE.read_text(encoding="utf-8")))
+    lb = next(b for b in layout.pages[0].blocks if b.type is BlockType.CAPTION)
+    line = lb.lines[0]
+    line.bbox = line.bbox.model_copy(update={"y1": line.bbox.y0 + 7})  # 紧贴字形的 7pt 高的行，约为 7pt 的字
+    result, _ = fuse("0123456789abcdef", layout, extract(path), used_cloud=True)
+    caption = next(b for b in result.blocks() if b.type is BlockType.CAPTION)
+    assert caption.style.font_size == pytest.approx(7.0, abs=0.01)

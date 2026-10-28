@@ -81,8 +81,17 @@ def fuse(
     return doc, report
 
 
+def _size_from_lines(lb: LayoutBlock) -> float:
+    """块里提取不到字符（如图表里用路径画出的标题）时按行高估字号。
+
+    解析器的行框紧贴字形，高度与字号相当（论文样本里约 0.95–1.05 倍）；最大 10pt。
+    """
+    heights = sorted(ln.bbox.height for ln in lb.lines if ln.bbox.height > 0) or [lb.bbox.height]
+    return round(min(10.0, max(5.0, heights[len(heights) // 2])), 2)
+
+
 def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], links: dict, report: FusionReport) -> Block:
-    style = block_style(chars)
+    style = block_style(chars, fallback_size=_size_from_lines(lb))
     spans: list[Span] = []
     formulas: list[InlineFormula] = []
     for li, line in enumerate(lb.lines):
