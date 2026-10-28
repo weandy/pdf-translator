@@ -1,0 +1,177 @@
+"""端到端：通过 HTTP 接口走完 上传 → 解析 → 融合 → 切分 → 术语 → 翻译 → 背景页，再编辑与重翻。
+
+解析服务和大模型用假实现（不访问网络），PDF 按合成夹具的坐标现场生成。
+"""
+
+import json
+import re
+import time
+from pathlib import Path
+
+import pymupdf
+import pytest
+from fastapi.testclient import TestClient
+
+from pdftr.api.app import create_app
+from pdftr.config import Settings
+from pdftr.container import build_container
+from pdftr.domain.layout import LayoutResult
+from pdftr.domain.llm import ChatError, ChatOptions, ChatResult, ChatUsage
+from pdftr.parsing.mineru_normalize import normalize
+
+FIXTURES = Path(__file__).parent.parent / "fixtures"
+TEXTS = [
+    (0, 52, 56, "A Synthetic Title"),
+    (0, 52, 609, "Let"),
+    (0, 124, 609, "f(x)"),
+    (0, 154, 609, "be a function that"),
+    (0, 312, 109, "continues in the next column"),
+    (0, 52, 556, "Figure 1: A caption."),
+    (0, 312, 712, "[1] Some reference."),
+    (0, 52, 18, "Running header"),
+    (0, 52, 755, "1 A footnote."),
+    (1, 52, 69, "and ends on the next page."),
+    (1, 52, 109, "A normal paragraph."),
+]
+HEADERS = {"X-LLM-Key": "test-key", "X-Parser-Key": "test-token", "X-LLM-Model": "deepseek-flash"}
+
+
+def make_pdf() -> bytes:
+    doc = pymupdf.open()
+    for _ in range(2):
+        doc.new_page(width=600, height=800)
+    for page, x, y, text in TEXTS:
+        doc[page].insert_text((x, y), text, fontsize=9, fontname="tiro")
+    return doc.tobytes()
+
+
+class FakeParser:
+    name = "fake"
+    is_cloud = True
+
+    async def parse(self, pdf: Path, pages=None, raw_dir=None) -> LayoutResult:
+        return normalize(json.loads((FIXTURES / "mineru_layout_min.json").read_text(encoding="utf-8")))
+
+
+class FakeChat:
+    model = "deepseek-flash"
+    fail = False
+
+    async def complete(self, system: str, user: str, opts: ChatOptions) -> ChatResult:
+        if FakeChat.fail:
+            raise ChatError("翻译服务的 API Key 无效")
+        if "抽取需要全文统一译法的专业术语" in user:
+            return ChatResult(text="领域：测试\nfunction=函数")
+        out = []
+        for line in user.splitlines():
+            if m := re.match(r"^(\d+)\|(.*)$", line):
+                text = re.sub(r"<(m\d+)>.*?</\1>", r"<\1/>", m.group(2))
+                tag = "精" if opts.thinking == "low" else "译"
+                out.append(f"{m.group(1)}|{tag}:{text}")
+        return ChatResult(text="\n".join(out), usage=ChatUsage(prompt_tokens=100, completion_tokens=40))
+
+
+@pytest.fixture()
+def client(tmp_path: Path):
+    FakeChat.fail = False
+    settings = Settings(data_dir=tmp_path, gist_enabled=False)
+    container = build_container(
+        settings, {"parser_factory": lambda s: FakeParser(), "chat_factory": lambda s: FakeChat()}
+    )
+    with TestClient(create_app(container)) as c:
+        yield c
+
+
+def _upload(client: TestClient, consent: bool = True, data: bytes | None = None, headers=HEADERS):
+    options = json.dumps({"cloud_consent": consent})
+    files = {"file": ("paper.pdf", data if data is not None else make_pdf(), "application/pdf")}
+    return client.post("/api/jobs", files=files, data={"options": options}, headers=headers)
+
+
+def _wait(client: TestClient, job_id: str) -> dict:
+    for _ in range(100):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] in ("done", "failed"):
+            return job
+        time.sleep(0.05)
+    raise AssertionError("任务超时")
+
+
+def test_full_flow(client: TestClient):
+    r = _upload(client)
+    assert r.status_code == 202, r.text
+    job = _wait(client, r.json()["id"])
+    assert job["status"] == "done", job
+    assert job["page_count"] == 2 and job["cost_cny"] is not None
+
+    # 进度事件：已完成的任务直接推送最终状态后结束
+    with client.stream("GET", f"/api/jobs/{job['id']}/events") as s:
+        body = "".join(s.iter_text())
+    assert '"status":"done"' in body
+
+    doc = client.get(f"/api/jobs/{job['id']}/document").json()
+    assert doc["title"] == "A Synthetic Title"
+    assert [p["index"] for p in doc["pages"]] == [0, 1]
+    segs = {s["source"]: s for s in doc["segments"]}
+    chain = segs["Let <m1/> be a function that continues in the next column and ends on the next page."]
+    assert chain["block_ids"] == ["p0-b1", "p0-b2", "p1-b0"]
+    assert chain["target"].startswith("译:") and chain["status"] == "done"
+    assert chain["formulas"]["m1"]["latex"] == "f(x)" and chain["formulas"]["m1"]["page"] == 0
+    assert len(chain["parts"]) == 3
+    assert "[1] Some reference." not in segs  # 参考文献默认不翻
+
+    # 背景页已生成，且译文块的文字被删掉、未翻译的保留
+    pdf = client.get(f"/api/jobs/{job['id']}/files/background.pdf")
+    assert pdf.status_code == 200
+    with pymupdf.open(stream=pdf.content, filetype="pdf") as bg:
+        text = bg[0].get_text()
+    assert "be a function" not in text and "Some reference" in text and "Running header" in text
+    assert client.get(f"/api/jobs/{job['id']}/files/original.pdf").status_code == 200
+    assert client.get(f"/api/jobs/{job['id']}/files/secret.txt").status_code == 422
+
+    # 编辑、重翻、公式裁剪图
+    sid = chain["id"]
+    edited = client.patch(f"/api/segments/{sid}", json={"target": "用户修改的译文"}).json()
+    assert edited["status"] == "edited" and edited["target"] == "用户修改的译文"
+    again = client.post(f"/api/segments/{sid}/retranslate", json={"quality": "careful"}, headers=HEADERS).json()
+    assert again["target"].startswith("精:") and again["quality"] == "careful"
+    png = client.get(f"/api/segments/{sid}/formulas/m1.png")
+    assert png.status_code == 200 and png.content.startswith(b"\x89PNG")
+    assert client.get(f"/api/segments/{sid}/formulas/m9.png").status_code == 404
+
+    assert [j["id"] for j in client.get("/api/jobs").json()] == [job["id"]]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"consent": False}, "确认文件会上传"),
+        ({"data": b"hello"}, "只支持 PDF"),
+        ({"data": b"%PDF-1.4 broken"}, "无法打开"),
+        ({"headers": {"X-Parser-Key": "t"}}, "API Key"),
+    ],
+)
+def test_upload_rejected(client: TestClient, kwargs: dict, message: str):
+    r = _upload(client, **kwargs)
+    assert r.status_code == 400
+    assert message in r.json()["detail"]
+
+
+def test_chat_error_fails_job_and_retry_resumes(client: TestClient):
+    FakeChat.fail = True
+    job = _wait(client, _upload(client).json()["id"])
+    assert job["status"] == "failed" and "API Key 无效" in job["error"]
+    assert job["stage"] == "glossary"  # 解析、融合、切分已完成
+
+    FakeChat.fail = False
+    r = client.post(f"/api/jobs/{job['id']}/retry", headers=HEADERS)
+    assert r.status_code == 202
+    assert _wait(client, job["id"])["status"] == "done"
+
+
+def test_meta(client: TestClient):
+    cfg = client.get("/api/config").json()
+    assert cfg["server_has_llm_key"] is False and cfg["max_pages"] == 200
+    est = client.get("/api/estimate", params={"pages": 15}).json()
+    assert est["pages"] == 15 and 0 < est["cny_low"] <= est["cny_high"] < 0.2
+    assert client.get("/api/jobs/0123456789abcdef").status_code == 404

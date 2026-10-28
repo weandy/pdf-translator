@@ -30,6 +30,7 @@ class TranslateOptions(BaseModel):
     concurrency: int = 4
     batch_tokens: int = BATCH_TOKENS
     max_retries: int = 2
+    use_cache: bool = True  # 单段“重翻”时为 False：用户要的是另一个译文
 
 
 class TranslateReport(BaseModel):
@@ -85,7 +86,7 @@ async def translate(
             continue
         seg.quality = o.quality
         key = cache_key(seg, chat.model, ctx.terms, o.quality)
-        if (hit := cache.get(key)) is not None:
+        if o.use_cache and (hit := cache.get(key)) is not None:
             seg.target, seg.status = hit, SegmentStatus.DONE
             report.cached += 1
             continue

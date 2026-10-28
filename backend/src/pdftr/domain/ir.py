@@ -126,6 +126,20 @@ class SegmentStatus(StrEnum):
 Quality = Literal["default", "careful"]  # careful = 精翻（开启低强度思考）
 
 
+class SegmentPart(BaseModel):
+    """段落在某个块里的那一部分：渲染时按各部分原文长度拆分译文。"""
+
+    block_id: str
+    chars: int  # 这部分原文的字符数
+
+
+class FormulaRef(BaseModel):
+    """段落内公式占位符对应的原文位置（KaTeX 渲染失败时按位置裁剪原图）。"""
+
+    page: int
+    bbox: Rect
+
+
 class Segment(BaseModel):
     """翻译单元：一个段落，跨页时对应多个块。"""
 
@@ -134,6 +148,8 @@ class Segment(BaseModel):
     block_ids: list[str]  # 跨栏/跨页时按 continues_from 链的顺序排列
     source: str  # 含 <mN/> 占位符
     formulas: dict[str, str] = Field(default_factory=dict)  # 占位符 key → LaTeX
+    formula_refs: dict[str, FormulaRef] = Field(default_factory=dict)
+    parts: list[SegmentPart] = Field(default_factory=list)
     section: str = ""  # 所在章节，作为批次上下文
     target: str | None = None
     status: SegmentStatus = SegmentStatus.PENDING

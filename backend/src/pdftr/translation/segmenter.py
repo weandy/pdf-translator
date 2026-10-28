@@ -10,7 +10,7 @@ import re
 from collections.abc import Iterable
 
 from pdftr.domain.ids import segment_id
-from pdftr.domain.ir import Block, BlockType, Document, Segment
+from pdftr.domain.ir import Block, BlockType, Document, FormulaRef, Segment, SegmentPart
 
 # MinerU 会把序数词的上标（如 1^{st}、2^{nd}）识别成公式；模型会正确地把它译成“一阶”“二阶”，
 # 占位符随之“消失”导致校验失败（M3 实测）。这类公式还原成普通文字再翻译。
@@ -94,6 +94,8 @@ def segment(
             continue
         chain = _chain(block, next_of)
         formulas: dict[str, str] = {}
+        refs: dict[str, FormulaRef] = {}
+        parts: list[SegmentPart] = []
         text = ""
         for b in chain:
             key_map = {}
@@ -103,7 +105,10 @@ def segment(
                 key = f"m{len(formulas) + 1}"
                 key_map[f.key] = key
                 formulas[key] = f.latex
-            text = _join(text, block_source(b, key_map))
+                refs[key] = FormulaRef(page=b.page, bbox=f.bbox)
+            piece = block_source(b, key_map)
+            parts.append(SegmentPart(block_id=b.id, chars=len(piece)))
+            text = _join(text, piece)
         if len(re.findall(r"[A-Za-z]{2,}", re.sub(r"<m\d+/>", " ", text))) < MIN_WORDS:
             continue
         segments.append(
@@ -113,6 +118,8 @@ def segment(
                 block_ids=[b.id for b in chain],
                 source=text,
                 formulas=formulas,
+                formula_refs=refs,
+                parts=parts,
                 section=section if block.type is not BlockType.TITLE else "",
             )
         )

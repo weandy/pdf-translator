@@ -56,3 +56,14 @@ def _page(page: pymupdf.Page) -> CharPage:
         kind=classify_page(page, chars),
         chars=chars,
     )
+
+
+def page_count(pdf: Path) -> int:
+    """打开失败（不是 PDF、已加密等）时抛 ValueError。"""
+    try:
+        with pymupdf.open(pdf) as doc:
+            if doc.needs_pass:
+                raise ValueError("PDF 已加密，请先移除密码")
+            return len(doc)
+    except (pymupdf.FileDataError, RuntimeError) as e:
+        raise ValueError("无法打开文件，请确认是有效的 PDF") from e

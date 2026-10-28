@@ -62,6 +62,8 @@ def test_chain_merge_and_formula_renumbering():
     chain = segs[1]
     assert chain.source == "Let <m1/> be a representation that is left-to-right with <m2/>"
     assert chain.formulas == {"m1": "f(x)", "m2": "g(y)"}
+    assert [(p.block_id, p.chars > 0) for p in chain.parts] == [("p0-b1", True), ("p1-b0", True)]
+    assert {k: r.page for k, r in chain.formula_refs.items()} == {"m1": 0, "m2": 1}
     assert chain.section == "1 Introduction"
     assert segs[0].section == ""  # 标题本身不带章节上下文
     assert segs[1].id == "0123456789abcdef-s1"

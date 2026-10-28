@@ -1,0 +1,98 @@
+"""任务接口：创建、列表、详情、进度推送（SSE）、阅读器数据、文件、重试。"""
+
+import asyncio
+from collections.abc import AsyncIterator
+from typing import Annotated, Literal
+
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import ValidationError
+
+from pdftr.api.deps import pipeline, secrets
+from pdftr.api.schemas import DocumentOut, JobOut
+from pdftr.domain.job import JobOptions, JobStatus
+from pdftr.pipeline import usecases
+from pdftr.pipeline.runner import Pipeline
+from pdftr.pipeline.secrets import Secrets
+
+router = APIRouter(prefix="/api/jobs", tags=["jobs"])
+
+PipelineDep = Annotated[Pipeline, Depends(pipeline)]
+SecretsDep = Annotated[Secrets, Depends(secrets)]
+
+
+@router.post("", response_model=JobOut, status_code=202)
+async def create_job(
+    request: Request,
+    p: PipelineDep,
+    sec: SecretsDep,
+    file: Annotated[UploadFile, File()],
+    options: Annotated[str, Form()] = "{}",
+) -> JobOut:
+    settings = request.app.state.container.settings
+    try:
+        opts = JobOptions.model_validate_json(options)
+    except ValidationError as e:
+        raise usecases.UserError("任务选项格式错误") from e
+    data = await file.read(settings.max_upload_mb * 1024 * 1024 + 1)
+    limits = usecases.Limits(max_upload_mb=settings.max_upload_mb, max_pages=settings.max_pages)
+    job = usecases.create_job(p, data, file.filename or "document.pdf", opts, sec, limits)
+    return JobOut.of(job)
+
+
+@router.get("", response_model=list[JobOut])
+def recent_jobs(p: PipelineDep) -> list[JobOut]:
+    return [JobOut.of(j) for j in p.deps.store.recent_jobs()]
+
+
+@router.get("/{job_id}", response_model=JobOut)
+def get_job(job_id: str, p: PipelineDep) -> JobOut:
+    return JobOut.of(usecases.get_job(p, job_id))
+
+
+@router.get("/{job_id}/events")
+async def job_events(job_id: str, request: Request, p: PipelineDep) -> StreamingResponse:
+    job = usecases.get_job(p, job_id)
+
+    async def stream() -> AsyncIterator[str]:
+        q = p.deps.events.subscribe(job_id)
+        try:
+            current = job
+            while True:
+                yield f"data: {JobOut.of(current).model_dump_json()}\n\n"
+                if current.status in (JobStatus.DONE, JobStatus.FAILED):
+                    return
+                while True:
+                    if await request.is_disconnected():
+                        return
+                    try:
+                        current = await asyncio.wait_for(q.get(), timeout=15)
+                        break
+                    except TimeoutError:
+                        yield ": ping\n\n"  # 保持连接，防止代理断开
+        finally:
+            p.deps.events.unsubscribe(job_id, q)
+
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    return StreamingResponse(stream(), media_type="text/event-stream", headers=headers)
+
+
+@router.get("/{job_id}/document", response_model=DocumentOut)
+def get_document(job_id: str, p: PipelineDep) -> DocumentOut:
+    view = usecases.document_view(p, job_id)
+    return DocumentOut.of(view.job, view.document, view.segments)
+
+
+@router.get("/{job_id}/files/{name}")
+def get_file(job_id: str, name: Literal["original.pdf", "background.pdf"], p: PipelineDep) -> FileResponse:
+    usecases.get_job(p, job_id)
+    path = p.deps.artifacts.path(job_id, name)
+    if not path.exists():
+        raise usecases.NotFound("文件尚未生成")
+    return FileResponse(path, media_type="application/pdf", headers={"Cache-Control": "private, max-age=3600"})
+
+
+@router.post("/{job_id}/retry", response_model=JobOut, status_code=202)
+async def retry_job(job_id: str, p: PipelineDep, sec: SecretsDep) -> JobOut:
+    # 必须是 async：同步路由在线程池里执行，那里没有事件循环，无法创建后台任务
+    return JobOut.of(usecases.retry_job(p, job_id, sec))
