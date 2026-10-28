@@ -60,7 +60,10 @@ def split_by_parts(text: str, part_chars: list[int]) -> list[str]:
 
 
 def role(block: Block) -> str:
-    """排版角色，决定字体：heading 黑体、caption 编号黑体其余宋体、body 宋体（与前端一致）。"""
+    """排版角色，决定字体（与前端一致）：heading 黑体、caption 编号黑体其余宋体、body 宋体、
+    label（图内文字）黑体居中。"""
+    if block.type is BlockType.FIGURE_TEXT:
+        return "label"
     if block.type is BlockType.TITLE or block.style.bold:
         return "heading"
     if block.type is BlockType.CAPTION:
@@ -97,8 +100,12 @@ def _css(block: Block, with_fonts: bool) -> str:
         # MuPDF 默认给 body 上下各 8pt 边距，且 body 选择器比 * 优先，必须单独清零，否则每个框都少 16pt
         " html, body, p, div {margin: 0; padding: 0}"
     )
+    if r == "label":  # 图里的字多为无衬线体，标签多居中（坐标轴标题、框图节点）
+        css += " body {text-align: center}"
     if not with_fonts:
         return css + f" body {{font-family: sans-serif; font-weight: {'bold' if r == 'heading' else 'normal'}}}"
+    if r == "label":
+        return f"{fonts.font_faces()} {css} body {{font-family: Hei}} .zh {{font-family: Hei}}"
     zh = "Hei" if r == "heading" else "Song"
     latin_weight = "bold" if r == "heading" else "normal"
     return (

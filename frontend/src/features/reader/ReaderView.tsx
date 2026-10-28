@@ -27,11 +27,6 @@ interface Props {
 }
 
 const PADDING = 48; // .pages 左右内边距之和
-/**
- * 叠加层内部按 4 倍尺寸排版再整体缩回：浏览器排小字号（正文约 8px）时会把字宽取整到整像素，
- * 放大后 i、l 等窄字母两侧出现明显空隙；放大排版后取整误差可以忽略。
- */
-const UNIT = 4;
 const SPINE = 2; // 对照模式两页之间的装订线
 
 export function ReaderView({ doc, jobId, selectedSegment, onSelectSegment, heading, actions }: Props) {
@@ -201,7 +196,7 @@ function PageRow({
           {near && (
             <div
               className="overlay"
-              style={{ width: page.width * UNIT, height: page.height * UNIT, transform: `scale(${scale / UNIT})` }}
+              style={{ width: page.width * scale, height: page.height * scale }}
             >
               {blocks.map((b) => {
                 const t = texts.get(b.id);
@@ -210,6 +205,7 @@ function PageRow({
                     key={b.id}
                     item={t}
                     className={mark(t.segment.id)}
+                    scale={scale}
                     fontsVersion={fontsVersion}
                     onHover={onHover}
                     onSelect={onSelect}
@@ -240,12 +236,14 @@ function useFontsVersion(): number {
 function OverlayBlock({
   item,
   className,
+  scale,
   fontsVersion,
   onHover,
   onSelect,
 }: {
   item: BlockText;
   className: string;
+  scale: number;
   fontsVersion: number;
   onHover: (id: string | null) => void;
   onSelect: (id: string) => void;
@@ -258,22 +256,23 @@ function OverlayBlock({
   const rect = layoutBox(block);
   const [captionNo, rest] = role === "caption" && first ? splitCaptionNo(text) : ["", text];
 
-  // 内容（含 KaTeX）渲染后拟合字号；块内按 pt 排版，与外层缩放无关
+  // 内容（含 KaTeX）渲染后拟合字号。直接按显示尺寸排版（1pt = scale 像素），不用 transform 缩放：
+  // 先排小字再放大，或先排大字再缩小，浏览器都会把字宽对齐到像素，英文字母之间出现空隙。
   useLayoutEffect(() => {
     if (box.current && inner.current) {
-      setOverflow(fitElement(box.current, inner.current, block.font_size * UNIT).overflow);
+      setOverflow(fitElement(box.current, inner.current, block.font_size * scale).overflow);
     }
-  }, [text, block.font_size, fontsVersion]);
+  }, [text, block.font_size, scale, fontsVersion]);
 
   return (
     <div
       ref={box}
       className={`tblock role-${role}${translated ? "" : " untranslated"}${overflow ? " overflow" : ""}${className}`}
       style={{
-        left: rect.x0 * UNIT,
-        top: rect.y0 * UNIT,
-        width: (rect.x1 - rect.x0) * UNIT,
-        height: (rect.y1 - rect.y0) * UNIT,
+        left: rect.x0 * scale,
+        top: rect.y0 * scale,
+        width: (rect.x1 - rect.x0) * scale,
+        height: (rect.y1 - rect.y0) * scale,
         color: `#${block.color.toString(16).padStart(6, "0")}`,
       }}
       title={overflow ? "译文放不下，点击查看全文" : undefined}

@@ -11,7 +11,7 @@ from pathlib import Path
 import pymupdf
 
 from pdftr.domain.geometry import Rect
-from pdftr.domain.ir import Block
+from pdftr.domain.ir import Block, BlockType
 
 SHRINK = 0.5  # 块框略收缩，避免误删相邻的公式字符（S5）
 
@@ -19,26 +19,44 @@ SHRINK = 0.5  # 块框略收缩，避免误删相邻的公式字符（S5）
 _IMAGE_NONE = getattr(pymupdf, "PDF_REDACT_IMAGE_NONE", 0)
 _LINE_ART_REMOVE_IF_TOUCHED = getattr(pymupdf, "PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED", 2)
 _TEXT_REMOVE = getattr(pymupdf, "PDF_REDACT_TEXT_REMOVE", 0)
+_LINE_ART_NONE = getattr(pymupdf, "PDF_REDACT_LINE_ART_NONE", 0)
+
+
+def _label_band(r: Rect) -> Rect:
+    """图内标签只删中间一条窄带：字框按字体上下边界计算，比字形高，图里上下相邻的刻度数字
+    （如坐标轴标题正上方的刻度）字框会伸进标签的范围；MuPDF 删除所有字框与删除区域相交的字，会把它们一起删掉。"""
+    band = r.height * 0.3
+    return Rect(x0=r.x0 + SHRINK, y0=r.y0 + band, x1=r.x1 - SHRINK, y1=r.y1 - band)
 
 
 def make_background(pdf: Path, blocks: Iterable[Block], out: Path) -> int:
-    """返回实际去字的块数。"""
+    """返回实际去字的块数。
+
+    图里的文字只删文字、不碰任何线条（坐标轴、刻度、连线紧挨着标签），所以与正文分两轮去字。
+    """
     by_page: dict[int, list[Rect]] = defaultdict(list)
+    labels: dict[int, list[Rect]] = defaultdict(list)
     for b in blocks:
-        by_page[b.page].append(b.bbox.shrink(SHRINK))
+        if b.type is BlockType.FIGURE_TEXT:
+            labels[b.page].append(_label_band(b.bbox))
+        else:
+            by_page[b.page].append(b.bbox.shrink(SHRINK))
     with pymupdf.open(pdf) as doc:
-        for page_no, rects in by_page.items():
+        for page_no in sorted(set(by_page) | set(labels)):
             if page_no >= len(doc):
                 continue
             page = doc[page_no]
-            for r in rects:
-                page.add_redact_annot(pymupdf.Rect(r.x0, r.y0, r.x1, r.y1))
-            page.apply_redactions(images=_IMAGE_NONE, graphics=_LINE_ART_REMOVE_IF_TOUCHED, text=_TEXT_REMOVE)
+            for rects, graphics in ((labels[page_no], _LINE_ART_NONE), (by_page[page_no], _LINE_ART_REMOVE_IF_TOUCHED)):
+                if not rects:
+                    continue
+                for r in rects:
+                    page.add_redact_annot(pymupdf.Rect(r.x0, r.y0, r.x1, r.y1))
+                page.apply_redactions(images=_IMAGE_NONE, graphics=graphics, text=_TEXT_REMOVE)
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_suffix(".part")
         doc.save(tmp, garbage=3, deflate=True)
         tmp.replace(out)
-    return sum(len(v) for v in by_page.values())
+    return sum(len(v) for v in by_page.values()) + sum(len(v) for v in labels.values())
 
 
 def crop_png(pdf: Path, page: int, bbox: Rect, zoom: float = 4.0, pad: float = 1.0) -> bytes:

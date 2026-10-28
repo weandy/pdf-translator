@@ -89,6 +89,7 @@ export function UploadPanel({ onCreated, onNeedSettings }: Props) {
         cloud_consent: consent,
         quality: settings.quality,
         include_references: settings.includeReferences,
+        translate_figures: settings.translateFigures,
       });
       rememberJob(job.id);
       onCreated(job);

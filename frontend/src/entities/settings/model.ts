@@ -14,6 +14,7 @@ export interface Settings {
   parserKey: string;
   quality: Quality;
   includeReferences: boolean;
+  translateFigures: boolean;
   rememberKeys: boolean;
 }
 
@@ -26,6 +27,7 @@ export const DEFAULTS: Settings = {
   parserKey: "",
   quality: "default",
   includeReferences: false,
+  translateFigures: true,
   rememberKeys: true,
 };
 

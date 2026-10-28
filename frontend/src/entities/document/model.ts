@@ -13,9 +13,10 @@ export interface BlockText {
 }
 
 /** 排版角色决定字体（GB/T 7713.2 附录 B），与后端 rendering/export.py 的 role() 一致。 */
-export type Role = "heading" | "caption" | "body";
+export type Role = "heading" | "caption" | "body" | "label";
 
 export function roleOf(block: BlockData): Role {
+  if (block.type === "figure_text") return "label"; // 图里的文字：黑体、居中
   if (block.type === "title" || block.bold) return "heading";
   if (block.type === "caption") return "caption";
   return "body";

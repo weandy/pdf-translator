@@ -45,3 +45,10 @@
 .tblock .no {
   font-weight: 700;
 }
+/* 图里的文字：图表多用无衬线字体，标签（坐标轴标题、框图节点）多居中 */
+.tblock.role-label,
+.tblock.role-label .zh {
+  font-family: "Pdftr Hei", "Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", SimHei, sans-serif;
+  font-weight: 400;
+  text-align: center;
+}

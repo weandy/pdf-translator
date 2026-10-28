@@ -372,6 +372,11 @@ export interface components {
              * @default false
              */
             include_references: boolean;
+            /**
+             * Translate Figures
+             * @default true
+             */
+            translate_figures: boolean;
             /** Pages */
             pages?: number[] | null;
             /**

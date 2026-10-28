@@ -30,6 +30,7 @@ class BlockType(StrEnum):
     HEADER = "header"
     FOOTER = "footer"
     REFERENCE = "reference"
+    FIGURE_TEXT = "figure_text"  # 图里的矢量文字（坐标轴标题、图例、框图标签），由融合阶段从图块中拆出
 
 
 # 默认参与翻译的块类型；参考文献是否翻译由任务选项决定

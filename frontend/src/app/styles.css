@@ -892,12 +892,11 @@ input[type="radio"] {
   background: var(--pencil-strong);
 }
 
-/* 译文叠加层：按 pt 的 4 倍排版（1pt 记作 4px，见 ReaderView 的 UNIT），外层 transform 缩回 */
+/* 译文叠加层：按显示尺寸排版（1pt = 缩放比例 × 1px），不用 transform 缩放 */
 .overlay {
   position: absolute;
   top: 0;
   left: 0;
-  transform-origin: 0 0;
 }
 .tblock {
   position: absolute;

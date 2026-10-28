@@ -97,3 +97,26 @@ def test_block_without_chars_estimates_size_from_line_height(tmp_path: Path):
     result, _ = fuse("0123456789abcdef", layout, extract(path), used_cloud=True)
     caption = next(b for b in result.blocks() if b.type is BlockType.CAPTION)
     assert caption.style.font_size == pytest.approx(7.0, abs=0.01)
+
+
+def test_figure_text_becomes_labels(tmp_path: Path):
+    """图里的横排文字拆成可翻译的标签；纯数字刻度、竖排文字保留原样；同一行相距很远的文字拆开。"""
+    doc = pymupdf.open()
+    for _ in range(2):
+        doc.new_page(width=600, height=800)
+    for page, x, y, text in TEXTS:
+        doc[page].insert_text((x, y), text, fontsize=9, fontname="tiro")
+    fig = doc[0]  # 夹具里图片主体的范围是 (50, 400)–(290, 540)
+    fig.insert_text((60, 430), "Training loss", fontsize=7, fontname="helv")
+    fig.insert_text((200, 430), "Validation", fontsize=7, fontname="helv")  # 同一行，间隔很大
+    fig.insert_text((60, 520), "0.5", fontsize=7, fontname="helv")
+    fig.insert_text((280, 500), "Pass rate", fontsize=7, fontname="helv", rotate=90)
+    path = tmp_path / "figure.pdf"
+    doc.save(path)
+
+    result, report = fuse("0123456789abcdef", normalize(json.loads(FIXTURE.read_text(encoding="utf-8"))),
+                          extract(path), used_cloud=True)  # fmt: skip
+    labels = [b for b in result.blocks() if b.type is BlockType.FIGURE_TEXT]
+    assert sorted(" ".join(s.text for s in b.spans) for b in labels) == ["Training loss", "Validation"]
+    assert report.figure_labels == 2 and all(b.translatable for b in labels)
+    assert all(b.bbox.x0 >= 50 and b.bbox.x1 <= 290 and b.bbox.y0 >= 400 for b in labels)

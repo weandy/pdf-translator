@@ -28,3 +28,7 @@ def test_caption_number():
     assert CAPTION_NO.match("图 4. 模型性能")[0] == "图 4."  # type: ignore[index]
     assert CAPTION_NO.match("表2：结果")[0] == "表2："  # type: ignore[index]
     assert CAPTION_NO.match("如图 4 所示") is None
+
+
+def test_figure_text_is_label():
+    assert role(_block(BlockType.FIGURE_TEXT)) == "label"  # 黑体、居中

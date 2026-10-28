@@ -15,6 +15,7 @@ class Char(BaseModel):
     bold: bool = False
     italic: bool = False
     line: int  # 所在 PyMuPDF 行的全页序号，用于按行重建文字
+    upright: bool = True  # 所在行是否水平从左到右（图里竖排、斜排的标签不翻译）
 
 
 class CharPage(BaseModel):

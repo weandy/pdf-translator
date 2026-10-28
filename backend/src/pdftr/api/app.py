@@ -45,8 +45,11 @@ def create_app(container: Container | None = None) -> FastAPI:
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         c.pipeline.recover_interrupted()
         housekeeping = asyncio.create_task(_purge_periodically(c))
+        # 在后台预先下载并加载术语库，第一个任务不用等
+        warmup = asyncio.create_task(asyncio.to_thread(c.pipeline.deps.term_matcher))
         yield
         housekeeping.cancel()
+        warmup.cancel()
 
     app = FastAPI(title="pdf-translator", version=__version__, lifespan=lifespan)
     app.state.container = c

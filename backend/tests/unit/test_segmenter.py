@@ -113,3 +113,10 @@ def test_front_matter_between_title_and_abstract_is_kept_original():
     ]
     doc = Document(job_id="0123456789abcdef", pages=[Page(index=0, width=600, height=800, blocks=blocks)])
     assert [s.block_ids for s in segment(doc)] == [["p0-b0"], ["p0-b2"], ["p0-b3"]]
+
+
+def test_figure_labels_follow_option():
+    label = _block("p0-b1", 0, BlockType.FIGURE_TEXT, [_text("Training loss")], translatable=True)
+    doc = Document(job_id="0123456789abcdef", pages=[Page(index=0, width=600, height=800, blocks=[label])])
+    assert [s.source for s in segment(doc)] == ["Training loss"]
+    assert segment(doc, include_figures=False) == []

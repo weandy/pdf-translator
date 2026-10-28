@@ -29,6 +29,8 @@ def _page(page: pymupdf.Page) -> CharPage:
     raw = cast(dict[str, Any], page.get_text("rawdict"))
     for block in raw["blocks"]:
         for line in block.get("lines", []):
+            dx, dy = line.get("dir", (1.0, 0.0))
+            upright = abs(dx - 1) < 0.01 and abs(dy) < 0.01
             for span in line["spans"]:
                 font = span["font"]
                 bold = bool(span["flags"] & _FLAG_BOLD) or any(k in font for k in _BOLD_NAMES)
@@ -44,6 +46,7 @@ def _page(page: pymupdf.Page) -> CharPage:
                             bold=bold,
                             italic=italic,
                             line=line_no,
+                            upright=upright,
                         )
                     )
             line_no += 1

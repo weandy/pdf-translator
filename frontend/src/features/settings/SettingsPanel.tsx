@@ -128,6 +128,17 @@ export function SettingsPanel({ onClose }: Props) {
           <label className="choice">
             <input
               type="checkbox"
+              checked={form.translateFigures}
+              onChange={(e) => set("translateFigures", e.target.checked)}
+            />
+            <span>
+              翻译图中文字
+              <small>坐标轴、图例、框图里的文字译成中文后排回原位；图片格式的图暂不支持。</small>
+            </span>
+          </label>
+          <label className="choice">
+            <input
+              type="checkbox"
               checked={form.rememberKeys}
               onChange={(e) => set("rememberKeys", e.target.checked)}
             />

@@ -25,6 +25,7 @@ class JobOptions(BaseModel):
     parser: Literal["mineru-cloud"] = "mineru-cloud"
     quality: Quality = "default"
     include_references: bool = False
+    translate_figures: bool = True  # 翻译图里的矢量文字（坐标轴、图例、框图标签）
     pages: list[int] | None = None  # 0 起的页码；None 表示全部
     cloud_consent: bool = False  # 用户已确认文件会上传到云端解析服务
 

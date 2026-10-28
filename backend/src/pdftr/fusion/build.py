@@ -30,6 +30,8 @@ from pdftr.fusion.style import block_style
 from pdftr.fusion.text_fix import chars_in, choose, text_of
 
 ORPHAN_MIN_LETTERS = 6
+LABEL_GAP = 1.5  # 同一行里相距超过 1.5 个字高的文字（如横排的图例）拆成不同标签
+_LABEL_WORD = re.compile(r"[A-Za-z]{3,}")  # 至少有一个 3 个字母以上的词才翻译；纯数字、L1 这类编号保留原样
 
 
 @dataclass
@@ -44,6 +46,7 @@ class FusionReport:
     text_replaced: int = 0
     formulas: int = 0
     orphan_blocks: int = 0
+    figure_labels: int = 0
     non_native_pages: list[int] = field(default_factory=list)
 
     @property
@@ -72,6 +75,9 @@ def fuse(
         for lb, chars in zip(lp.blocks, per_block, strict=True):
             blocks.append(_block(cp, lb, chars, rel.links, report))
         blocks += _orphan_blocks(cp, orphans, start=len(lp.blocks), report=report)
+        figure_chars = [c for lb, chars in zip(lp.blocks, per_block, strict=True) if lb.type is BlockType.FIGURE
+                        for c in chars]  # fmt: skip
+        blocks += _figure_labels(cp, figure_chars, start=len(blocks), report=report)
         pages.append(
             Page(index=cp.index, width=cp.width, height=cp.height, rotation=cp.rotation, kind=cp.kind, blocks=blocks)
         )
@@ -159,6 +165,60 @@ def _orphan_blocks(cp: CharPage, orphans: list[Char], start: int, report: Fusion
             )
         )
     report.orphan_blocks += len(blocks)
+    return blocks
+
+
+def _label_runs(chars: list[Char]) -> list[list[Char]]:
+    """按 PyMuPDF 行分组，再在大间隔处断开；只取水平排列的行。"""
+    by_line: dict[int, list[Char]] = defaultdict(list)
+    for ch in chars:
+        if ch.upright:
+            by_line[ch.line].append(ch)
+    runs: list[list[Char]] = []
+    for line in by_line.values():
+        line.sort(key=lambda c: c.bbox.x0)
+        run: list[Char] = []
+        last: Char | None = None  # 上一个可见字符
+        for ch in line:
+            if not ch.c.isspace():
+                if last and ch.bbox.x0 - last.bbox.x1 > max(ch.size, last.size) * LABEL_GAP:
+                    runs.append(run)
+                    run = []
+                last = ch
+            run.append(ch)
+        runs.append(run)
+    return runs
+
+
+def _figure_labels(cp: CharPage, chars: list[Char], start: int, report: FusionReport) -> list[Block]:
+    """图里的矢量文字（坐标轴标题、图例、框图标签）拆成可翻译的小块；位图里的文字提取不到，不处理。"""
+    blocks: list[Block] = []
+    for run in _label_runs(chars):
+        visible = [c for c in run if not c.c.isspace()]
+        text = text_of(run).strip()
+        if not visible or not _LABEL_WORD.search(text):
+            continue
+        box = Rect(
+            x0=min(c.bbox.x0 for c in visible),
+            y0=min(c.bbox.y0 for c in visible),
+            x1=max(c.bbox.x1 for c in visible),
+            y1=max(c.bbox.y1 for c in visible),
+        )
+        style = block_style(visible)
+        order = start + len(blocks)
+        blocks.append(
+            Block(
+                id=block_id(cp.index, order),
+                page=cp.index,
+                type=BlockType.FIGURE_TEXT,
+                bbox=box,
+                order=order,
+                spans=[Span(text=text, bbox=box, size=style.font_size, bold=style.bold, italic=style.italic)],
+                style=style,
+                translatable=True,
+            )
+        )
+    report.figure_labels += len(blocks)
     return blocks
 
 

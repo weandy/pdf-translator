@@ -67,9 +67,11 @@ def _chain(head: Block, next_of: dict[str, Block]) -> list[Block]:
     return chain
 
 
-def _wanted(block: Block, include_references: bool) -> bool:
+def _wanted(block: Block, include_references: bool, include_figures: bool) -> bool:
     if block.type is BlockType.REFERENCE:
         return include_references and any(s.text.strip() for s in block.spans)
+    if block.type is BlockType.FIGURE_TEXT:
+        return include_figures and block.translatable
     return block.translatable
 
 
@@ -97,6 +99,7 @@ def segment(
     doc: Document,
     *,
     include_references: bool = False,
+    include_figures: bool = True,
     pages: Iterable[int] | None = None,
 ) -> list[Segment]:
     page_set = set(pages) if pages is not None else None
@@ -109,7 +112,7 @@ def segment(
             section = (
                 block_source(block, {f.key: f.key for f in block.formulas if not textual_formula(f.latex)}) or section
             )
-        if block.continues_from or block.id in skip or not _wanted(block, include_references):
+        if block.continues_from or block.id in skip or not _wanted(block, include_references, include_figures):
             continue  # 续接块随链头一起处理
         if page_set is not None and block.page not in page_set:
             continue

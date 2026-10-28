@@ -10,6 +10,7 @@ import csv
 import io
 import logging
 import re
+import time
 import urllib.request
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -197,12 +198,21 @@ def parse_ids(spec: str) -> list[Source]:
     return out
 
 
-def download(url: str, dest: Path, timeout: float = 60) -> None:
+def download(url: str, dest: Path, timeout: float = 20, retry_delays: tuple[float, ...] = (2, 5, 10)) -> None:
+    """下载到 dest；网络偶发超时按退避间隔重试（实测连 GitHub 原始文件站点时有发生）。"""
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".part")
-    with urllib.request.urlopen(url, timeout=timeout) as r:  # 固定的 https 地址
-        tmp.write_bytes(r.read())
-    tmp.replace(dest)
+    for delay in (*retry_delays, None):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as r:  # 固定的 https 地址
+                tmp.write_bytes(r.read())
+            tmp.replace(dest)
+            return
+        except OSError:
+            if delay is None:
+                raise
+            log.info("下载 %s 失败，%.0f 秒后重试", url, delay)
+            time.sleep(delay)
 
 
 def load_all(

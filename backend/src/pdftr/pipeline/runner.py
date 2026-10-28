@@ -127,7 +127,9 @@ class Pipeline:
                 self._update(job, status=JobStatus.RUNNING, error="")
                 start = STAGES.index(job.stage) if job.stage in STAGES else len(STAGES)
                 for stage in STAGES[start:]:
-                    self._update(job, stage=stage, progress=0.0, message=STAGE_MESSAGES[stage],
+                    # 生成背景页只要一两秒，保留翻译阶段的总结（“已翻译 N 段”），完成后显示的就是它
+                    message = job.message if stage == "render" else STAGE_MESSAGES[stage]
+                    self._update(job, stage=stage, progress=0.0, message=message,
                                  stage_started_at=datetime.now(UTC))  # fmt: skip
                     await getattr(self, f"_{stage}")(job, secrets)
                 self._update(job, status=JobStatus.DONE, stage="done", progress=1.0)
@@ -172,7 +174,8 @@ class Pipeline:
         doc = load_document(self.deps, job.id)
         native = {p.index for p in doc.pages if p.kind is PageKind.NATIVE}
         pages = native if job.options.pages is None else native & set(job.options.pages)
-        segs = segment(doc, include_references=job.options.include_references, pages=pages)
+        segs = segment(doc, include_references=job.options.include_references,
+                       include_figures=job.options.translate_figures, pages=pages)  # fmt: skip
         if not segs:
             raise StageError("没有找到可翻译的文字")
         self.deps.store.replace_segments(job.id, segs)

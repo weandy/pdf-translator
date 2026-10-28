@@ -2,6 +2,7 @@
 
 import logging
 import threading
+import time
 from dataclasses import dataclass
 
 from pdftr.config import Settings
@@ -20,24 +21,30 @@ log = logging.getLogger(__name__)
 
 
 class GlossaryLoader:
-    """首次需要时下载并合并各术语库来源；某个来源失败只跳过它，不影响翻译。"""
+    """下载并合并各术语库来源；某个来源失败只跳过它，不影响翻译，30 分钟后再试。
+
+    服务启动时在后台预先加载（见 api/app.py），第一个任务不用等下载。
+    """
+
+    RETRY_AFTER_S = 1800
 
     def __init__(self, settings: Settings) -> None:
         self._vendor = settings.data_dir / "glossaries" / "vendor"
         self._sources = glossary_sources.parse_ids(settings.glossary_sources)
         self._lock = threading.Lock()
         self._matcher: TermMatcher | None = None
-        self._tried = False
+        self._retry_at: float | None = 0.0  # None = 全部加载成功，不再重试
 
     def __call__(self) -> TermMatcher | None:
         with self._lock:
-            if self._tried or not self._sources:
+            if not self._sources or self._retry_at is None or time.monotonic() < self._retry_at:
                 return self._matcher
-            self._tried = True
             terms, loaded = glossary_sources.load_all(self._sources, self._vendor)
             if terms:
                 self._matcher = TermMatcher(terms)
                 log.info("术语库：%s，共 %d 条", "、".join(s.id for s in loaded), len(terms))
+            complete = len(loaded) == len(self._sources)
+            self._retry_at = None if complete else time.monotonic() + self.RETRY_AFTER_S
             return self._matcher
 
 

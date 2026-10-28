@@ -1172,6 +1172,11 @@
       "title": "Include References",
       "default": false
      },
+     "translate_figures": {
+      "type": "boolean",
+      "title": "Translate Figures",
+      "default": true
+     },
      "pages": {
       "anyOf": [
        {
