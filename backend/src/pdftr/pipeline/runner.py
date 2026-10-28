@@ -9,6 +9,7 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from pdftr.domain.ir import BlockType, Document, PageKind, SegmentStatus
 from pdftr.domain.job import STAGES, Job, JobStatus
@@ -47,6 +48,17 @@ class PipelineDeps:
     chat_factory: ChatFactory
     term_matcher: MatcherLoader
     max_concurrent_jobs: int = 2
+
+
+# 各阶段开始时显示的说明；阶段内有更具体的进度时会覆盖
+STAGE_MESSAGES = {
+    "parse": "正在准备上传",
+    "fuse": "正在对齐版面与文字",
+    "segment": "正在切分段落",
+    "glossary": "正在抽取术语",
+    "translate": "正在翻译",
+    "render": "正在生成背景页",
+}
 
 
 class StageError(RuntimeError):
@@ -112,7 +124,8 @@ class Pipeline:
                 self._update(job, status=JobStatus.RUNNING, error="")
                 start = STAGES.index(job.stage) if job.stage in STAGES else len(STAGES)
                 for stage in STAGES[start:]:
-                    self._update(job, stage=stage, progress=0.0)
+                    self._update(job, stage=stage, progress=0.0, message=STAGE_MESSAGES[stage],
+                                 stage_started_at=datetime.now(UTC))  # fmt: skip
                     await getattr(self, f"_{stage}")(job, secrets)
                 self._update(job, status=JobStatus.DONE, stage="done", progress=1.0)
         except (ParseError, ChatError, StageError) as e:
@@ -127,17 +140,20 @@ class Pipeline:
         out = self.deps.artifacts.path(job.id, "layout.json")
         if out.exists():
             return
-        self._update(job, message="已上传到 MinerU 云端，等待解析（免费额度高峰时可能需要排队几分钟）")
         parser = self.deps.parser_factory(secrets)
         raw_dir = self.deps.artifacts.job_dir(job.id) / "parser"
-        result = await parser.parse(self.deps.artifacts.path(job.id, "original.pdf"), raw_dir=raw_dir)
+
+        def progress(message: str, fraction: float | None = None) -> None:
+            self._update(job, message=message, progress=job.progress if fraction is None else fraction)
+
+        pdf = self.deps.artifacts.path(job.id, "original.pdf")
+        result = await parser.parse(pdf, raw_dir=raw_dir, on_progress=progress)
         out.write_text(result.model_dump_json(), encoding="utf-8")
 
     async def _fuse(self, job: Job, _: Secrets) -> None:
         out = self.deps.artifacts.path(job.id, "ir.json")
         if out.exists():
             return
-        self._update(job, message="正在对齐版面与文字")
         layout = LayoutResult.model_validate_json(self.deps.artifacts.path(job.id, "layout.json").read_text("utf-8"))
         pdf = self.deps.artifacts.path(job.id, "original.pdf")
         chars = await asyncio.to_thread(extract, pdf)
@@ -162,7 +178,6 @@ class Pipeline:
         out = self.deps.artifacts.path(job.id, "glossary.json")
         if out.exists():
             return
-        self._update(job, message="正在抽取术语")
         doc = load_document(self.deps, job.id)
         segs = self.deps.store.segments(job.id)
         headings = [s.source for s in segs if (b := doc.block(s.block_ids[0])) and b.type is BlockType.TITLE]

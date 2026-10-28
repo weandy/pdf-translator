@@ -17,7 +17,7 @@ import httpx2
 
 from pdftr.domain.layout import LayoutResult
 from pdftr.parsing.mineru_normalize import normalize
-from pdftr.parsing.port import ParseError
+from pdftr.parsing.port import ParseError, ParseProgress
 
 API = "https://mineru.net/api/v4"
 
@@ -49,15 +49,23 @@ class MinerUCloudParser:
         self._retry_delays = retry_delays
         self._transport = transport  # 测试时注入假传输层
 
-    async def parse(self, pdf: Path, pages: list[int] | None = None, raw_dir: Path | None = None) -> LayoutResult:
+    async def parse(
+        self,
+        pdf: Path,
+        pages: list[int] | None = None,
+        raw_dir: Path | None = None,
+        on_progress: ParseProgress | None = None,
+    ) -> LayoutResult:
         try:
-            return await self._parse(pdf, pages, raw_dir)
+            return await self._parse(pdf, pages, raw_dir, on_progress or _ignore)
         except httpx2.TimeoutException as e:
             raise ParseError("连接 MinerU 云端超时，请检查服务器能否访问 mineru.net") from e
         except httpx2.TransportError as e:
             raise ParseError("无法连接 MinerU 云端，请检查服务器网络（Docker 部署时确认容器能访问外网）") from e
 
-    async def _parse(self, pdf: Path, pages: list[int] | None, raw_dir: Path | None) -> LayoutResult:
+    async def _parse(
+        self, pdf: Path, pages: list[int] | None, raw_dir: Path | None, on_progress: ParseProgress
+    ) -> LayoutResult:
         headers = {"Authorization": f"Bearer {self._token}"}
         async with (
             httpx2.AsyncClient(headers=headers, timeout=httpx2.Timeout(120, connect=15),
@@ -65,10 +73,12 @@ class MinerUCloudParser:
             httpx2.AsyncClient(timeout=httpx2.Timeout(300, connect=15), transport=self._transport,
                                follow_redirects=True) as plain,
         ):  # fmt: skip
+            on_progress("正在上传到 MinerU 云端")
             batch_id, upload_url = await self._request_upload(api, pdf, pages)
             r = await self._send(plain, "PUT", upload_url, content=pdf.read_bytes())
             _check(r, "上传文件")
-            zip_url = await self._wait(api, batch_id)
+            zip_url = await self._wait(api, batch_id, on_progress)
+            on_progress("正在下载解析结果", 1.0)
             r = await self._send(plain, "GET", zip_url)
             _check(r, "下载解析结果")
         data = r.content
@@ -100,8 +110,9 @@ class MinerUCloudParser:
         except (KeyError, IndexError, TypeError) as e:
             raise ParseError(f"MinerU 返回格式异常：{body}") from e
 
-    async def _wait(self, api: httpx2.AsyncClient, batch_id: str) -> str:
+    async def _wait(self, api: httpx2.AsyncClient, batch_id: str, on_progress: ParseProgress) -> str:
         deadline = time.monotonic() + self._timeout
+        last = None
         while time.monotonic() < deadline:
             r = await self._send(api, "GET", f"{API}/extract-results/batch/{batch_id}")
             body = _check(r, "查询解析进度")
@@ -111,6 +122,10 @@ class MinerUCloudParser:
                 return result[0]["full_zip_url"]
             if state == "failed":
                 raise ParseError(f"MinerU 解析失败：{result[0].get('err_msg') or '未知原因'}")
+            status = _describe(state, result[0].get("extract_progress") or {})
+            if status != last:
+                on_progress(*status)
+                last = status
             await asyncio.sleep(self._poll_interval)
         raise ParseError("MinerU 解析超时")
 
@@ -125,6 +140,24 @@ class MinerUCloudParser:
                 log.warning("访问 MinerU 网络出错，%.0f 秒后重试", delay)
                 await asyncio.sleep(delay)
         raise AssertionError("unreachable")
+
+
+def _ignore(message: str, fraction: float | None = None) -> None:
+    pass
+
+
+def _describe(state: str | None, progress: dict) -> tuple[str, float | None]:
+    """MinerU 批次状态 → 面向用户的说明与完成比例。"""
+    if state == "running":
+        done, total = progress.get("extracted_pages"), progress.get("total_pages")
+        if isinstance(done, int) and isinstance(total, int) and total > 0:
+            return f"MinerU 正在解析，第 {done}/{total} 页", done / total
+        return "MinerU 正在解析", None
+    if state == "converting":
+        return "MinerU 正在整理解析结果", 1.0
+    if state == "waiting-file":
+        return "等待 MinerU 接收文件", None
+    return "MinerU 排队中（免费额度高峰时可能要等 10 分钟以上）", None
 
 
 def _check(r: httpx2.Response, action: str) -> dict:

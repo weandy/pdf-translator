@@ -42,6 +42,7 @@ class JobOut(BaseModel):
     model: str
     cost_cny: float | None
     created_at: datetime
+    stage_started_at: datetime | None
 
     @classmethod
     def of(cls, job: Job) -> "JobOut":

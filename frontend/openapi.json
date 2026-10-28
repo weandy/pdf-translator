@@ -438,6 +438,60 @@
     }
    }
   },
+  "/api/jobs/{job_id}/export": {
+   "get": {
+    "tags": [
+     "jobs"
+    ],
+    "summary": "Export Job",
+    "operationId": "export_job_api_jobs__job_id__export_get",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     },
+     {
+      "name": "mode",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "enum": [
+        "mono",
+        "dual"
+       ],
+       "type": "string",
+       "default": "mono",
+       "title": "Mode"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/jobs/{job_id}/retry": {
    "post": {
     "tags": [
@@ -1157,6 +1211,18 @@
       "type": "string",
       "format": "date-time",
       "title": "Created At"
+     },
+     "stage_started_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Stage Started At"
      }
     },
     "type": "object",
@@ -1172,7 +1238,8 @@
      "options",
      "model",
      "cost_cny",
-     "created_at"
+     "created_at",
+     "stage_started_at"
     ],
     "title": "JobOut"
    },

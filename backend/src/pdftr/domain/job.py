@@ -42,4 +42,5 @@ class Job(BaseModel):
     model: str = ""
     cost_cny: float | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    stage_started_at: datetime | None = None  # 当前阶段开始时间，前端据此显示“已等待多久”
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

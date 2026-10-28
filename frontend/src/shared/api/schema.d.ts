@@ -141,6 +141,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/{job_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export Job */
+        get: operations["export_job_api_jobs__job_id__export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/{job_id}/retry": {
         parameters: {
             query?: never;
@@ -377,6 +394,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Stage Started At */
+            stage_started_at: string | null;
         };
         /** PageOut */
         PageOut: {
@@ -707,6 +726,39 @@ export interface operations {
             path: {
                 job_id: string;
                 name: "original.pdf" | "background.pdf";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_job_api_jobs__job_id__export_get: {
+        parameters: {
+            query?: {
+                mode?: "mono" | "dual";
+            };
+            header?: never;
+            path: {
+                job_id: string;
             };
             cookie?: never;
         };

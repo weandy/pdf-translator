@@ -51,7 +51,9 @@ class FakeParser:
     name = "fake"
     is_cloud = True
 
-    async def parse(self, pdf: Path, pages=None, raw_dir=None) -> LayoutResult:
+    async def parse(self, pdf: Path, pages=None, raw_dir=None, on_progress=None) -> LayoutResult:
+        if on_progress:
+            on_progress("MinerU 正在解析，第 1/2 页", 0.5)
         return normalize(json.loads((FIXTURES / "mineru_layout_min.json").read_text(encoding="utf-8")))
 
 
@@ -140,6 +142,19 @@ def test_full_flow(client: TestClient):
     png = client.get(f"/api/segments/{sid}/formulas/m1.png")
     assert png.status_code == 200 and png.content.startswith(b"\x89PNG")
     assert client.get(f"/api/segments/{sid}/formulas/m9.png").status_code == 404
+
+    # 导出：纯译文 PDF 里是译文（含用户刚才的修改），双语对照页宽是原来的两倍
+    mono = client.get(f"/api/jobs/{job['id']}/export", params={"mode": "mono"})
+    assert (
+        mono.status_code == 200
+        and "filename*=UTF-8''paper-%E8%AF%91%E6%96%87.pdf" in mono.headers["content-disposition"]
+    )
+    with pymupdf.open(stream=mono.content, filetype="pdf") as pdf:
+        text = "".join(str(p.get_text()) for p in pdf)
+    assert "精:" in text and "译:A Synthetic Title" in text  # 假模型把原文加前缀当译文
+    dual = client.get(f"/api/jobs/{job['id']}/export", params={"mode": "dual"})
+    with pymupdf.open(stream=dual.content, filetype="pdf") as pdf:
+        assert pdf[0].rect.width == 1200 and "be a function" in pdf[0].get_text()
 
     # 不提供任务列表（防止公开部署时看到别人的任务）；可以删除自己的任务
     assert client.get("/api/jobs").status_code == 405

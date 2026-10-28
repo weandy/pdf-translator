@@ -1,4 +1,4 @@
-"""任务接口：创建、详情、删除、进度推送（SSE）、阅读器数据、文件、重试。
+"""任务接口：创建、详情、删除、进度推送（SSE）、阅读器数据、文件、导出、重试。
 
 不提供任务列表：任务 ID 是随机的，只有上传者知道；“我的任务”由前端保存在浏览器里。
 """
@@ -6,6 +6,7 @@
 import asyncio
 from collections.abc import AsyncIterator
 from typing import Annotated, Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -100,6 +101,18 @@ def get_file(job_id: str, name: Literal["original.pdf", "background.pdf"], p: Pi
     if not path.exists():
         raise usecases.NotFound("文件尚未生成")
     return FileResponse(path, media_type="application/pdf", headers={"Cache-Control": "private, max-age=3600"})
+
+
+# 导出时每份约占 200 MB 内存，同时只做一份，避免小机器内存不够
+_export_slot = asyncio.Semaphore(1)
+
+
+@router.get("/{job_id}/export")
+async def export_job(job_id: str, p: PipelineDep, mode: Literal["mono", "dual"] = "mono") -> Response:
+    async with _export_slot:
+        filename, data = await asyncio.to_thread(usecases.export_job, p, job_id, mode)
+    disposition = f"attachment; filename=\"translated.pdf\"; filename*=UTF-8''{quote(filename)}"
+    return Response(data, media_type="application/pdf", headers={"Content-Disposition": disposition})
 
 
 @router.post("/{job_id}/retry", response_model=JobOut, status_code=202)

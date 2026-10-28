@@ -51,10 +51,10 @@ class FakeMinerU:
                 return httpx2.Response(
                     200, json={"code": 0, "data": {"extract_result": [{"state": "failed", "err_msg": "坏文件"}]}}
                 )
-            state = "running" if self.polls < 2 else "done"
-            return httpx2.Response(
-                200, json={"code": 0, "data": {"extract_result": [{"state": state, "full_zip_url": ZIP}]}}
-            )
+            state = ["pending", "running", "done"][min(self.polls - 1, 2)]
+            progress = {"extracted_pages": 1, "total_pages": 2} if state == "running" else {}
+            item = {"state": state, "full_zip_url": ZIP, "extract_progress": progress}
+            return httpx2.Response(200, json={"code": 0, "data": {"extract_result": [item]}})
         if request.method == "GET" and url == ZIP:
             return httpx2.Response(200, content=_zip(), headers={"content-type": "application/zip"})
         return httpx2.Response(404)
@@ -68,10 +68,19 @@ def test_full_flow(tmp_path: Path):
     pdf = tmp_path / "paper.pdf"
     pdf.write_bytes(b"%PDF-fake")
     fake = FakeMinerU()
-    result = asyncio.run(_parser(fake).parse(pdf, raw_dir=tmp_path / "raw"))
+    seen: list[tuple[str, float | None]] = []
+
+    def on_progress(message: str, fraction: float | None = None) -> None:
+        seen.append((message, fraction))
+
+    result = asyncio.run(_parser(fake).parse(pdf, raw_dir=tmp_path / "raw", on_progress=on_progress))
     assert len(result.pages) == 2
     assert result.parser_version == "hybrid/3.4.4"
-    assert fake.polls == 2
+    assert fake.polls == 3
+    # 排队、逐页解析的状态都转告给用户
+    assert [m for m, _ in seen][:3] == ["正在上传到 MinerU 云端", "MinerU 排队中（免费额度高峰时可能要等 10 分钟以上）",
+                                       "MinerU 正在解析，第 1/2 页"]  # fmt: skip
+    assert seen[2][1] == 0.5
     assert (tmp_path / "raw" / "mineru.zip").exists()
 
 
