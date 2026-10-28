@@ -62,8 +62,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Recent Jobs */
-        get: operations["recent_jobs_api_jobs_get"];
+        get?: never;
         put?: never;
         /** Create Job */
         post: operations["create_job_api_jobs_post"];
@@ -84,7 +83,8 @@ export interface paths {
         get: operations["get_job_api_jobs__job_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** Delete Job */
+        delete: operations["delete_job_api_jobs__job_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -264,6 +264,8 @@ export interface components {
             max_upload_mb: number;
             /** Max Pages */
             max_pages: number;
+            /** Retention Days */
+            retention_days: number;
             /** Attributions */
             attributions: string[];
         };
@@ -538,26 +540,6 @@ export interface operations {
             };
         };
     };
-    recent_jobs_api_jobs_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JobOut"][];
-                };
-            };
-        };
-    };
     create_job_api_jobs_post: {
         parameters: {
             query?: never;
@@ -615,6 +597,35 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["JobOut"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_job_api_jobs__job_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

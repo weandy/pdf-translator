@@ -81,6 +81,10 @@ class Pipeline:
     def is_running(self, job_id: str) -> bool:
         return job_id in self._tasks
 
+    def active_count(self) -> int:
+        """排队中与执行中的任务数。"""
+        return len(self._tasks)
+
     def recover_interrupted(self) -> None:
         """服务重启时，进行中的任务已没有密钥可用，标记失败，用户重新提供 Key 后可从断点重试。"""
         for status in (JobStatus.RUNNING, JobStatus.QUEUED):

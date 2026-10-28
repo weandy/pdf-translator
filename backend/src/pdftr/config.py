@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     mineru_api_token: str = ""
 
     max_concurrent_jobs: int = 2
+    max_queued_jobs: int = 10  # 排队中的任务超过这个数时拒绝新上传
+    retention_days: int = 7  # 任务文件与译文缓存保留天数，0 表示不自动清理
+    min_free_disk_mb: int = 1024  # 磁盘剩余空间低于此值时拒绝新上传
     gist_enabled: bool = True  # 首次使用时下载 GIST AI 术语库（Apache-2.0）
 
     cors_origins: list[str] = []  # 开发时前端单独运行可填 ["http://localhost:5173"]

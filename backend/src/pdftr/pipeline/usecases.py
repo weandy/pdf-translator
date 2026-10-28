@@ -3,7 +3,10 @@
 接口层（api）只做 HTTP 与这些函数之间的转换，不含业务规则。
 """
 
+import logging
+import shutil
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -18,6 +21,8 @@ from pdftr.rendering.background import crop_png
 from pdftr.translation.cost import PRICES, is_deepseek_peak
 from pdftr.translation.service import TranslateOptions, translate
 
+log = logging.getLogger(__name__)
+
 
 class UserError(ValueError):
     """请求本身有问题（参数、文件、缺少 Key 等），对应 4xx。"""
@@ -27,9 +32,16 @@ class NotFound(LookupError):
     pass
 
 
+class ServiceBusy(RuntimeError):
+    """服务器暂时无法接收新任务（排队已满、磁盘空间不足），对应 503。"""
+
+
 class Limits(BaseModel):
     max_upload_mb: int
     max_pages: int
+    max_active_jobs: int = 1_000_000
+    min_free_disk_mb: int = 0
+    data_dir: Path = Path(".")
 
 
 def _require_secrets(secrets: Secrets, *, need_parser: bool) -> None:
@@ -49,6 +61,10 @@ def create_job(
     if options.parser == "mineru-cloud" and not options.cloud_consent:
         raise UserError("使用云端解析前需要确认文件会上传到 MinerU")
     _require_secrets(secrets, need_parser=True)
+    if pipeline.active_count() >= limits.max_active_jobs:
+        raise ServiceBusy("服务器正忙，排队的任务太多，请稍后再试")
+    if shutil.disk_usage(limits.data_dir).free < limits.min_free_disk_mb * 1024 * 1024:
+        raise ServiceBusy("服务器存储空间不足，请稍后再试")
     with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp:
         tmp.write(data)
         tmp.flush()
@@ -73,6 +89,33 @@ def get_job(pipeline: Pipeline, job_id: str) -> Job:
     if job is None:
         raise NotFound("任务不存在")
     return job
+
+
+def delete_job(pipeline: Pipeline, job_id: str) -> None:
+    """删除任务及其全部文件。进行中的任务要等结束后才能删（后台线程可能还在写文件）。"""
+    get_job(pipeline, job_id)
+    if pipeline.is_running(job_id):
+        raise UserError("任务进行中，结束后才能删除")
+    pipeline.deps.store.delete_job(job_id)
+    pipeline.deps.artifacts.remove(job_id)
+
+
+def purge_expired(pipeline: Pipeline, retention_days: int, now: datetime | None = None) -> int:
+    """删除超过保留期的任务（跳过进行中的）与译文缓存，返回删除的任务数。"""
+    if retention_days <= 0:
+        return 0
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=retention_days)
+    removed = 0
+    for job_id in pipeline.deps.store.jobs_created_before(cutoff):
+        if pipeline.is_running(job_id):
+            continue
+        pipeline.deps.store.delete_job(job_id)
+        pipeline.deps.artifacts.remove(job_id)
+        removed += 1
+    cached = pipeline.deps.cache.purge_older_than(retention_days)
+    if removed or cached:
+        log.info("已清理过期任务 %d 个、译文缓存 %d 条", removed, cached)
+    return removed
 
 
 def retry_job(pipeline: Pipeline, job_id: str, secrets: Secrets) -> Job:

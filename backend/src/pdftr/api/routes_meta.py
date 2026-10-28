@@ -30,6 +30,7 @@ def config(request: Request) -> ConfigOut:
         server_has_parser_token=bool(s.mineru_api_token),
         max_upload_mb=s.max_upload_mb,
         max_pages=s.max_pages,
+        retention_days=s.retention_days,
         attributions=["MinerU (https://github.com/opendatalab/MinerU)", "PyMuPDF (AGPL-3.0)", GIST_ATTRIBUTION],
     )
 

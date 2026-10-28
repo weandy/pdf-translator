@@ -45,6 +45,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
     throw new ApiError(res.status, detail);
   }
+  if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
@@ -66,8 +67,8 @@ export const api = {
     request<Estimate>(
       `/api/estimate?${new URLSearchParams({ pages: String(pages), quality, ...(model ? { model } : {}) })}`,
     ),
-  recentJobs: () => request<Job[]>("/api/jobs"),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
+  deleteJob: (id: string) => request<void>(`/api/jobs/${id}`, { method: "DELETE" }),
   createJob: (file: File, options: Partial<JobOptions>) => {
     const form = new FormData();
     form.append("file", file);

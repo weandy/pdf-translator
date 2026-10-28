@@ -46,6 +46,9 @@ class DictCache:
     def put(self, key: str, target: str) -> None:
         self.data[key] = target
 
+    def purge_older_than(self, days: int) -> int:
+        return 0
+
 
 def _seg(i: int, source: str, formulas: dict[str, str] | None = None, section: str = "") -> Segment:
     return Segment(id=f"j-s{i}", job_id="j", block_ids=[f"p0-b{i}"], source=source, formulas=formulas or {},

@@ -6,6 +6,7 @@
 import json
 import re
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pymupdf
@@ -18,6 +19,7 @@ from pdftr.container import build_container
 from pdftr.domain.layout import LayoutResult
 from pdftr.domain.llm import ChatError, ChatOptions, ChatResult, ChatUsage
 from pdftr.parsing.mineru_normalize import normalize
+from pdftr.pipeline import usecases
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 TEXTS = [
@@ -139,7 +141,11 @@ def test_full_flow(client: TestClient):
     assert png.status_code == 200 and png.content.startswith(b"\x89PNG")
     assert client.get(f"/api/segments/{sid}/formulas/m9.png").status_code == 404
 
-    assert [j["id"] for j in client.get("/api/jobs").json()] == [job["id"]]
+    # 不提供任务列表（防止公开部署时看到别人的任务）；可以删除自己的任务
+    assert client.get("/api/jobs").status_code == 405
+    assert client.delete(f"/api/jobs/{job['id']}").status_code == 204
+    assert client.get(f"/api/jobs/{job['id']}").status_code == 404
+    assert client.delete(f"/api/jobs/{job['id']}").status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -169,9 +175,32 @@ def test_chat_error_fails_job_and_retry_resumes(client: TestClient):
     assert _wait(client, job["id"])["status"] == "done"
 
 
+def test_expired_jobs_and_cache_are_purged(client: TestClient):
+    pipeline = client.app.state.container.pipeline  # type: ignore[attr-defined]
+    job = _wait(client, _upload(client).json()["id"])
+    job_dir = pipeline.deps.artifacts.job_dir(job["id"])
+    assert usecases.purge_expired(pipeline, 7) == 0  # 未过期
+
+    later = datetime.now(UTC) + timedelta(days=8)
+    assert usecases.purge_expired(pipeline, 7, now=later) == 1
+    assert client.get(f"/api/jobs/{job['id']}").status_code == 404
+    assert not job_dir.exists()
+
+
+def test_busy_server_rejects_uploads(client: TestClient):
+    settings = client.app.state.container.settings  # type: ignore[attr-defined]
+    settings.max_concurrent_jobs, settings.max_queued_jobs = 0, 0
+    r = _upload(client)
+    assert r.status_code == 503 and "正忙" in r.json()["detail"]
+
+    settings.max_queued_jobs, settings.min_free_disk_mb = 10, 10**12
+    r = _upload(client)
+    assert r.status_code == 503 and "存储空间不足" in r.json()["detail"]
+
+
 def test_meta(client: TestClient):
     cfg = client.get("/api/config").json()
-    assert cfg["server_has_llm_key"] is False and cfg["max_pages"] == 200
+    assert cfg["server_has_llm_key"] is False and cfg["max_pages"] == 200 and cfg["retention_days"] == 7
     est = client.get("/api/estimate", params={"pages": 15}).json()
     assert est["pages"] == 15 and 0 < est["cny_low"] <= est["cny_high"] < 0.2
     assert client.get("/api/jobs/0123456789abcdef").status_code == 404

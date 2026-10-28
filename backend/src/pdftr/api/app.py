@@ -3,6 +3,8 @@
 启动：uvicorn pdftr.api.app:create_app --factory
 """
 
+import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -14,7 +16,9 @@ from pdftr import __version__
 from pdftr.api import routes_jobs, routes_meta, routes_segments
 from pdftr.container import Container, build_container
 from pdftr.domain.llm import ChatError
-from pdftr.pipeline.usecases import NotFound, UserError
+from pdftr.pipeline.usecases import NotFound, ServiceBusy, UserError, purge_expired
+
+log = logging.getLogger(__name__)
 
 # 接口只返回 JSON / 文件，不需要加载任何脚本或样式
 _SECURITY_HEADERS = {
@@ -24,13 +28,25 @@ _SECURITY_HEADERS = {
 }
 
 
+async def _purge_periodically(c: Container, interval_s: float = 3600) -> None:
+    """启动时和之后每小时清理一次过期任务。"""
+    while True:
+        try:
+            await asyncio.to_thread(purge_expired, c.pipeline, c.settings.retention_days)
+        except Exception:
+            log.exception("清理过期任务失败")
+        await asyncio.sleep(interval_s)
+
+
 def create_app(container: Container | None = None) -> FastAPI:
     c = container or build_container()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         c.pipeline.recover_interrupted()
+        housekeeping = asyncio.create_task(_purge_periodically(c))
         yield
+        housekeeping.cancel()
 
     app = FastAPI(title="pdf-translator", version=__version__, lifespan=lifespan)
     app.state.container = c
@@ -57,6 +73,10 @@ def create_app(container: Container | None = None) -> FastAPI:
     @app.exception_handler(NotFound)
     async def not_found(_: Request, e: NotFound) -> JSONResponse:
         return JSONResponse({"detail": str(e)}, status_code=404)
+
+    @app.exception_handler(ServiceBusy)
+    async def service_busy(_: Request, e: ServiceBusy) -> JSONResponse:
+        return JSONResponse({"detail": str(e)}, status_code=503, headers={"Retry-After": "300"})
 
     @app.exception_handler(ChatError)
     async def chat_error(_: Request, e: ChatError) -> JSONResponse:

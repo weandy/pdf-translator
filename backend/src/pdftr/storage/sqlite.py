@@ -55,10 +55,16 @@ class SqliteStore:
             row = self._db.execute("SELECT data FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return Job.model_validate_json(row[0]) if row else None
 
-    def recent_jobs(self, limit: int = 20) -> list[Job]:
+    def delete_job(self, job_id: str) -> None:
         with self._lock:
-            rows = self._db.execute("SELECT data FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
-        return [Job.model_validate_json(r[0]) for r in rows]
+            self._db.execute("DELETE FROM segments WHERE job_id = ?", (job_id,))
+            self._db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+            self._db.commit()
+
+    def jobs_created_before(self, cutoff: datetime) -> list[str]:
+        with self._lock:
+            rows = self._db.execute("SELECT id FROM jobs WHERE created_at < ?", (cutoff.isoformat(),)).fetchall()
+        return [r[0] for r in rows]
 
     def jobs_with_status(self, status: JobStatus) -> list[Job]:
         with self._lock:

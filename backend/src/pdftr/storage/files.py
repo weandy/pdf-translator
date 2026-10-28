@@ -1,6 +1,7 @@
 """任务工件文件：data/jobs/<job_id>/<name>。"""
 
 import re
+import shutil
 from pathlib import Path
 
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_.\-/]+$")
@@ -16,6 +17,9 @@ class FileArtifactStore:
         d = self.root / job_id
         d.mkdir(parents=True, exist_ok=True)
         return d
+
+    def remove(self, job_id: str) -> None:
+        shutil.rmtree(self.job_dir(job_id), ignore_errors=True)
 
     def path(self, job_id: str, name: str) -> Path:
         # 工件名由程序生成，这里仍做校验，防止路径穿越

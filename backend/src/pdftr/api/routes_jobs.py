@@ -1,10 +1,13 @@
-"""任务接口：创建、列表、详情、进度推送（SSE）、阅读器数据、文件、重试。"""
+"""任务接口：创建、详情、删除、进度推送（SSE）、阅读器数据、文件、重试。
+
+不提供任务列表：任务 ID 是随机的，只有上传者知道；“我的任务”由前端保存在浏览器里。
+"""
 
 import asyncio
 from collections.abc import AsyncIterator
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import ValidationError
 
@@ -35,19 +38,26 @@ async def create_job(
     except ValidationError as e:
         raise usecases.UserError("任务选项格式错误") from e
     data = await file.read(settings.max_upload_mb * 1024 * 1024 + 1)
-    limits = usecases.Limits(max_upload_mb=settings.max_upload_mb, max_pages=settings.max_pages)
+    limits = usecases.Limits(
+        max_upload_mb=settings.max_upload_mb,
+        max_pages=settings.max_pages,
+        max_active_jobs=settings.max_concurrent_jobs + settings.max_queued_jobs,
+        min_free_disk_mb=settings.min_free_disk_mb,
+        data_dir=settings.data_dir,
+    )
     job = usecases.create_job(p, data, file.filename or "document.pdf", opts, sec, limits)
     return JobOut.of(job)
-
-
-@router.get("", response_model=list[JobOut])
-def recent_jobs(p: PipelineDep) -> list[JobOut]:
-    return [JobOut.of(j) for j in p.deps.store.recent_jobs()]
 
 
 @router.get("/{job_id}", response_model=JobOut)
 def get_job(job_id: str, p: PipelineDep) -> JobOut:
     return JobOut.of(usecases.get_job(p, job_id))
+
+
+@router.delete("/{job_id}", status_code=204)
+def delete_job(job_id: str, p: PipelineDep) -> Response:
+    usecases.delete_job(p, job_id)
+    return Response(status_code=204)
 
 
 @router.get("/{job_id}/events")

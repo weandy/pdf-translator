@@ -226,29 +226,6 @@
       }
      }
     }
-   },
-   "get": {
-    "tags": [
-     "jobs"
-    ],
-    "summary": "Recent Jobs",
-    "operationId": "recent_jobs_api_jobs_get",
-    "responses": {
-     "200": {
-      "description": "Successful Response",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "array",
-         "items": {
-          "$ref": "#/components/schemas/JobOut"
-         },
-         "title": "Response Recent Jobs Api Jobs Get"
-        }
-       }
-      }
-     }
-    }
    }
   },
   "/api/jobs/{job_id}": {
@@ -279,6 +256,39 @@
         }
        }
       }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "jobs"
+    ],
+    "summary": "Delete Job",
+    "operationId": "delete_job_api_jobs__job_id__delete",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
      },
      "422": {
       "description": "Validation Error",
@@ -860,6 +870,10 @@
       "type": "integer",
       "title": "Max Pages"
      },
+     "retention_days": {
+      "type": "integer",
+      "title": "Retention Days"
+     },
      "attributions": {
       "items": {
        "type": "string"
@@ -877,6 +891,7 @@
      "server_has_parser_token",
      "max_upload_mb",
      "max_pages",
+     "retention_days",
      "attributions"
     ],
     "title": "ConfigOut",
