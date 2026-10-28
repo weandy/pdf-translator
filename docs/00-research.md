@@ -140,13 +140,18 @@ PDFMathTranslate v1 是它的前身，思路相同但更粗糙：公式靠字体
 - **输出**：Markdown、HTML、LaTeX、DOCX、EPUB、PDF、Structured Content、Content List V1/V2；JSON 带 `schema`（`docvortex.model` / `docvortex.middle`），`page_idx` 从 0 开始；PDF 页尺寸在 `extensions.docvortex_layout` 中给出（`width_pt`/`height_pt`）。
 - ⚠️ **坐标单位、块类型枚举、公式/表格字段名官方文档未写清**。旧版资料称 content_list 的 bbox 为 0–1000 归一化、pipeline 后端为像素坐标，4.0 的 schema 已变，**必须用真实样例确认**。
 - **许可附加条件**：月活 >1 亿或月收入 >2000 万美元需商业授权；向第三方提供在线服务需显著署名。自用无额外限制。
-- **mineru.net 云端额度**：beta 期文档称单文件 ≤200 MB / ≤600 页，每天 2000 页高优先级额度，超出降优先级（可能已变）。
+- **mineru.net 云端额度**（2026-10-28 查官方 API 管理页）：
+  - **精准解析 API**（需 Token）：**免费**，页面未列任何价格；每账号**每天 1000 页最高优先级**，超出仍可解析但排队靠后；单文件 ≤200 MB、≤200 页；单次批量 ≤200 个文件；可选 pipeline / vlm / MinerU-HTML 模型，可开公式、表格识别和 OCR；返回 Zip（Markdown + JSON）。
+  - **Agent 轻量解析 API**（免登录）：单文件 ≤10 MB、≤20 页，**禁用公式和表格识别**，只返回 Markdown，对本项目基本无用。
+  - 限流：提交任务 300 次/分钟，查询结果 1000 次/分钟，每天最多上传 10000 个文件。
+  - 旧版 beta 文档写的是"每天 2000 页、单文件 600 页"，已过时。
 
 ### 4.2 Doc2X API（open.noedgeai.com）
 
 - 流程：`POST /api/v2/parse/preupload` 拿上传地址（`model` 可选 `v2` / `v3-2026`）→ 上传 → 轮询 `/api/v2/parse/status?uid=` → 取结果；结果仅保留 24 小时。
 - 输出：Markdown（逐页）、DOCX、LaTeX；**`v3-2026` 额外返回结构化版面块（类型、坐标、阅读顺序、父子关系）**。
-- 价格：按页计费，¥0.02/页起，资源包低至 ¥0.01/页；未见免费额度。
+- 价格（API 价格页）：**没有免费额度**，资源包 ¥10/500 页、¥20/1000 页、¥100/5000 页、¥200/1 万页（均 ¥0.02/页），量大递减到 ¥5000/50 万页（¥0.01/页）；也可充值按量扣费。资源包有效期、v2 与 v3-2026 是否同价未写明。
+- 并发：默认同时处理 10 个 PDF；平均约 10 页/秒；不支持旋转 PDF、页边空白过多的文档。API 额度与网页版不共享。
 - 翻译 API "即将上线"，目前不可用。
 
 ### 4.3 文档解析 VLM 排行（OmniDocBench v1.6，二手资料）
@@ -210,6 +215,7 @@ PDFMathTranslate v1 是它的前身，思路相同但更粗糙：公式靠字体
 - PDFMathTranslate：[GitHub](https://github.com/PDFMathTranslate/PDFMathTranslate) · [论文 arXiv 2507.03009](https://arxiv.org/html/2507.03009v1) · [PDFMathTranslate-next](https://github.com/PDFMathTranslate/PDFMathTranslate-next)
 - 沉浸式翻译：[PDF 帮助文档](https://immersivetranslate.com/zh-Hans/docs/pdf-helper/) · [BabelDOC 介绍](https://immersivetranslate.com/zh-Hans/document/babel-doc-translator/) · [PDF Pro 介绍](https://immersivetranslate.com/zh-Hans/document/pdf-pro-translator/) · [koc.com.tw 额度报道](https://koc.com.tw/?p=594414) · [ai-bot.cn 介绍](https://ai-bot.cn/babeldoc/)
 - MinerU：[GitHub](https://github.com/opendatalab/MinerU) · [LICENSE](https://github.com/opendatalab/MinerU/blob/master/LICENSE.md) · [输出文件说明](https://opendatalab.github.io/MinerU/reference/output_files/) · [mineru.net 限额](https://mineru.net/doc/docs/limit_en)
-- Doc2X：[开放平台](https://open.noedgeai.com) · [积分说明](https://doc2x.noedgeai.com/help/en/faq/doc2x-points.html)
+- Doc2X：[开放平台](https://open.noedgeai.com) · [API 价格](https://open.noedgeai.com/pricing.html) · [常见问题](https://doc2x.noedgeai.com/help/en/faq/doc2x-common-faq.html) · [积分说明](https://doc2x.noedgeai.com/help/en/faq/doc2x-points.html)
+- MinerU API：[API 管理页](https://mineru.net/apiManage) · [限流说明](https://mineru.net/doc/docs/limit_en)
 - 术语：[GIST 论文](https://arxiv.org/abs/2412.18367) · [GIST 数据集](https://huggingface.co/datasets/Jerry999/multilingual-terminology) · [机器之心 AI 术语库](https://github.com/jiqizhixin/Artificial-Intelligence-Terminology-Database) · [ECDICT](https://github.com/skywind3000/ECDICT) · [Kim et al. 2410.15690](https://arxiv.org/abs/2410.15690v1) · [Retrieval vs Generation 2503.05010](https://arxiv.org/pdf/2503.05010) · [术语在线介绍](https://www.iikx.com/web/scientific/tool/214.html) · [ACL 60-60](https://2022.aclweb.org/dispecialinitiative.html) · [linux.do 沉浸式翻译 AI 专家讨论](https://linux.do/t/517192)
 - 其他：[marker](https://github.com/datalab-to/marker) · [MDTrans](https://pypi.org/project/mdtrans/) · [PolyglotPDF](https://github.com/DsCodeStudioxhpott/PolyglotPDF) · [PDF 转 Markdown 工具对比](https://jimmysong.io/blog/pdf-to-markdown-open-source-deep-dive/) · [PaddleOCR-VL-1.6 论文](https://arxiv.org/pdf/2606.03264) · [本地 OCR 2026 对比](https://pasqualepillitteri.it/zh/news/25574/zui-jia-ben-di-ocr-pc-fuwuqi) · [PyMuPDF 文档](https://pymupdf.readthedocs.io/en/latest/page.html)
