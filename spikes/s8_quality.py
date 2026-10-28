@@ -62,7 +62,8 @@ def load_sample(per_paper: int = 10):
     for paper in PAPERS:
         md = Path(__file__).parent / "out" / "mineru" / paper / "vlm"
         layout = json.loads((md / "layout.json").read_text(encoding="utf-8"))
-        cost = json.loads((md / "_cost.json").read_text(encoding="utf-8"))
+        cost_file = md / "_cost.json"
+        cost = json.loads(cost_file.read_text(encoding="utf-8")) if cost_file.exists() else {"terms_map": {}}
         segs, _ = segments(layout, with_refs=False)
         title = next(s["text"] for s in segs if s["type"] == "title")
         abstract = next((segs[i + 1]["text"] for i, s in enumerate(segs) if s["text"].upper() == "ABSTRACT"), "")
