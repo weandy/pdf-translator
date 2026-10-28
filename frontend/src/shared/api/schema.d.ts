@@ -4,6 +4,46 @@
  */
 
 export interface paths {
+    "/api/llm/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Llm Models
+         * @description 用请求头里的接口地址、协议与 Key 拉取模型列表（浏览器不能直接跨域请求翻译服务）。
+         */
+        get: operations["llm_models_api_llm_models_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/llm/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Llm Check
+         * @description 测试连接：用请求头里的设置发一个很短的请求。
+         */
+        post: operations["llm_check_api_llm_check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -332,6 +372,11 @@ export interface components {
             default_model: string;
             /** Server Has Llm Key */
             server_has_llm_key: boolean;
+            /**
+             * Default Protocol
+             * @enum {string}
+             */
+            default_protocol: "openai" | "anthropic";
             /** Server Has Parser Token */
             server_has_parser_token: boolean;
             /** Server Has Paddle Token */
@@ -461,6 +506,30 @@ export interface components {
             /** Stage Started At */
             stage_started_at: string | null;
         };
+        /** LlmCheck */
+        LlmCheck: {
+            /** Ok */
+            ok: boolean;
+            /** Model */
+            model: string;
+            /** Latency Ms */
+            latency_ms: number;
+            /**
+             * Reply
+             * @default
+             */
+            reply: string;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+        };
+        /** ModelsOut */
+        ModelsOut: {
+            /** Models */
+            models: string[];
+        };
         /** PageOut */
         PageOut: {
             /** Index */
@@ -585,6 +654,78 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    llm_models_api_llm_models_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-llm-base-url"?: string | null;
+                "x-llm-key"?: string | null;
+                "x-llm-model"?: string | null;
+                "x-parser-key"?: string | null;
+                "x-paddle-key"?: string | null;
+                "x-llm-protocol"?: ("openai" | "anthropic") | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    llm_check_api_llm_check_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-llm-base-url"?: string | null;
+                "x-llm-key"?: string | null;
+                "x-llm-model"?: string | null;
+                "x-parser-key"?: string | null;
+                "x-paddle-key"?: string | null;
+                "x-llm-protocol"?: ("openai" | "anthropic") | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmCheck"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     health_api_health_get: {
         parameters: {
             query?: never;
@@ -698,6 +839,7 @@ export interface operations {
                 "x-llm-model"?: string | null;
                 "x-parser-key"?: string | null;
                 "x-paddle-key"?: string | null;
+                "x-llm-protocol"?: ("openai" | "anthropic") | null;
             };
             path?: never;
             cookie?: never;
@@ -956,6 +1098,7 @@ export interface operations {
                 "x-llm-model"?: string | null;
                 "x-parser-key"?: string | null;
                 "x-paddle-key"?: string | null;
+                "x-llm-protocol"?: ("openai" | "anthropic") | null;
             };
             path: {
                 job_id: string;
@@ -1028,6 +1171,7 @@ export interface operations {
                 "x-llm-model"?: string | null;
                 "x-parser-key"?: string | null;
                 "x-paddle-key"?: string | null;
+                "x-llm-protocol"?: ("openai" | "anthropic") | null;
             };
             path: {
                 segment_id: string;

@@ -5,6 +5,274 @@
   "version": "0.1.0"
  },
  "paths": {
+  "/api/llm/models": {
+   "get": {
+    "tags": [
+     "meta"
+    ],
+    "summary": "Llm Models",
+    "description": "用请求头里的接口地址、协议与 Key 拉取模型列表（浏览器不能直接跨域请求翻译服务）。",
+    "operationId": "llm_models_api_llm_models_get",
+    "parameters": [
+     {
+      "name": "x-llm-base-url",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Base-Url"
+      }
+     },
+     {
+      "name": "x-llm-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Key"
+      }
+     },
+     {
+      "name": "x-llm-model",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Model"
+      }
+     },
+     {
+      "name": "x-parser-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Parser-Key"
+      }
+     },
+     {
+      "name": "x-paddle-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Paddle-Key"
+      }
+     },
+     {
+      "name": "x-llm-protocol",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "enum": [
+          "openai",
+          "anthropic"
+         ],
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Protocol"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ModelsOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/llm/check": {
+   "post": {
+    "tags": [
+     "meta"
+    ],
+    "summary": "Llm Check",
+    "description": "测试连接：用请求头里的设置发一个很短的请求。",
+    "operationId": "llm_check_api_llm_check_post",
+    "parameters": [
+     {
+      "name": "x-llm-base-url",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Base-Url"
+      }
+     },
+     {
+      "name": "x-llm-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Key"
+      }
+     },
+     {
+      "name": "x-llm-model",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Model"
+      }
+     },
+     {
+      "name": "x-parser-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Parser-Key"
+      }
+     },
+     {
+      "name": "x-paddle-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Paddle-Key"
+      }
+     },
+     {
+      "name": "x-llm-protocol",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "enum": [
+          "openai",
+          "anthropic"
+         ],
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Protocol"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/LlmCheck"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/health": {
    "get": {
     "tags": [
@@ -253,6 +521,26 @@
         }
        ],
        "title": "X-Paddle-Key"
+      }
+     },
+     {
+      "name": "x-llm-protocol",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "enum": [
+          "openai",
+          "anthropic"
+         ],
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Protocol"
       }
      }
     ],
@@ -711,6 +999,26 @@
        ],
        "title": "X-Paddle-Key"
       }
+     },
+     {
+      "name": "x-llm-protocol",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "enum": [
+          "openai",
+          "anthropic"
+         ],
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Protocol"
+      }
      }
     ],
     "responses": {
@@ -884,6 +1192,26 @@
         }
        ],
        "title": "X-Paddle-Key"
+      }
+     },
+     {
+      "name": "x-llm-protocol",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "enum": [
+          "openai",
+          "anthropic"
+         ],
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Protocol"
       }
      }
     ],
@@ -1110,6 +1438,14 @@
       "type": "boolean",
       "title": "Server Has Llm Key"
      },
+     "default_protocol": {
+      "type": "string",
+      "enum": [
+       "openai",
+       "anthropic"
+      ],
+      "title": "Default Protocol"
+     },
      "server_has_parser_token": {
       "type": "boolean",
       "title": "Server Has Parser Token"
@@ -1144,6 +1480,7 @@
      "default_base_url",
      "default_model",
      "server_has_llm_key",
+     "default_protocol",
      "server_has_parser_token",
      "server_has_paddle_token",
      "max_upload_mb",
@@ -1453,6 +1790,55 @@
      "stage_started_at"
     ],
     "title": "JobOut"
+   },
+   "LlmCheck": {
+    "properties": {
+     "ok": {
+      "type": "boolean",
+      "title": "Ok"
+     },
+     "model": {
+      "type": "string",
+      "title": "Model"
+     },
+     "latency_ms": {
+      "type": "integer",
+      "title": "Latency Ms"
+     },
+     "reply": {
+      "type": "string",
+      "title": "Reply",
+      "default": ""
+     },
+     "detail": {
+      "type": "string",
+      "title": "Detail",
+      "default": ""
+     }
+    },
+    "type": "object",
+    "required": [
+     "ok",
+     "model",
+     "latency_ms"
+    ],
+    "title": "LlmCheck"
+   },
+   "ModelsOut": {
+    "properties": {
+     "models": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Models"
+     }
+    },
+    "type": "object",
+    "required": [
+     "models"
+    ],
+    "title": "ModelsOut"
    },
    "PageOut": {
     "properties": {

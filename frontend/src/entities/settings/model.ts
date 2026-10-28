@@ -12,7 +12,10 @@ export type ParserId = "mineru-cloud" | "paddleocr-vl";
 /** 解析服务的显示名称。 */
 export const PARSER_NAMES: Record<ParserId, string> = { "mineru-cloud": "MinerU", "paddleocr-vl": "PaddleOCR" };
 
+export type Protocol = "openai" | "anthropic";
+
 export interface Settings {
+  protocol: Protocol | ""; // 翻译服务的接口协议；空 = 用部署者的默认
   baseUrl: string;
   model: string;
   llmKey: string;
@@ -29,6 +32,7 @@ export interface Settings {
 const KEY = "pdftr.settings.v1";
 
 export const DEFAULTS: Settings = {
+  protocol: "",
   baseUrl: "",
   model: "",
   llmKey: "",
@@ -74,6 +78,7 @@ export function useSettings(): Settings {
 /** 随请求发送的头：只发用户填写了的项，未填写的由服务端用部署者的共享配置。 */
 export function authHeaders(s: Settings = current): Record<string, string> {
   const h: Record<string, string> = {};
+  if (s.protocol) h["X-LLM-Protocol"] = s.protocol;
   if (s.baseUrl) h["X-LLM-Base-URL"] = s.baseUrl;
   if (s.model) h["X-LLM-Model"] = s.model;
   if (s.llmKey) h["X-LLM-Key"] = s.llmKey;

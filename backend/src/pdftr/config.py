@@ -1,6 +1,7 @@
 """运行配置：全部来自环境变量（前缀 PDFTR_），见仓库根目录 .env.example。"""
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -16,6 +17,7 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.deepseek.com"
     llm_model: str = "deepseek-flash"
     llm_api_key: str = ""
+    llm_protocol: Literal["openai", "anthropic"] = "openai"  # 部署者共享 Key 所用的接口协议
     mineru_api_token: str = ""
     # 发往 MinerU（接口、上传、下载结果）的代理，如 socks5h://用户:密码@主机:端口 或 http://主机:端口。
     # 服务器到国内线路差时使用：实测某海外服务器直连上传约 25 KB/s，经洛杉矶一台线路好的机器转发约 1.8 MB/s

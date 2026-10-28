@@ -22,6 +22,7 @@ class ConfigOut(BaseModel):
     default_base_url: str
     default_model: str
     server_has_llm_key: bool
+    default_protocol: Literal["openai", "anthropic"]
     server_has_parser_token: bool
     server_has_paddle_token: bool
     max_upload_mb: int
@@ -133,6 +134,10 @@ class DocumentOut(BaseModel):
             for p in doc.pages
         ]  # fmt: skip
         return cls(job=JobOut.of(job), title=doc.meta.title, pages=pages, segments=[SegmentOut.of(s) for s in segments])
+
+
+class ModelsOut(BaseModel):
+    models: list[str]
 
 
 SegStatus = Literal["pending", "done", "failed", "edited"]

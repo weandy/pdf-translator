@@ -74,6 +74,11 @@ class FakeChat:
                 out.append(f"{m.group(1)}|{tag}:{text}")
         return ChatResult(text="\n".join(out), usage=ChatUsage(prompt_tokens=100, completion_tokens=40))
 
+    async def list_models(self) -> list[str]:
+        if FakeChat.fail:
+            raise ChatError("翻译服务的 API Key 无效")
+        return ["deepseek-flash", "deepseek-v4-pro"]
+
 
 def _client(data_dir: Path, font_dir: Path):
     FakeChat.fail = False
@@ -287,3 +292,29 @@ def test_revisions_record_manual_changes_and_revert_per_step(client: TestClient)
     assert client.post("/api/segments/revisions/99999/revert").status_code == 404
     client.delete(f"/api/jobs/{job['id']}")
     assert client.get(f"/api/jobs/{job['id']}/revisions").status_code == 404
+
+
+def test_llm_models_and_check(client: TestClient):
+    assert client.get("/api/llm/models", headers=HEADERS).json() == {"models": ["deepseek-flash", "deepseek-v4-pro"]}
+    ok = client.post("/api/llm/check", headers=HEADERS).json()
+    assert ok["ok"] and ok["model"] == "deepseek-flash" and ok["latency_ms"] >= 0
+    FakeChat.fail = True
+    bad = client.post("/api/llm/check", headers=HEADERS).json()
+    assert not bad["ok"] and "Key 无效" in bad["detail"]
+    assert client.get("/api/llm/models", headers=HEADERS).status_code == 502
+
+
+def test_shared_llm_key_only_goes_to_configured_service(tmp_path: Path):
+    from pdftr.container import Container
+
+    c = Container(settings=Settings(data_dir=tmp_path, llm_api_key="shared"), pipeline=None)  # type: ignore[arg-type]
+    kw = {"api_key": None, "model": None, "parser_token": None}
+    assert c.secrets(base_url=None, **kw).llm_api_key == "shared"
+    assert c.secrets(base_url="https://api.deepseek.com/", **kw).llm_api_key == "shared"
+    # 改了接口地址或协议就不再带上部署者的 Key，防止被转发到别人的服务器
+    assert c.secrets(base_url="https://evil.example/v1", **kw).llm_api_key == ""
+    assert c.secrets(base_url=None, protocol="anthropic", **kw).llm_api_key == ""
+    assert (
+        c.secrets(base_url="https://evil.example/v1", api_key="mine", model=None, parser_token=None).llm_api_key
+        == "mine"
+    )

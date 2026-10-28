@@ -13,6 +13,7 @@ dependencies = [
     "httpx2[socks]>=2.16",  # openai SDK 与 Starlette 已改用 httpx2，统一用它
     "openai>=1.60",
     "python-multipart>=0.0.20",
+    "anthropic>=2.3.0",
 ]
 
 [project.scripts]

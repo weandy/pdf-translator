@@ -116,5 +116,8 @@ def test_extract_terms_with_fake_model():
             assert "标题：Adam" in user and opts.thinking == "off"
             return ChatResult(text="领域：优化\nAdam=Adam")
 
+        async def list_models(self) -> list[str]:
+            return []
+
     got = asyncio.run(extract_terms(Chat(), title="Adam", abstract="abs", intro="intro", headings=["1 Intro"]))
     assert got.domain == "优化" and got.terms == {"Adam": "Adam"}

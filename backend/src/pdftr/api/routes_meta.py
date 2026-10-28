@@ -3,15 +3,32 @@
 import os
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import FileResponse
 
 from pdftr import __version__
-from pdftr.api.schemas import ConfigOut, HealthOut
+from pdftr.api.deps import pipeline, secrets
+from pdftr.api.schemas import ConfigOut, HealthOut, ModelsOut
 from pdftr.glossary.sources import parse_ids
 from pdftr.pipeline import usecases
+from pdftr.pipeline.runner import Pipeline
+from pdftr.pipeline.secrets import Secrets
 
 router = APIRouter(prefix="/api", tags=["meta"])
+PipelineDep = Annotated[Pipeline, Depends(pipeline)]
+SecretsDep = Annotated[Secrets, Depends(secrets)]
+
+
+@router.get("/llm/models", response_model=ModelsOut)
+async def llm_models(p: PipelineDep, sec: SecretsDep) -> ModelsOut:
+    """用请求头里的接口地址、协议与 Key 拉取模型列表（浏览器不能直接跨域请求翻译服务）。"""
+    return ModelsOut(models=await usecases.llm_models(p, sec))
+
+
+@router.post("/llm/check", response_model=usecases.LlmCheck)
+async def llm_check(p: PipelineDep, sec: SecretsDep) -> usecases.LlmCheck:
+    """测试连接：用请求头里的设置发一个很短的请求。"""
+    return await usecases.llm_check(p, sec)
 
 
 @router.get("/health", response_model=HealthOut)
@@ -27,6 +44,7 @@ def config(request: Request) -> ConfigOut:
         version=__version__,
         default_base_url=s.llm_base_url,
         default_model=s.llm_model,
+        default_protocol=s.llm_protocol,
         server_has_llm_key=bool(s.llm_api_key),
         server_has_parser_token=bool(s.mineru_api_token),
         server_has_paddle_token=bool(s.paddle_token),

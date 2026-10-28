@@ -74,6 +74,16 @@ class OpenAICompatChat:
             raise ChatError(f"翻译服务返回错误：HTTP {e.status_code}") from e
         return ChatResult(text=r.choices[0].message.content or "", usage=_usage(r.usage))
 
+    async def list_models(self) -> list[str]:
+        try:
+            return sorted([m.id async for m in self._client.models.list()])
+        except openai.AuthenticationError as e:
+            raise ChatError("翻译服务的 API Key 无效") from e
+        except openai.APIConnectionError as e:
+            raise ChatError("无法连接翻译服务，请检查 Base URL 与网络") from e
+        except openai.APIStatusError as e:
+            raise ChatError(f"这个服务不提供模型列表（HTTP {e.status_code}），请手动填写模型名") from e
+
 
 def _usage(u: Any) -> ChatUsage:
     if u is None:

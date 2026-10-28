@@ -148,6 +148,7 @@ button.danger {
 }
 
 input:not([type="checkbox"], [type="radio"]),
+select,
 textarea {
   width: 100%;
   padding: 8px 10px;
@@ -158,6 +159,7 @@ textarea {
   font: inherit;
 }
 input:focus-visible,
+select:focus-visible,
 textarea:focus-visible {
   outline: 2px solid var(--pen);
   outline-offset: 0;
@@ -1216,4 +1218,19 @@ input[type="radio"] {
     width: 100%;
     opacity: 0.6;
   }
+}
+
+/* 设置面板：测试连接 */
+.check-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  font-size: 14px;
+}
+.check-ok {
+  color: var(--done);
+}
+.field > span small {
+  margin-left: 8px;
 }

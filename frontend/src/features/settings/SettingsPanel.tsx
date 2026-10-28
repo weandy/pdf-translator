@@ -1,8 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState, type SubmitEvent } from "react";
+import { useEffect, useRef, useState, type SubmitEvent } from "react";
 
-import { clearKeys, saveSettings, useSettings, type Settings } from "@/entities/settings/model";
-import { api } from "@/shared/api/client";
+import { authHeaders, clearKeys, saveSettings, useSettings, type Settings } from "@/entities/settings/model";
+import { api, type LlmCheck } from "@/shared/api/client";
+
+const BASE_URLS = { openai: "https://api.deepseek.com", anthropic: "https://api.anthropic.com" } as const;
 
 interface Props {
   onClose: () => void;
@@ -21,6 +23,47 @@ export function SettingsPanel({ onClose }: Props) {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  const protocol = form.protocol || config?.default_protocol || "openai";
+  const [models, setModels] = useState<{ list: string[]; error: string | null; busy: boolean }>({
+    list: [],
+    error: null,
+    busy: false,
+  });
+  const [check, setCheck] = useState<LlmCheck | "busy" | null>(null);
+  const fetched = useRef(""); // 上次获取模型列表时的协议、地址与 Key：没变就不重复请求（重复请求会让布局跳动、点不中按钮）
+  // 用面板里还没保存的值请求；没填 Key 且用的是本站默认服务时，后端用本站的共享 Key
+  const headers = () => authHeaders({ ...form, protocol });
+  const canAsk = Boolean(form.llmKey || (config?.server_has_llm_key && !form.baseUrl && !form.protocol));
+
+  const loadModels = async (next?: Settings) => {
+    const f = next ?? form;
+    if (!(f.llmKey || (config?.server_has_llm_key && !f.baseUrl && !f.protocol))) return;
+    const signature = [f.protocol || protocol, f.baseUrl, f.llmKey].join("\n");
+    if (signature === fetched.current) return;
+    fetched.current = signature;
+    setModels((m) => ({ ...m, busy: true }));
+    try {
+      const list = await api.llmModels(authHeaders({ ...f, protocol: f.protocol || protocol }));
+      setModels({ list, error: null, busy: false });
+    } catch (e) {
+      setModels({ list: [], error: e instanceof Error ? e.message : String(e), busy: false });
+    }
+  };
+  const runCheck = async () => {
+    setCheck("busy");
+    try {
+      setCheck(await api.llmCheck(headers()));
+    } catch (e) {
+      setCheck({
+        ok: false,
+        model: form.model,
+        latency_ms: 0,
+        reply: "",
+        detail: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
 
   const set = <K extends keyof Settings>(key: K, value: Settings[K]) => setForm((f) => ({ ...f, [key]: value }));
   const submit = (e: SubmitEvent<HTMLFormElement>) => {
@@ -51,7 +94,24 @@ export function SettingsPanel({ onClose }: Props) {
 
         <section>
           <h3>翻译服务</h3>
-          <p className="hint">任何 OpenAI 兼容接口都可以，默认使用 DeepSeek。</p>
+          <p className="hint">
+            支持 OpenAI 兼容接口（默认 DeepSeek）与 Anthropic 接口（Claude，或 DeepSeek 等提供的兼容地址）。
+          </p>
+          <label className="field">
+            <span>接口协议</span>
+            <select
+              value={protocol}
+              onChange={(e) => {
+                const next = { ...form, protocol: e.target.value as Settings["protocol"] };
+                setForm(next);
+                setCheck(null);
+                void loadModels(next);
+              }}
+            >
+              <option value="openai">OpenAI 兼容（DeepSeek、通义千问、GLM、Ollama 等）</option>
+              <option value="anthropic">Anthropic（Claude）</option>
+            </select>
+          </label>
           <label className="field">
             <span>API Key</span>
             <input
@@ -59,6 +119,7 @@ export function SettingsPanel({ onClose }: Props) {
               autoComplete="off"
               value={form.llmKey}
               onChange={(e) => set("llmKey", e.target.value.trim())}
+              onBlur={() => void loadModels()}
               placeholder={config?.server_has_llm_key ? "留空则使用本站提供的 Key" : "sk-..."}
             />
           </label>
@@ -67,17 +128,48 @@ export function SettingsPanel({ onClose }: Props) {
             <input
               value={form.baseUrl}
               onChange={(e) => set("baseUrl", e.target.value.trim())}
-              placeholder={config?.default_base_url ?? "https://api.deepseek.com"}
+              onBlur={() => void loadModels()}
+              placeholder={
+                form.protocol && form.protocol !== config?.default_protocol
+                  ? BASE_URLS[protocol]
+                  : (config?.default_base_url ?? BASE_URLS[protocol])
+              }
             />
           </label>
           <label className="field">
-            <span>模型</span>
+            <span>
+              模型
+              {models.busy && <small className="muted">正在获取模型列表…</small>}
+              {!models.busy && models.list.length > 0 && (
+                <small className="muted">已获取 {models.list.length} 个模型，可直接选择</small>
+              )}
+            </span>
             <input
               value={form.model}
+              list="model-options"
               onChange={(e) => set("model", e.target.value.trim())}
+              onFocus={() => models.list.length === 0 && !models.busy && void loadModels()}
               placeholder={config?.default_model ?? "deepseek-flash"}
             />
+            <datalist id="model-options">
+              {models.list.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
           </label>
+          {models.error && <p className="hint">{models.error}</p>}
+          <div className="check-row">
+            <button type="button" disabled={!canAsk || check === "busy"} onClick={() => void runCheck()}>
+              {check === "busy" ? "测试中…" : "测试连接"}
+            </button>
+            {check && check !== "busy" && (
+              <span className={check.ok ? "check-ok" : "error"} role="status">
+                {check.ok
+                  ? `已连通：${check.model}，用时 ${(check.latency_ms / 1000).toFixed(1)} 秒`
+                  : `连接失败：${check.detail}`}
+              </span>
+            )}
+          </div>
         </section>
 
         <section>

@@ -16,6 +16,7 @@ from pdftr.pipeline.secrets import Secrets, SecretStore
 from pdftr.storage.cache import SqliteTranslationCache
 from pdftr.storage.files import FileArtifactStore
 from pdftr.storage.sqlite import SqliteStore
+from pdftr.translation.anthropic_compat import AnthropicChat
 from pdftr.translation.openai_compat import OpenAICompatChat
 
 log = logging.getLogger(__name__)
@@ -62,15 +63,22 @@ class Container:
         model: str | None,
         parser_token: str | None,
         paddle_token: str | None = None,
+        protocol: str | None = None,
     ) -> Secrets:
-        """请求头里的 Key（来自用户浏览器）优先，其次是部署者在 .env 配置的共享 Key。"""
+        """请求头里的 Key（来自用户浏览器）优先，其次是部署者在 .env 配置的共享 Key。
+
+        共享的翻译 Key 只发往部署者配置的接口地址与协议：否则有人把接口地址改成自己的服务器，就能收到这个 Key。
+        """
         s = self.settings
+        url = (base_url or s.llm_base_url).rstrip("/")
+        same_service = url == s.llm_base_url.rstrip("/") and (protocol or s.llm_protocol) == s.llm_protocol
         return Secrets(
-            llm_base_url=base_url or s.llm_base_url,
-            llm_api_key=api_key or s.llm_api_key,
+            llm_base_url=url,
+            llm_api_key=api_key or (s.llm_api_key if same_service else ""),
             llm_model=model or s.llm_model,
             parser_token=parser_token or s.mineru_api_token,
             paddle_token=paddle_token or s.paddle_token,
+            llm_protocol=protocol or s.llm_protocol,
         )
 
 
@@ -89,8 +97,10 @@ def build_container(settings: Settings | None = None, deps_override: dict | None
             if name == "paddleocr-vl"
             else MinerUCloudParser(sec.parser_token, proxy=s.mineru_proxy)
         ),
-        "chat_factory": lambda sec: OpenAICompatChat(
-            base_url=sec.llm_base_url, api_key=sec.llm_api_key, model=sec.llm_model
+        "chat_factory": lambda sec: (
+            AnthropicChat(base_url=sec.llm_base_url, api_key=sec.llm_api_key, model=sec.llm_model)
+            if sec.llm_protocol == "anthropic"
+            else OpenAICompatChat(base_url=sec.llm_base_url, api_key=sec.llm_api_key, model=sec.llm_model)
         ),
         "term_matcher": GlossaryLoader(s),
         "max_concurrent_jobs": s.max_concurrent_jobs,

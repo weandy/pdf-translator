@@ -81,3 +81,19 @@ def test_errors(status, message):
 def test_missing_key():
     with pytest.raises(ChatError, match="未配置"):
         OpenAICompatChat(base_url="https://api.deepseek.com", api_key="", model="m")
+
+
+def test_list_models():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == "/v1/models"
+        return httpx2.Response(200, json={"object": "list", "data": [
+            {"id": "deepseek-v4-pro", "object": "model", "created": 0, "owned_by": "x"},
+            {"id": "deepseek-flash", "object": "model", "created": 0, "owned_by": "x"},
+        ]})  # fmt: skip
+
+    client = AsyncOpenAI(
+        base_url="https://api.example/v1", api_key="k", max_retries=0,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )  # fmt: skip
+    chat = OpenAICompatChat(base_url="https://api.example/v1", api_key="k", model="m", client=client)
+    assert asyncio.run(chat.list_models()) == ["deepseek-flash", "deepseek-v4-pro"]

@@ -1,7 +1,7 @@
 """大模型端口：翻译与术语抽取都通过它调用模型。
 
 放在 domain，因为 translation 和 glossary 两个能力模块都要用，而它们之间不能互相导入。
-OpenAI 兼容接口、各家思考开关的差异由适配器（translation/openai_compat.py）处理。
+OpenAI 兼容接口、Anthropic 协议与各家思考开关的差异由适配器（translation/openai_compat.py、anthropic_compat.py）处理。
 """
 
 from typing import Literal, Protocol
@@ -49,3 +49,5 @@ class ChatModel(Protocol):
     model: str
 
     async def complete(self, system: str, user: str, opts: ChatOptions) -> ChatResult: ...
+
+    async def list_models(self) -> list[str]: ...

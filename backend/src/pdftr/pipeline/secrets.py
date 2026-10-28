@@ -10,6 +10,7 @@ class Secrets:
     llm_model: str
     parser_token: str  # MinerU Token
     paddle_token: str = ""  # PaddleOCR（星河社区）Token
+    llm_protocol: str = "openai"  # openai（OpenAI 兼容）或 anthropic（Anthropic Messages）
 
     def token_for(self, parser: str) -> str:
         return self.paddle_token if parser == "paddleocr-vl" else self.parser_token

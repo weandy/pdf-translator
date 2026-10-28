@@ -14,6 +14,7 @@ export type SegmentData = components["schemas"]["SegmentOut"];
 export type ServerConfig = components["schemas"]["ConfigOut"];
 export type Estimate = components["schemas"]["Estimate"];
 export type Revision = components["schemas"]["RevisionOut"];
+export type LlmCheck = components["schemas"]["LlmCheck"];
 export type Quality = "default" | "careful";
 
 export class ApiError extends Error {
@@ -82,6 +83,10 @@ export const api = {
     request<SegmentData>(`/api/segments/${id}`, { method: "PATCH", ...json({ target }) }),
   retranslate: (id: string, quality: Quality) =>
     request<SegmentData>(`/api/segments/${id}/retranslate`, { method: "POST", ...json({ quality }) }),
+  /** 翻译服务的模型列表与连通测试；headers 用设置面板里尚未保存的值 */
+  llmModels: (headers: Record<string, string>) =>
+    request<{ models: string[] }>("/api/llm/models", { headers }).then((r) => r.models),
+  llmCheck: (headers: Record<string, string>) => request<LlmCheck>("/api/llm/check", { method: "POST", headers }),
   revisions: (jobId: string) => request<Revision[]>(`/api/jobs/${jobId}/revisions`),
   revert: (revisionId: number) =>
     request<SegmentData>(`/api/segments/revisions/${revisionId}/revert`, { method: "POST" }),

@@ -19,6 +19,9 @@ class FakeChat:
         self.break_once = set(break_once or ())
         self.error = error
 
+    async def list_models(self) -> list[str]:
+        return [self.model]
+
     async def complete(self, system: str, user: str, opts: ChatOptions) -> ChatResult:
         if self.error:
             raise self.error

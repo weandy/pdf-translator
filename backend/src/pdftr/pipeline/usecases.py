@@ -6,6 +6,7 @@
 import logging
 import shutil
 import tempfile
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 from pdftr.domain.ids import new_job_id
 from pdftr.domain.ir import Document, Quality, Revision, RevisionAction, Segment, SegmentStatus
 from pdftr.domain.job import STAGES, Job, JobOptions, JobStatus
+from pdftr.domain.llm import ChatError, ChatOptions
 from pdftr.extraction.chars import page_count
 from pdftr.pipeline.runner import Pipeline, load_context, load_document
 from pdftr.pipeline.secrets import Secrets
@@ -190,6 +192,37 @@ def edit_segment(pipeline: Pipeline, segment_id: str, target: str) -> Segment:
     pipeline.deps.store.save_segments([seg])
     _record(pipeline, before, seg, "edit")
     return seg
+
+
+class LlmCheck(BaseModel):
+    ok: bool
+    model: str
+    latency_ms: int
+    reply: str = ""
+    detail: str = ""
+
+
+async def llm_models(pipeline: Pipeline, secrets: Secrets) -> list[str]:
+    """从翻译服务拉取可用模型（各家都提供 /models）。"""
+    _require_secrets(secrets, parser=None)
+    return await pipeline.deps.chat_factory(secrets).list_models()
+
+
+async def llm_check(pipeline: Pipeline, secrets: Secrets) -> LlmCheck:
+    """发一个很短的请求，检查接口地址、Key、模型能否连通（费用可忽略）。"""
+    started = time.monotonic()
+    try:
+        _require_secrets(secrets, parser=None)
+        r = await pipeline.deps.chat_factory(secrets).complete(
+            "只回复 OK 两个字母。", "ping", ChatOptions(max_tokens=16)
+        )
+    except (ChatError, UserError) as e:
+        return LlmCheck(ok=False, model=secrets.llm_model, latency_ms=_ms(started), detail=str(e))
+    return LlmCheck(ok=True, model=secrets.llm_model, latency_ms=_ms(started), reply=r.text.strip()[:40])
+
+
+def _ms(started: float) -> int:
+    return round((time.monotonic() - started) * 1000)
 
 
 def revisions(pipeline: Pipeline, job_id: str) -> list[Revision]:
