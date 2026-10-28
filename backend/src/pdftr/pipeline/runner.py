@@ -23,6 +23,7 @@ from pdftr.glossary.matcher import TermMatcher, combine, override
 from pdftr.glossary.normalize import normalize_terms
 from pdftr.parsing.port import LayoutParser, ParseError
 from pdftr.pipeline.events import EventBus
+from pdftr.pipeline.memory import release_memory
 from pdftr.pipeline.secrets import Secrets, SecretStore
 from pdftr.rendering.background import make_background
 from pdftr.storage.port import ArtifactStore, JobStore
@@ -146,6 +147,7 @@ class Pipeline:
             self._update(job, status=JobStatus.FAILED, error="内部错误，请查看服务日志")
         finally:
             self.deps.secrets.drop(job_id)
+            release_memory()
 
     async def _parse(self, job: Job, secrets: Secrets) -> None:
         out = self.deps.artifacts.path(job.id, "layout.json")

@@ -30,8 +30,10 @@ COPY --from=fonts /fonts ./fonts
 RUN useradd --create-home --uid 10001 app && mkdir -p /data && chown app /data
 USER app
 
+# MALLOC_ARENA_MAX：后台线程（PDF 处理在线程池里跑）各自占一块内存池，限制数量以减少碎片
 ENV PATH="/app/.venv/bin:$PATH" \
-    PDFTR_DATA_DIR=/data
+    PDFTR_DATA_DIR=/data \
+    MALLOC_ARENA_MAX=2
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

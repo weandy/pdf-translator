@@ -19,6 +19,7 @@ from pdftr.domain.llm import ChatError, ChatOptions
 from pdftr.extraction.chars import page_count
 from pdftr.glossary.matcher import combine
 from pdftr.glossary.user_import import ParsedGlossary, parse_upload
+from pdftr.pipeline.memory import release_memory
 from pdftr.pipeline.runner import Pipeline, load_context, load_document
 from pdftr.pipeline.secrets import Secrets
 from pdftr.rendering.background import crop_png
@@ -135,6 +136,7 @@ def export_job(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "
     deps = pipeline.deps
     data = export_pdf(deps.artifacts.path(job_id, "original.pdf"), deps.artifacts.path(job_id, "background.pdf"),
                       load_document(deps, job_id), deps.store.segments(job_id), mode, deps.font_dir, side)  # fmt: skip
+    release_memory()
     suffix = "译文" if mode == "mono" else "双语对照"
     return f"{Path(job.filename).stem}-{suffix}.pdf", data
 
