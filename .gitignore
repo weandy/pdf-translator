@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+
+# 运行时数据与密钥
+data/
+.env
+.env.*
+!.env.example
+
+# 第三方术语库（按许可只提供下载脚本，不入库）
+glossaries/vendor/
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
