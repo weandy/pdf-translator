@@ -199,10 +199,10 @@ class MinerUCloudParser:
         raise AssertionError("unreachable")
 
 
-def upload_status(sent: int, total: int, elapsed: float) -> str:
+def upload_status(sent: int, total: int, elapsed: float, service: str = "MinerU") -> str:
     """“正在上传到 MinerU 云端：1.2 / 3.4 MB，32 KB/s，约 1 分 10 秒”。"""
     mb = lambda n: f"{n / 1048576:.1f}"  # noqa: E731
-    text = f"正在上传到 MinerU 云端：{mb(sent)} / {mb(total)} MB"
+    text = f"正在上传到 {service} 云端：{mb(sent)} / {mb(total)} MB"
     if elapsed < 1 or sent == 0:
         return text
     speed = sent / elapsed

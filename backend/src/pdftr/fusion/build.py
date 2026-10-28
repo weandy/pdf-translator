@@ -25,6 +25,7 @@ from pdftr.domain.ir import (
 )
 from pdftr.domain.layout import LayoutBlock, LayoutResult
 from pdftr.fusion.align import align
+from pdftr.fusion.formula_align import refine_block
 from pdftr.fusion.relocate import relocate
 from pdftr.fusion.style import block_style
 from pdftr.fusion.text_fix import chars_in, choose, text_of
@@ -47,6 +48,7 @@ class FusionReport:
     formulas: int = 0
     orphan_blocks: int = 0
     figure_labels: int = 0
+    formulas_unlocated: int = 0  # 块级解析结果里没能推算出位置的行内公式（按正文保留）
     non_native_pages: list[int] = field(default_factory=list)
 
     @property
@@ -73,6 +75,9 @@ def fuse(
 
         blocks: list[Block] = []
         for lb, chars in zip(lp.blocks, per_block, strict=True):
+            if lb.content is not None and not lb.lines:  # 块级解析结果：先拆行、推算行内公式位置
+                lb, total, found = refine_block(lb, chars)
+                report.formulas_unlocated += total - found
             blocks.append(_block(cp, lb, chars, rel.links, report))
         blocks += _orphan_blocks(cp, orphans, start=len(lp.blocks), report=report)
         figure_chars = [c for lb, chars in zip(lp.blocks, per_block, strict=True) if lb.type is BlockType.FIGURE

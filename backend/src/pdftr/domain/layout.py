@@ -35,6 +35,9 @@ class LayoutBlock(BaseModel):
     placeholder: bool = False
     discarded: bool = False  # 解析器认为无需展示的块（页眉、页码等）
     source_type: str = ""  # 解析器原始类型名，便于排查
+    # 块级解析器（如 PaddleOCR-VL）只给块坐标与内容，行内公式以 $LaTeX$ 标出、没有位置；
+    # 此时 lines 为空，由融合阶段对照 PDF 字符拆成行与片段并推算公式位置（fusion/formula_align.py）
+    content: str | None = None
 
 
 class LayoutPage(BaseModel):
