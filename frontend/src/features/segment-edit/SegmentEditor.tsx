@@ -38,25 +38,30 @@ export function SegmentEditor({ segment, onChange, onClose }: Props) {
     <aside className="editor" aria-label="段落编辑">
       <header>
         <strong>段落</strong>
-        <span className={`badge ${segment.status}`}>{STATUS[segment.status]}</span>
-        {segment.quality === "careful" && <span className="badge">精翻</span>}
+        <span className={`tag ${segment.status}`}>{STATUS[segment.status]}</span>
+        {segment.quality === "careful" && <span className="tag">精翻</span>}
         <span className="spacer" />
-        <button type="button" className="link" onClick={onClose} aria-label="关闭">
-          ✕
+        <button type="button" className="quiet" onClick={onClose} aria-label="关闭段落编辑">
+          关闭
         </button>
       </header>
       <h3>原文</h3>
       <p className="source">{segment.source}</p>
       <h3>译文</h3>
       <textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={8} />
-      <p className="hint small">公式以 &lt;m1/&gt; 等占位符表示，修改时请保留。</p>
+      <p className="hint">公式显示为 &lt;m1/&gt; 这样的占位符，修改时请保留。</p>
       {error && <p className="error">{error}</p>}
       <div className="actions">
         <button type="button" disabled={busy !== null} onClick={() => void run("default")}>
           {busy === "default" ? "重翻中…" : "重翻"}
         </button>
-        <button type="button" disabled={busy !== null} onClick={() => void run("careful")}>
-          {busy === "careful" ? "精修中…" : "精修（开思考）"}
+        <button
+          type="button"
+          disabled={busy !== null}
+          onClick={() => void run("careful")}
+          title="开启低强度思考重新翻译这一段，费用约为普通的 4 倍"
+        >
+          {busy === "careful" ? "精修中…" : "精修"}
         </button>
         <span className="spacer" />
         <button

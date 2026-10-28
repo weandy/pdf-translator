@@ -10,6 +10,26 @@ interface Props {
   onNeedSettings: () => void;
 }
 
+/** 对开页里的版面示意：标题、正文、公式。左页英文、右页中文（中文行用蓝铅笔色）。 */
+function SketchPage({ lang }: { lang: "en" | "zh" }) {
+  return (
+    <div className={`spread-page ${lang}`} aria-hidden="true">
+      <i className="ln title" />
+      <i className="ln" />
+      <i className="ln" />
+      <i className="ln short" />
+      <i className="ln eq" />
+      <i className="ln" />
+      <i className="ln" />
+      <i className="ln" />
+      <i className="ln short" />
+      <i className="fig" />
+      <i className="ln" />
+      <i className="ln short" />
+    </div>
+  );
+}
+
 export function UploadPanel({ onCreated, onNeedSettings }: Props) {
   const settings = useSettings();
   const { data: config } = useQuery({
@@ -20,18 +40,18 @@ export function UploadPanel({ onCreated, onNeedSettings }: Props) {
   const [pages, setPages] = useState<number | null>(null);
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const { data: estimate } = useQuery({
     queryKey: ["estimate", pages, settings.quality, settings.model],
-    queryFn: () =>
-      api.estimate(pages ?? 1, settings.quality, settings.model || undefined),
+    queryFn: () => api.estimate(pages ?? 1, settings.quality, settings.model || undefined),
     enabled: pages !== null,
   });
 
   const missingKey = config && !settings.llmKey && !config.server_has_llm_key;
-  const missingToken =
-    config && !settings.parserKey && !config.server_has_parser_token;
+  const missingToken = config && !settings.parserKey && !config.server_has_parser_token;
+  const tooManyPages = config && pages !== null && pages > config.max_pages;
 
   const pick = async (f: File | undefined) => {
     setError(null);
@@ -56,6 +76,7 @@ export function UploadPanel({ onCreated, onNeedSettings }: Props) {
 
   const onDrop = (e: DragEvent) => {
     e.preventDefault();
+    setDragging(false);
     void pick(e.dataTransfer.files[0]);
   };
 
@@ -78,93 +99,108 @@ export function UploadPanel({ onCreated, onNeedSettings }: Props) {
     }
   };
 
-  return (
-    <section className="upload">
-      <div className="notice" role="note">
-        文件将上传至 <strong>MinerU 云端</strong>
-        进行版面解析，翻译文字会发送给你配置的大模型服务。
-        请勿上传涉密或未公开的文档。
-        {config && config.retention_days > 0 && (
-          <>
-            {" "}
-            文件在本服务器保留 {config.retention_days}{" "}
-            天后自动删除，也可以在“我的任务”里随时删除。
-          </>
-        )}
-      </div>
+  const cost =
+    estimate &&
+    (estimate.cny_low === null
+      ? "按你的服务商计费"
+      : `¥${estimate.cny_low.toFixed(2)}–${(estimate.cny_high ?? estimate.cny_low).toFixed(2)}`);
 
+  return (
+    <section className="upload" aria-label="上传论文">
       <label
-        className="dropzone"
-        onDragOver={(e) => e.preventDefault()}
+        className={`spread${dragging ? " dragging" : ""}`}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
       >
         <input
           type="file"
           accept="application/pdf"
+          className="visually-hidden"
           onChange={(e) => void pick(e.target.files?.[0])}
-          hidden
         />
-        {file ? (
-          <span>
-            {file.name}
-            {pages !== null && ` · ${pages} 页`}
-          </span>
-        ) : (
-          <span>点击选择或拖入英文论文 PDF</span>
-        )}
+        <SketchPage lang="en" />
+        <SketchPage lang="zh" />
+        <span className="spread-label">
+          {file ? (
+            <>
+              <span className="file-name">{file.name}</span>
+              <span>{pages === null ? "正在读取页数…" : `${pages} 页，点击可换一个文件`}</span>
+            </>
+          ) : (
+            <>
+              <strong>选择英文论文 PDF</strong>
+              <span>或拖到这里</span>
+            </>
+          )}
+        </span>
       </label>
 
       {estimate && (
-        <p className="hint">
-          预计费用{" "}
-          {estimate.cny_low === null
-            ? "按你的服务商计费"
-            : `¥${estimate.cny_low.toFixed(2)}–${(estimate.cny_high ?? estimate.cny_low).toFixed(2)}`}
-          {estimate.peak && "（当前为 DeepSeek 高峰时段）"}，约{" "}
-          {estimate.minutes} 分钟（不含 MinerU 排队） ·{" "}
-          {settings.quality === "careful" ? "精翻" : "默认档"}
-        </p>
+        <dl className="upload-meta">
+          <div>
+            <dt>预计费用</dt>
+            <dd className="num">{cost}</dd>
+          </div>
+          <div>
+            <dt>翻译用时</dt>
+            <dd className="num">约 {estimate.minutes} 分钟</dd>
+          </div>
+          <div>
+            <dt>档位</dt>
+            <dd>{settings.quality === "careful" ? "精翻" : "默认"}</dd>
+          </div>
+          {estimate.peak && <p className="hint">现在是 DeepSeek 高峰时段，价格翻倍。</p>}
+        </dl>
       )}
-      {config && pages !== null && pages > config.max_pages && (
+      {tooManyPages && (
         <p className="error">
-          PDF 共 {pages} 页，超过上限 {config.max_pages} 页
+          这份 PDF 共 {pages} 页，超过上限 {config.max_pages} 页。
         </p>
       )}
 
       {(missingKey || missingToken) && (
-        <p className="error">
-          {missingKey && "还没有配置翻译服务的 API Key。"}
-          {missingToken && "还没有配置 MinerU Token。"}
+        <p className="setup-hint">
+          开始前，先在设置里填写
+          {missingKey && missingToken
+            ? "翻译服务的 API Key 和 MinerU Token"
+            : missingKey
+              ? "翻译服务的 API Key"
+              : "MinerU Token"}
+          ，两者都可以免费申请。
           <button type="button" className="link" onClick={onNeedSettings}>
-            去设置
+            打开设置
           </button>
         </p>
       )}
 
-      <label className="inline consent">
-        <input
-          type="checkbox"
-          checked={consent}
-          onChange={(e) => setConsent(e.target.checked)}
-        />
-        我已知晓文件会上传到 MinerU 云端解析
+      <p className="notice">
+        文件会上传到 MinerU 云端解析版面，正文会发给你设置的翻译服务，请不要上传涉密或未公开的文档。
+        {config &&
+          config.retention_days > 0 &&
+          `文件在本站保留 ${config.retention_days} 天后自动删除，也可以随时手动删除。`}
+        版面解析在高峰时可能要排队 10 分钟以上。
+      </p>
+
+      <label className="consent">
+        <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
+        我知道文件会上传到 MinerU 云端解析
       </label>
 
       {error && <p className="error">{error}</p>}
-      <button
-        type="button"
-        className="primary"
-        disabled={
-          !file ||
-          pages === null ||
-          !consent ||
-          busy ||
-          Boolean(missingKey || missingToken)
-        }
-        onClick={() => void submit()}
-      >
-        {busy ? "上传中…" : "开始翻译"}
-      </button>
+      <div className="upload-actions">
+        <button
+          type="button"
+          className="primary"
+          disabled={!file || pages === null || !consent || busy || tooManyPages || Boolean(missingKey || missingToken)}
+          onClick={() => void submit()}
+        >
+          {busy ? "正在上传…" : "开始翻译"}
+        </button>
+      </div>
     </section>
   );
 }

@@ -3,7 +3,7 @@
  * 译文页 = 去字背景页（pdf.js 渲染）+ 叠加层（按 pt 坐标排版，整体 transform 缩放，拟合结果与缩放无关）。
  */
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { blockTexts, type BlockText } from "@/entities/document/model";
 import { fileUrl, formulaUrl, type DocumentData, type PageData } from "@/shared/api/client";
@@ -18,9 +18,15 @@ interface Props {
   jobId: string;
   selectedSegment: string | null;
   onSelectSegment: (id: string) => void;
+  /** 工具栏左侧（标题等）与右侧（下载等），由页面组合 */
+  heading?: ReactNode;
+  actions?: ReactNode;
 }
 
-export function ReaderView({ doc, jobId, selectedSegment, onSelectSegment }: Props) {
+const PADDING = 48; // .pages 左右内边距之和
+const SPINE = 2; // 对照模式两页之间的装订线
+
+export function ReaderView({ doc, jobId, selectedSegment, onSelectSegment, heading, actions }: Props) {
   const [mode, setMode] = useState<ViewMode>("both");
   const [zoom, setZoom] = useState<number | null>(null); // null = 自适应宽度
   const [width, setWidth] = useState(1200);
@@ -41,35 +47,49 @@ export function ReaderView({ doc, jobId, selectedSegment, onSelectSegment }: Pro
 
   const maxPageWidth = Math.max(...doc.pages.map((p) => p.width));
   const columns = mode === "both" ? 2 : 1;
-  const fitZoom = Math.max(0.3, (width - 48 - (columns - 1) * 16) / columns / maxPageWidth);
+  const fitZoom = Math.max(0.3, (width - PADDING - (columns - 1) * SPINE) / columns / maxPageWidth);
   const scale = zoom ?? fitZoom;
 
   return (
     <div className="reader">
       <div className="toolbar">
+        {heading}
         <div className="segmented" role="group" aria-label="显示方式">
           {(
             [
               ["both", "对照"],
-              ["translated", "只看译文"],
-              ["original", "只看原文"],
+              ["translated", "译文"],
+              ["original", "原文"],
             ] as const
           ).map(([m, label]) => (
-            <button key={m} type="button" className={mode === m ? "on" : ""} onClick={() => setMode(m)}>
+            <button
+              key={m}
+              type="button"
+              className={mode === m ? "on" : ""}
+              aria-pressed={mode === m}
+              onClick={() => setMode(m)}
+            >
               {label}
             </button>
           ))}
         </div>
-        <span className="spacer" />
-        <button type="button" onClick={() => setZoom(Math.max(0.3, scale - 0.15))} aria-label="缩小">
-          −
-        </button>
-        <button type="button" className="zoom-label" onClick={() => setZoom(null)} title="适应宽度">
-          {Math.round(scale * 100)}%
-        </button>
-        <button type="button" onClick={() => setZoom(Math.min(4, scale + 0.15))} aria-label="放大">
-          +
-        </button>
+        <div className="zoom" role="group" aria-label="缩放">
+          <button
+            type="button"
+            className="quiet"
+            onClick={() => setZoom(Math.max(0.3, scale - 0.15))}
+            aria-label="缩小"
+          >
+            −
+          </button>
+          <button type="button" className="quiet zoom-label" onClick={() => setZoom(null)} title="适应宽度">
+            {Math.round(scale * 100)}%
+          </button>
+          <button type="button" className="quiet" onClick={() => setZoom(Math.min(4, scale + 0.15))} aria-label="放大">
+            +
+          </button>
+        </div>
+        {actions}
       </div>
       <div className="pages" ref={scroller}>
         {(original.error || background.error) && <p className="error">PDF 加载失败：{original.error ?? background.error}</p>}
@@ -127,7 +147,7 @@ function PageRow({ page, scale, mode, original, background, texts, hovered, sele
   const mark = (segId: string) => (segId === selected ? " selected" : segId === hovered ? " hovered" : "");
 
   return (
-    <div className="page-row" ref={ref}>
+    <div className={`page-row${mode === "both" ? "" : " single"}`} ref={ref}>
       {mode !== "translated" && (
         <div className="page" style={size} aria-label={`原文第 ${page.index + 1} 页`}>
           {near && original && <PdfCanvas doc={original} page={page.index} scale={scale} />}

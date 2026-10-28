@@ -84,6 +84,8 @@ export const api = {
 };
 
 export const fileUrl = (jobId: string, name: "original.pdf" | "background.pdf") => `/api/jobs/${jobId}/files/${name}`;
+export type ExportMode = "mono" | "dual";
+export const exportUrl = (jobId: string, mode: ExportMode) => `/api/jobs/${jobId}/export?mode=${mode}`;
 export const formulaUrl = (segmentId: string, key: string) => `/api/segments/${segmentId}/formulas/${key}.png`;
 
 /** 订阅任务进度（SSE）。返回取消订阅函数。 */

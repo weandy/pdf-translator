@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { lazy, Suspense, useState } from "react";
-import { createBrowserRouter, Outlet, RouterProvider, useNavigate, useOutletContext } from "react-router";
+import { createBrowserRouter, Link, Outlet, RouterProvider, useOutletContext } from "react-router";
 
 import { authHeaders } from "@/entities/settings/model";
 import { SettingsPanel } from "@/features/settings/SettingsPanel";
@@ -13,7 +13,9 @@ setAuthHeaders(() => authHeaders());
 // 阅读器连同 pdf.js、KaTeX 按需加载，首页不用下载它们
 const JobPage = lazy(() => import("@/pages/JobPage").then((m) => ({ default: m.JobPage })));
 
-const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } } });
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
+});
 
 interface LayoutContext {
   openSettings: () => void;
@@ -21,18 +23,21 @@ interface LayoutContext {
 
 function Layout() {
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const navigate = useNavigate();
   return (
     <>
       <header className="topbar">
-        <button type="button" className="brand link" onClick={() => void navigate("/")}>
+        <Link to="/" className="wordmark" aria-label="PDF 保版式翻译，返回首页">
+          <span className="wordmark-mark" aria-hidden="true">
+            <span>A</span>
+            <span>文</span>
+          </span>
           PDF 保版式翻译
-        </button>
+        </Link>
         <span className="spacer" />
         <a href="https://github.com/weandy/pdf-translator" target="_blank" rel="noreferrer">
-          GitHub
+          源代码
         </a>
-        <button type="button" onClick={() => setSettingsOpen(true)}>
+        <button type="button" className="quiet" onClick={() => setSettingsOpen(true)}>
           设置
         </button>
       </header>
