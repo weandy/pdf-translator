@@ -18,6 +18,7 @@
 
 - [docs/00-research.md](docs/00-research.md)：调研报告（沉浸式翻译/BabelDOC 原理、开源方案、不足、解析服务、术语库）
 - [docs/01-tech-stack.md](docs/01-tech-stack.md)：技术选型
+- [docs/02-spikes.md](docs/02-spikes.md)：验证实验记录
 
 ## 相关资源
 
