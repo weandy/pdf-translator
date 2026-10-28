@@ -15,6 +15,7 @@ Google Fonts 只提供可变字重的 TrueType，用 fontTools 切出固定字�
 
 import contextlib
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -70,10 +71,19 @@ def save_subset(src: Path, target: Path, unicodes: set[int] | None) -> None:
         subset.save_font(font, target / (src.stem + suffix), opts)
 
 
-def download(url: str, out: Path) -> None:
-    print(f"下载 {url}", flush=True)
-    with urllib.request.urlopen(url, timeout=600) as r:
-        out.write_bytes(r.read())
+def download(url: str, out: Path, attempts: int = 5) -> None:
+    """网络偶发连接超时（实测连 GitHub 时有发生），按退避间隔重试。"""
+    for n in range(1, attempts + 1):
+        print(f"下载 {url}（第 {n} 次）", flush=True)
+        try:
+            with urllib.request.urlopen(url, timeout=120) as r:
+                out.write_bytes(r.read())
+            return
+        except OSError as e:
+            if n == attempts:
+                raise
+            print(f"  失败：{e}，{5 * n} 秒后重试", flush=True)
+            time.sleep(5 * n)
 
 
 def main(target: Path) -> None:
