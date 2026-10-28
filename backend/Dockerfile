@@ -1,3 +1,10 @@
+# 字体：思源宋体/思源黑体/Tinos，精简到 GB 2312 + 西文（见 scripts/fetch_fonts.py）。
+# 单独一个构建阶段，fontTools 不进入运行镜像；脚本不变时这一层会被缓存。
+FROM python:3.12-slim AS fonts
+RUN pip install --no-cache-dir fonttools==4.60.1 brotli==1.1.0
+COPY scripts/fetch_fonts.py /tmp/fetch_fonts.py
+RUN python /tmp/fetch_fonts.py /fonts
+
 # 不在镜像里留下 uv 下载缓存（M6 实测：缓存曾让镜像多出约 345 MB）
 FROM python:3.12-slim AS base
 
@@ -17,6 +24,8 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 COPY src ./src
 RUN uv sync --frozen --no-dev
+
+COPY --from=fonts /fonts ./fonts
 
 RUN useradd --create-home --uid 10001 app && mkdir -p /data && chown app /data
 USER app

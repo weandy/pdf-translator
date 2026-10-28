@@ -892,7 +892,7 @@ input[type="radio"] {
   background: var(--pencil-strong);
 }
 
-/* 译文叠加层：按 pt 排版（1pt 记作 1px），外层 transform 缩放 */
+/* 译文叠加层：按 pt 的 4 倍排版（1pt 记作 4px，见 ReaderView 的 UNIT），外层 transform 缩回 */
 .overlay {
   position: absolute;
   top: 0;
@@ -903,7 +903,8 @@ input[type="radio"] {
   position: absolute;
   overflow: hidden;
   color: #000;
-  text-align: justify;
+  /* 左对齐，与导出 PDF 一致：两端对齐在中英混排、网址处会拉出大空隙 */
+  text-align: left;
   word-break: break-word;
   cursor: pointer;
 }

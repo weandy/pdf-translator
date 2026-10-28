@@ -1,0 +1,47 @@
+/*
+ * 译文字体（GB/T 7713.2—2022 附录 B）：正文宋体、标题与图表编号黑体，西文 Times 类。
+ * 与导出 PDF 用同一套字体文件（后端 /api/fonts 提供，见 backend/scripts/fetch_fonts.py）：
+ * 思源宋体、思源黑体（精简到 GB 2312）、Tinos（与 Times New Roman 字宽一致）。
+ * 本地没有这些文件时依次退回系统里的同类字体。
+ */
+@font-face {
+  font-family: "Pdftr Song";
+  src: url("/api/fonts/NotoSerifSC-Regular.woff2?v=1") format("woff2");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Pdftr Hei";
+  src: url("/api/fonts/NotoSansSC-Medium.woff2?v=1") format("woff2");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Pdftr Times";
+  src: url("/api/fonts/Tinos-Regular.woff2?v=1") format("woff2");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Pdftr Times";
+  font-weight: 700;
+  src: url("/api/fonts/Tinos-Bold.woff2?v=1") format("woff2");
+  font-display: swap;
+}
+
+.tblock {
+  font-family: "Pdftr Times", "Times New Roman", "Liberation Serif", serif;
+  font-weight: 400;
+}
+.tblock .zh {
+  font-family: "Pdftr Song", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", SimSun, serif;
+  font-weight: 400;
+}
+.tblock.role-heading {
+  font-weight: 700;
+}
+.tblock.role-heading .zh,
+.tblock .no .zh {
+  font-family: "Pdftr Hei", "Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", SimHei, sans-serif;
+  font-weight: 400;
+}
+.tblock .no {
+  font-weight: 700;
+}

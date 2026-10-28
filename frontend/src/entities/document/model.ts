@@ -9,6 +9,29 @@ export interface BlockText {
   segment: SegmentData;
   text: string; // 译文片段；没有译文（失败/未完成）时为原文片段
   translated: boolean;
+  first: boolean; // 段落的第一部分（跨栏/跨页段落拆开后）
+}
+
+/** 排版角色决定字体（GB/T 7713.2 附录 B），与后端 rendering/export.py 的 role() 一致。 */
+export type Role = "heading" | "caption" | "body";
+
+export function roleOf(block: BlockData): Role {
+  if (block.type === "title" || block.bold) return "heading";
+  if (block.type === "caption") return "caption";
+  return "body";
+}
+
+/** 与导出 PDF 一致的行距（rendering/export.py 的 LINE_HEIGHT）。 */
+export const LINE_HEIGHT = 1.2;
+
+/**
+ * 译文排版框：原文块的范围。解析器给单行文字的框只有字形高，装不下一整行时上下各补一半
+ * （与后端 rendering/export.py 的 _box 一致）。
+ */
+export function layoutBox(block: BlockData): { x0: number; y0: number; x1: number; y1: number } {
+  const { x0, y0, x1, y1 } = block.bbox;
+  const pad = Math.max(block.font_size * LINE_HEIGHT + 0.5 - (y1 - y0), 0) / 2;
+  return { x0, y0: y0 - pad, x1, y1: y1 + pad };
 }
 
 export function blockTexts(doc: DocumentData): Map<string, BlockText> {
@@ -23,7 +46,7 @@ export function blockTexts(doc: DocumentData): Map<string, BlockText> {
     );
     seg.block_ids.forEach((id, i) => {
       const block = blocks.get(id);
-      if (block) out.set(id, { block, segment: seg, text: pieces[i] ?? "", translated });
+      if (block) out.set(id, { block, segment: seg, text: pieces[i] ?? "", translated, first: i === 0 });
     });
   }
   return out;

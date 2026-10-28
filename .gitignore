@@ -25,3 +25,6 @@ glossaries/vendor/
 
 # 回归测试样本（arXiv 论文与 MinerU 解析结果，由 backend/scripts/fetch_samples.py 生成）
 backend/.samples/
+
+# 导出 PDF 用的字体（scripts/fetch_fonts.py 下载生成，不入库）
+backend/fonts/

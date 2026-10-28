@@ -47,6 +47,52 @@
     }
    }
   },
+  "/api/fonts/{name}": {
+   "get": {
+    "tags": [
+     "meta"
+    ],
+    "summary": "Font",
+    "operationId": "font_api_fonts__name__get",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "enum": [
+        "NotoSerifSC-Regular.woff2",
+        "NotoSansSC-Medium.woff2",
+        "Tinos-Regular.woff2",
+        "Tinos-Bold.woff2"
+       ],
+       "type": "string",
+       "title": "Name"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/estimate": {
    "get": {
     "tags": [

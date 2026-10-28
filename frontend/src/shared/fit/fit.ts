@@ -1,10 +1,11 @@
 /**
- * 译文块排版拟合（S5 验证的算法）：先压行距，再二分查找字号，下限为原字号的 70%。
+ * 译文块排版拟合：行距固定 1.2（与导出 PDF 的 rendering/export.py 一致，两边排出来相同），
+ * 放不下时二分查找字号，下限为原字号的 70%。
  * 在 pt 坐标的排版层里计算（外层整体缩放不影响布局尺寸），结果与缩放无关。
  */
 
 export const MIN_SCALE = 0.7;
-const LINE_HEIGHTS = [1.35, 1.25, 1.15, 1.05];
+const LINE_HEIGHTS = [1.2];
 
 export interface FitResult {
   fontSize: number;

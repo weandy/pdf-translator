@@ -75,14 +75,18 @@ class FakeChat:
         return ChatResult(text="\n".join(out), usage=ChatUsage(prompt_tokens=100, completion_tokens=40))
 
 
-@pytest.fixture()
-def client(tmp_path: Path):
+def _client(data_dir: Path, font_dir: Path):
     FakeChat.fail = False
-    settings = Settings(data_dir=tmp_path, gist_enabled=False)
+    settings = Settings(data_dir=data_dir, gist_enabled=False, font_dir=font_dir)
     container = build_container(
         settings, {"parser_factory": lambda s: FakeParser(), "chat_factory": lambda s: FakeChat()}
     )
-    with TestClient(create_app(container)) as c:
+    return TestClient(create_app(container))
+
+
+@pytest.fixture()
+def client(tmp_path: Path):
+    with _client(tmp_path, tmp_path / "fonts") as c:  # 不依赖本机是否下载了字体
         yield c
 
 
@@ -219,3 +223,23 @@ def test_meta(client: TestClient):
     est = client.get("/api/estimate", params={"pages": 15}).json()
     assert est["pages"] == 15 and 0 < est["cny_low"] <= est["cny_high"] < 0.2
     assert client.get("/api/jobs/0123456789abcdef").status_code == 404
+    # 阅读器字体：未安装时 404（前端退回系统字体）；不在白名单里的文件名不接受
+    assert client.get("/api/fonts/NotoSerifSC-Regular.woff2").status_code == 404
+    assert client.get("/api/fonts/..%2Fapp.db").status_code in (404, 422)
+
+
+FONT_DIR = Path(__file__).parents[2] / "fonts"
+
+
+@pytest.mark.skipif(not (FONT_DIR / "NotoSerifSC-Regular.ttf").exists(), reason="需要先运行 scripts/fetch_fonts.py")
+def test_export_uses_gbt_fonts(tmp_path: Path):
+    """装了字体时用 Tinos 排西文（假模型的译文是英文加前缀），复制出来的空格是普通空格，字体接口可用。"""
+    with _client(tmp_path, FONT_DIR) as client:
+        job = _wait(client, _upload(client).json()["id"])
+        data = client.get(f"/api/jobs/{job['id']}/export", params={"mode": "mono"}).content
+        assert client.get("/api/fonts/NotoSerifSC-Regular.woff2").status_code == 200
+    with pymupdf.open(stream=data, filetype="pdf") as pdf:
+        fonts = {str(f[3]) for p in pdf for f in p.get_fonts()}
+        text = "".join(str(p.get_text()) for p in pdf)
+    assert any("Tinos" in f for f in fonts)
+    assert "\xa0" not in text and "A normal paragraph." in text

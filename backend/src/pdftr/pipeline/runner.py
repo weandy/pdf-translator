@@ -10,6 +10,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 from pdftr.domain.ir import BlockType, Document, PageKind, SegmentStatus
 from pdftr.domain.job import STAGES, Job, JobStatus
@@ -48,6 +49,7 @@ class PipelineDeps:
     chat_factory: ChatFactory
     term_matcher: MatcherLoader
     max_concurrent_jobs: int = 2
+    font_dir: Path | None = None  # 导出 PDF 用的字体目录
 
 
 # 各阶段开始时显示的说明；阶段内有更具体的进度时会覆盖

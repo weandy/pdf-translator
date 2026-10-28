@@ -5,6 +5,7 @@ import katex from "katex";
 import "katex/dist/katex.min.css";
 import { memo, type ReactNode } from "react";
 
+import { splitScript } from "@/shared/text/script";
 import { parseRich, tokenize, type RichNode } from "@/shared/text/split";
 
 const cache = new Map<string, string | null>();
@@ -29,9 +30,22 @@ interface Props {
   fallbackUrl: (key: string) => string;
 }
 
+/** 中文片段包进 span.zh，由样式指定中文字体（西文用外层字体）。 */
+function scripts(text: string, key: string): ReactNode[] {
+  return splitScript(text).map((run, i) =>
+    run.cjk ? (
+      <span key={`${key}:${i}`} className="zh">
+        {run.text}
+      </span>
+    ) : (
+      run.text
+    ),
+  );
+}
+
 function rich(nodes: RichNode[], key: string): ReactNode[] {
-  return nodes.map((n, i) => {
-    if (typeof n === "string") return n;
+  return nodes.flatMap((n, i) => {
+    if (typeof n === "string") return scripts(n, `${key}.${i}`);
     const Tag = n.tag;
     return <Tag key={`${key}.${i}`}>{rich(n.children, `${key}.${i}`)}</Tag>;
   });

@@ -126,7 +126,7 @@ def export_job(pipeline: Pipeline, job_id: str, mode: ExportMode) -> tuple[str, 
         raise UserError("任务完成后才能下载")
     deps = pipeline.deps
     data = export_pdf(deps.artifacts.path(job_id, "original.pdf"), deps.artifacts.path(job_id, "background.pdf"),
-                      load_document(deps, job_id), deps.store.segments(job_id), mode)  # fmt: skip
+                      load_document(deps, job_id), deps.store.segments(job_id), mode, deps.font_dir)  # fmt: skip
     suffix = "译文" if mode == "mono" else "双语对照"
     return f"{Path(job.filename).stem}-{suffix}.pdf", data
 

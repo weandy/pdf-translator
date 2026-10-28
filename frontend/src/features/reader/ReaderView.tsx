@@ -5,10 +5,13 @@
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { blockTexts, type BlockText } from "@/entities/document/model";
+import "./fonts.css";
+
+import { blockTexts, layoutBox, roleOf, type BlockText } from "@/entities/document/model";
 import { fileUrl, formulaUrl, type DocumentData, type PageData } from "@/shared/api/client";
 import { fitElement } from "@/shared/fit/fit";
 import { InlineMathText } from "@/shared/math/inline";
+import { splitCaptionNo } from "@/shared/text/script";
 import { PdfCanvas, usePdf } from "@/shared/pdf/pdf";
 
 export type ViewMode = "both" | "translated" | "original";
@@ -24,6 +27,11 @@ interface Props {
 }
 
 const PADDING = 48; // .pages 左右内边距之和
+/**
+ * 叠加层内部按 4 倍尺寸排版再整体缩回：浏览器排小字号（正文约 8px）时会把字宽取整到整像素，
+ * 放大后 i、l 等窄字母两侧出现明显空隙；放大排版后取整误差可以忽略。
+ */
+const UNIT = 4;
 const SPINE = 2; // 对照模式两页之间的装订线
 
 export function ReaderView({ doc, jobId, selectedSegment, onSelectSegment, heading, actions }: Props) {
@@ -36,6 +44,7 @@ export function ReaderView({ doc, jobId, selectedSegment, onSelectSegment, headi
   const original = usePdf(mode !== "translated" ? fileUrl(jobId, "original.pdf") : null);
   const background = usePdf(mode !== "original" ? fileUrl(jobId, "background.pdf") : null);
   const texts = useMemo(() => blockTexts(doc), [doc]);
+  const fontsVersion = useFontsVersion();
 
   useEffect(() => {
     const el = scroller.current;
@@ -104,6 +113,7 @@ export function ReaderView({ doc, jobId, selectedSegment, onSelectSegment, headi
             texts={texts}
             hovered={hovered}
             selected={selectedSegment}
+            fontsVersion={fontsVersion}
             onHover={setHovered}
             onSelect={onSelectSegment}
           />
@@ -122,6 +132,7 @@ interface RowProps {
   texts: Map<string, BlockText>;
   hovered: string | null;
   selected: string | null;
+  fontsVersion: number;
   onHover: (id: string | null) => void;
   onSelect: (id: string) => void;
 }
@@ -140,7 +151,19 @@ function useNearViewport<T extends HTMLElement>(): [React.RefObject<T | null>, b
   return [ref, near];
 }
 
-function PageRow({ page, scale, mode, original, background, texts, hovered, selected, onHover, onSelect }: RowProps) {
+function PageRow({
+  page,
+  scale,
+  mode,
+  original,
+  background,
+  texts,
+  hovered,
+  selected,
+  fontsVersion,
+  onHover,
+  onSelect,
+}: RowProps) {
   const [ref, near] = useNearViewport<HTMLDivElement>();
   const size = { width: page.width * scale, height: page.height * scale };
   const blocks = page.blocks.filter((b) => texts.has(b.id));
@@ -176,7 +199,10 @@ function PageRow({ page, scale, mode, original, background, texts, hovered, sele
         <div className="page" style={size} aria-label={`译文第 ${page.index + 1} 页`}>
           {near && background && <PdfCanvas doc={background} page={page.index} scale={scale} />}
           {near && (
-            <div className="overlay" style={{ width: page.width, height: page.height, transform: `scale(${scale})` }}>
+            <div
+              className="overlay"
+              style={{ width: page.width * UNIT, height: page.height * UNIT, transform: `scale(${scale / UNIT})` }}
+            >
               {blocks.map((b) => {
                 const t = texts.get(b.id);
                 return t ? (
@@ -184,6 +210,7 @@ function PageRow({ page, scale, mode, original, background, texts, hovered, sele
                     key={b.id}
                     item={t}
                     className={mark(t.segment.id)}
+                    fontsVersion={fontsVersion}
                     onHover={onHover}
                     onSelect={onSelect}
                   />
@@ -197,41 +224,56 @@ function PageRow({ page, scale, mode, original, background, texts, hovered, sele
   );
 }
 
-const SERIF = '"Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", "SimSun", serif';
-const SANS = '"Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif';
+/** 网页字体加载完成的次数：字体换上后要重新拟合字号（先用后备字体测出的结果不准）。 */
+function useFontsVersion(): number {
+  const [version, setVersion] = useState(0);
+  useEffect(() => {
+    const fonts = document.fonts as FontFaceSet | undefined;
+    if (!fonts) return;
+    const bump = () => setVersion((v) => v + 1);
+    fonts.addEventListener("loadingdone", bump);
+    return () => fonts.removeEventListener("loadingdone", bump);
+  }, []);
+  return version;
+}
 
 function OverlayBlock({
   item,
   className,
+  fontsVersion,
   onHover,
   onSelect,
 }: {
   item: BlockText;
   className: string;
+  fontsVersion: number;
   onHover: (id: string | null) => void;
   onSelect: (id: string) => void;
 }) {
-  const { block, segment, text, translated } = item;
+  const { block, segment, text, translated, first } = item;
   const box = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
   const [overflow, setOverflow] = useState(false);
+  const role = roleOf(block);
+  const rect = layoutBox(block);
+  const [captionNo, rest] = role === "caption" && first ? splitCaptionNo(text) : ["", text];
 
   // 内容（含 KaTeX）渲染后拟合字号；块内按 pt 排版，与外层缩放无关
   useLayoutEffect(() => {
-    if (box.current && inner.current) setOverflow(fitElement(box.current, inner.current, block.font_size).overflow);
-  }, [text, block.font_size]);
+    if (box.current && inner.current) {
+      setOverflow(fitElement(box.current, inner.current, block.font_size * UNIT).overflow);
+    }
+  }, [text, block.font_size, fontsVersion]);
 
   return (
     <div
       ref={box}
-      className={`tblock${translated ? "" : " untranslated"}${overflow ? " overflow" : ""}${className}`}
+      className={`tblock role-${role}${translated ? "" : " untranslated"}${overflow ? " overflow" : ""}${className}`}
       style={{
-        left: block.bbox.x0,
-        top: block.bbox.y0,
-        width: block.bbox.x1 - block.bbox.x0,
-        height: block.bbox.y1 - block.bbox.y0,
-        fontFamily: block.serif ? SERIF : SANS,
-        fontWeight: block.bold ? 700 : 400,
+        left: rect.x0 * UNIT,
+        top: rect.y0 * UNIT,
+        width: (rect.x1 - rect.x0) * UNIT,
+        height: (rect.y1 - rect.y0) * UNIT,
         color: `#${block.color.toString(16).padStart(6, "0")}`,
       }}
       title={overflow ? "译文放不下，点击查看全文" : undefined}
@@ -240,7 +282,12 @@ function OverlayBlock({
       onClick={() => onSelect(segment.id)}
     >
       <div ref={inner}>
-        <InlineMathText text={text} formulas={segment.formulas} fallbackUrl={(k) => formulaUrl(segment.id, k)} />
+        {captionNo && (
+          <span className="no">
+            <InlineMathText text={captionNo} formulas={{}} fallbackUrl={() => ""} />
+          </span>
+        )}
+        <InlineMathText text={rest} formulas={segment.formulas} fallbackUrl={(k) => formulaUrl(segment.id, k)} />
       </div>
     </div>
   );

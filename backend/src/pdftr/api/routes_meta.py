@@ -1,9 +1,10 @@
-"""健康检查、公开配置、费用预估。"""
+"""健康检查、公开配置、费用预估、阅读器字体。"""
 
 import os
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query, Request
+from fastapi.responses import FileResponse
 
 from pdftr import __version__
 from pdftr.api.schemas import ConfigOut, HealthOut
@@ -33,6 +34,19 @@ def config(request: Request) -> ConfigOut:
         retention_days=s.retention_days,
         attributions=["MinerU (https://github.com/opendatalab/MinerU)", "PyMuPDF (AGPL-3.0)", GIST_ATTRIBUTION],
     )
+
+
+# 阅读器与导出 PDF 用同一套字体（GB/T 7713.2：正文宋体、标题黑体、西文 Times 类），见 rendering/fonts.py
+WebFont = Literal["NotoSerifSC-Regular.woff2", "NotoSansSC-Medium.woff2", "Tinos-Regular.woff2", "Tinos-Bold.woff2"]
+
+
+@router.get("/fonts/{name}")
+def font(name: WebFont, request: Request) -> FileResponse:
+    path = request.app.state.container.settings.font_dir / name
+    if not path.is_file():
+        raise usecases.NotFound("字体文件未安装")
+    # 文件名不变时内容不变；升级字体时前端带版本号参数刷新
+    return FileResponse(path, media_type="font/woff2", headers={"Cache-Control": "public, max-age=2592000"})
 
 
 @router.get("/estimate", response_model=usecases.Estimate)

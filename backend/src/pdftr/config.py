@@ -24,4 +24,5 @@ class Settings(BaseSettings):
     min_free_disk_mb: int = 1024  # 磁盘剩余空间低于此值时拒绝新上传
     gist_enabled: bool = True  # 首次使用时下载 GIST AI 术语库（Apache-2.0）
 
+    font_dir: Path = Path("fonts")  # 导出 PDF 与网页阅读器用的字体（scripts/fetch_fonts.py 生成）
     cors_origins: list[str] = []  # 开发时前端单独运行可填 ["http://localhost:5173"]

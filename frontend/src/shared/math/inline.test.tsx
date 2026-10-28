@@ -14,12 +14,12 @@ describe("InlineMathText", () => {
     );
     expect(html).toContain('class="katex"');
     expect(html).toContain('src="/crop/m2.png"');
-    expect(html).toMatch(/设<span class="math">/); // 文字与公式按原顺序排列
+    expect(html).toMatch(/<span class="zh">设<\/span><span class="math">/); // 文字与公式按原顺序排列，中文用中文字体
   });
 
   it("上下标渲染为真实元素", () => {
     const html = renderToStaticMarkup(<InlineMathText text="作者<sup>∗</sup>" formulas={{}} fallbackUrl={() => ""} />);
-    expect(html).toBe("作者<sup>∗</sup>");
+    expect(html).toBe('<span class="zh">作者</span><sup>∗</sup>');
   });
 
   it("渲染结果有缓存", () => {
