@@ -261,6 +261,70 @@
 - 回归测试样本扩为 30 段（含留出集 10 段），评审用 gpt-6.1-sol（xhigh）+ Claude 盲评。
 
 
+## S11：开源项目的思考设置调研 + 公开数据集对照打分（2026-10-28）
+
+脚本：[`spikes/s11_benchmark.py`](../spikes/s11_benchmark.py)。
+
+### 开源翻译项目普遍怎么设置思考
+
+| 项目 | 默认 | 依据（源码） |
+|---|---|---|
+| [KISS Translator](https://github.com/fishjar/kiss-translator) | **关闭**（`thinkingMode: "disabled"`），可选 auto/enabled | `src/config/api.js` |
+| [DocuTranslate](https://github.com/xunbu/docutranslate) | **关闭**（`DOCUTRANSLATE_THINKING` 默认 `"disable"`） | `docutranslate/config.py` |
+| [LinguaHaru](https://github.com/YANG-Haruka/LinguaHaru) | **所有后端都关闭**，理由：思考模型会耗尽回复 token 预算，返回的 JSON 被截断或为空，导致整份 PDF 未翻译（作者在 LM Studio + qwen3.5-9b 上复现） | `tests/test_thinking_off.py` |
+| [BabelDOC](https://github.com/funstory-ai/BabelDOC) | 不发送思考参数（交给接口默认），提供 `--openai-thinking` / `--openai-reasoning` 开关；README 示例推荐 glm-4-flash、deepseek-chat 等非推理模型 | `babeldoc/main.py`、`translator/translator.py` |
+| [zotero-pdf-translate](https://github.com/windingwind/zotero-pdf-translate) | “default”（不发送参数），提供 off / low / medium / high | `src/utils/thinkingParams.ts` |
+| [Read Frog](https://github.com/mengxi-ream/read-frog) | **按模型推荐**：gpt-5.6 系列推荐 `none`，gpt-6-luna / gpt-6-sol 推荐 `medium`，部分模型 `low`；目录里剔除了“只能思考”的变体，理由是对翻译没帮助且更贵 | `src/utils/constants/models.ts` |
+
+**结论**：主流开源翻译工具**默认关闭思考或不主动开启**，把思考做成可选开关；只有 Read Frog 对个别模型推荐中等推理。关闭的理由一是成本和延迟，二是思考模型容易耗尽输出 token，导致批量格式（JSON/编号行）被截断。
+
+### 公开数据集
+
+| 数据集 | 领域 | 许可 | 抽样 |
+|---|---|---|---|
+| [ACL 60/60](https://aclanthology.org/2023.iwslt-1.2/)（HuggingFace 镜像 [ymoslem/acl-6060](https://huggingface.co/datasets/ymoslem/acl-6060)） | ACL 2022 学术报告转写，专业人工中文译文 | CC-BY-4.0 | dev 集 4 个连续片段 × 40 句 = 160 句 |
+| [WMT24++](https://huggingface.co/datasets/google/wmt24pp) en-zh_CN | 新闻 / 文学 / 社交 / 口语，参考译文经人工审校 | Apache-2.0 | 每领域 10 段 = 40 段 |
+
+原始下载地址（`i13pc106.ira.uka.de`）在本机网络下连接被重置，改用 HuggingFace 镜像，只经数据集接口取文本字段，不下载音频。
+
+### 自动指标（与人工参考译文比较）
+
+系统：DeepSeek Flash 不思考 / 思考·low / 思考·high；gpt-6-luna（代理默认设置，代理不返回推理 token，无法确认它是否在思考，只作参照）。ACL 用 v2 提示词，WMT 用去掉学术条目的通用版。
+
+| 系统 | ACL BLEU | ACL chrF++ | 与不思考的 chrF++ 差值 95% CI | WMT BLEU | WMT chrF++ | 与不思考的差值 95% CI |
+|---|---|---|---|---|---|---|
+| DeepSeek 不思考 | **54.31** | **40.52** | — | 47.85 | 33.55 | — |
+| DeepSeek 思考·low | 51.58 | 39.61 | [−3.01, +2.60] | 47.87 | 33.60 | [−4.37, +1.16] |
+| DeepSeek 思考·high | 49.38 | 38.28 | **[−4.67, −0.48]** | 47.79 | 33.73 | [−1.23, +1.73] |
+| gpt-6-luna | 44.66 | 34.74 | **[−8.40, −3.56]** | 42.31 | 29.70 | **[−6.65, −1.03]** |
+
+（置信区间由 1000 次配对自助采样得到，整段落在 0 一侧才算显著。）
+
+### 对照参考译文的评审
+
+gpt-6.1-sol（xhigh）盲评 60 段（ACL 40 句 + WMT 20 段），每段给出人工参考译文作对照，并说明“措辞不同但意思准确不扣分”；Claude 盲评 10 段（ACL 5 + WMT 5），以原文意思为准（ACL 有参考译文本身就译错的情况，如把 part of speech 译成“语音标签的部分”）。
+
+| 系统 | ACL 评审均分 | ACL ≤85 分 | WMT 评审均分 | WMT ≤85 分 | Claude 均分 | 推理 token | 整个样本费用（空闲） |
+|---|---|---|---|---|---|---|---|
+| DeepSeek 不思考 | 98.7 | 2 | 95.5 | 3 | 93.2 | 0 | ¥0.028 |
+| DeepSeek 思考·low | **98.8** | 2 | 97.1 | 2 | **94.6** | 12126 | ¥0.076 |
+| DeepSeek 思考·high | 98.4 | 3 | **98.7** | **1** | 92.9 | 27662 | ¥0.139 |
+| gpt-6-luna | 96.2 | 9 | 94.9 | 5 | 92.6 | — | — |
+
+典型错误：不思考把文学句里“国王让人给自己画肖像”译成国王在作画、把专名 Daybreak 译成“黎明时分”（WMT）；Claude 盲评中不思考有一处把“isn't that wrong?”译成意思相反的“这难道不对吗？”；思考·high 两次把 lexical borrowing 译成“词汇借词”；gpt-6-luna 多次把语言名“Spanish”译成国名“西班牙”、改变确定程度（“不打算涨价”→“不会涨价”）。
+
+### 结论
+
+1. **学术内容上，开不开思考没有区别**：ACL 60/60 的参照评审三种配置在 98.4–98.8 之间，≤85 分的段数相同；自动指标上不思考反而最高，思考·high 的 chrF++ 显著更低（与参考译文的字面一致度下降）。这与 S9/S10 在论文样本上的结果一致：v2 提示词下思考的收益很小。
+2. **通用、文学、口语内容上，思考有帮助**：WMT24++ 上评审均分 95.5 → 97.1（low）→ 98.7（high），重大错误段 3 → 2 → 1。这类文本有更多隐含语义（谁为谁画像、专名还是普通词、反问语气），推理能帮上忙；自动指标看不出差别，因为参考译文本身也是意译。
+3. **代价**：思考·low 费用约 2.7 倍、耗时约 2.8 倍；思考·high 约 5 倍费用、5 倍耗时。
+4. **开源项目的普遍做法与此一致**：默认关闭或不主动开启思考，作为可选项提供。
+5. **更正 S10 的结论**：S10 中 gpt-6-luna 是最高分，这次（换成公开数据集、有参考译文）它是最低分，ACL 上 ≤85 分的段数是 DeepSeek 的 4 倍。说明**模型之间的排名受数据集和评审方式影响很大**，“换模型就能提高质量”不能作为一般结论，模型选择也要用基准测试决定。
+6. **评审方法本身的启示**：同一个评审模型（gpt-6.1-sol），有无参考译文、换不同数据集，给出的模型排名可以相反；BLEU/chrF++ 与评审模型的排序也不一致（思考·high 在 WMT 上 chrF++ 持平但评审最高）。因此结论只采信多个评审方法方向一致的部分。
+
+本轮花费：DeepSeek 翻译约 ¥0.24（含 3 种配置 × 200 段），余额 ¥5.12 → ¥4.88。gpt-6.1-sol 评审 12 次调用（代理计费不详）。
+
+
 ## 待做
 
 | 实验 | 状态 | 阻塞 |
@@ -274,5 +338,6 @@
 | S8 翻译质量 × 成本 | ✅ 完成（20 段） | — |
 | S9 提示词调优 | ✅ 完成（v2 提示词） | — |
 | S10 通用提示词 v3 + 跨模型 | ✅ 完成（v3 无提升，保持 v2） | — |
+| S11 开源项目思考设置 + 公开数据集对照 | ✅ 完成（学术内容思考无收益，通用内容有收益） | — |
 | S7 翻译开销 | ✅ 完成（2 篇） | — |
 | S7 术语系统效果（有/无 GIST 对比） | 未开始 | — |
