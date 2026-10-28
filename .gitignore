@@ -15,7 +15,7 @@ data/
 .env.*
 !.env.example
 
-# 第三方术语库（按许可只提供下载脚本，不入库）
+# 运行时下载的第三方术语库
 glossaries/vendor/
 
 # 编辑器 / 系统

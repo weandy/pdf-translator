@@ -1,6 +1,6 @@
 # 自建网页端 PDF 翻译 · 技术选型
 
-> 日期：2026-10-28（v2，已纳入当天确认的需求）
+> 日期：2026-10-28（v3：定位改为开源项目，仓库更名 pdf-translator）
 > 依据：[00-research.md](00-research.md)
 > 状态：草案。§8 验证实验完成后转为正式决策
 
@@ -14,16 +14,16 @@
 | R2 | 整体保留原版式 | 译文按原位置、原字号风格排回页面，图片和矢量图形不动 |
 | R3 | 公式、图表重新渲染 | 公式不被翻坏；行内公式随译文重新排布；表格、图内文字可翻译并重新渲染 |
 | R4 | 可接外部 API | 翻译：任意 OpenAI 兼容 LLM，可选 DeepL；解析：MinerU 云端 API（可选）、Doc2X（可选） |
-| R5 | 自用、非商用 | 可使用 AGPL 组件（PyMuPDF、BabelDOC）；代码仓库公开 |
+| R5 | **开源给大家自部署** | AGPL-3.0；一条 `docker compose up` 能跑起来；用户自带 API Key；可放心使用 AGPL 组件（PyMuPDF、BabelDOC） |
 | R6 | 可导出 | 导出纯译文 PDF、双语对照 PDF |
 | R7 | **论文术语一致** | 以学术论文为主，引入领域术语库 + 文档级术语抽取 |
 | R8 | **通用输入** | 原生文本 PDF、扫描件、混合文档、文字提取乱码的 PDF 都要能处理 |
 | R9 | **翻译方向** | 其他语言 → 简体中文，英文为主 |
 | R10 | **云端上传要提醒** | 选择云端解析时，明确告知用户文件会上传到第三方 |
 
-**约束**：部署机器**没有 GPU**，本地只跑 CPU 推理。
+**约束**：**不能假设有 GPU**（我们自己没有，多数自部署用户也没有），本地只跑 CPU 推理；有 GPU 的用户可以自行换用 MinerU 更强的等级。
 
-非目标（当前阶段）：多租户、计费、中文译成其他语言、Word/PPT 等非 PDF 格式。
+非目标（当前阶段）：公共 SaaS、多租户、计费、中文译成其他语言、Word/PPT 等非 PDF 格式。
 
 ---
 
@@ -74,7 +74,7 @@ flowchart LR
 |---|---|---|---|
 | 后端语言 | **Python 3.12** + uv | — | PDF/解析生态全在 Python |
 | Web 框架 | **FastAPI** + Pydantic v2 | Litestar | IR 用 Pydantic 定义，可导出 JSON Schema 生成前端 TS 类型 |
-| 任务执行 | **SQLite 任务表 + 进程内 worker**（asyncio + ProcessPool） | Redis + arq | 自用规模不必上 Redis；接口抽象好，以后可替换 |
+| 任务执行 | **SQLite 任务表 + 进程内 worker**（asyncio + ProcessPool） | Redis + arq | 单实例自部署不必上 Redis；接口抽象好，以后可替换 |
 | 进度推送 | **SSE** | WebSocket | 单向推送足够 |
 | 数据库 | **SQLite**（SQLModel） | PostgreSQL | 任务、翻译缓存、术语库、API 配置 |
 | 文件存储 | 本地目录 `data/jobs/<id>/` | — | 原文件、IR、背景页、导出物 |
@@ -218,7 +218,7 @@ class Translator(Protocol):
 | 1 | **文档内锁定** | 用户在本篇里手动改过的译法，只对本篇生效 |
 | 2 | **用户术语表** | 界面维护或 CSV 导入，兼容 BabelDOC 格式 `source,target,tgt_lng` |
 | 3 | **文档自动抽取** | 翻译前让 LLM 读标题、摘要、章节标题和高频名词短语，产出候选术语 + 译法；候选先查第 4、5 层，库里有就用库里的。可选"翻译前确认术语"步骤 |
-| 4 | **领域词库包** | 提供下载脚本，统一转成内部格式；首批：**GIST AI 术语 6426 条**（Apache-2.0）、**机器之心 AI 术语库约 2442 条**（CC BY-NC-SA，只在本地下载，**不提交到公开仓库**）；按领域启用 |
+| 4 | **领域词库包** | 提供下载脚本，统一转成内部格式；首批：**GIST AI 术语 6426 条**（Apache-2.0，可再分发，需保留署名）；按领域启用。机器之心 AI 术语库为 CC BY-NC-SA，**不集成**，只在 README 里给出链接供人工查阅 |
 | 5 | **Wikidata 在线兜底** | 第 3 层抽到、但 4 层没有的术语，用英文标签查中文标签（CC0）；结果缓存并标记"待确认" |
 
 此外维护**不译清单**：模型名、数据集名、算法缩写（如 BERT、ImageNet、ResNet），由抽取阶段分类 + 正则（全大写缩写、驼峰词）识别，保持原文。可选"**首次出现写作 中文（English）**，之后只写中文"，符合中文学术写作习惯。
@@ -234,7 +234,7 @@ class Translator(Protocol):
 - 检查命中术语的指定译法是否出现在译文中；不一致的段落标黄，可一键按术语重翻。
 - 术语面板：列出全文术语和实际译法分布；修改一个术语 → 批量重翻包含它的段落（走缓存外的新请求）。
 
-**存储**：SQLite 表 `glossary_entries(source, source_norm, target, domain, origin, priority, note)`，第三方词库文件放 `glossaries/vendor/`（已在 `.gitignore`）。
+**存储**：SQLite 表 `glossary_entries(source, source_norm, target, domain, origin, priority, note)`，下载的第三方词库文件放 `glossaries/vendor/`（已在 `.gitignore`），首次启动时由脚本下载。
 
 ### 4.6 去字背景页
 
@@ -335,9 +335,11 @@ services:
 ```
 
 - **无 GPU**：所有本地推理走 CPU。建议机器 ≥4 核、≥8 GB 内存（MinerU basic 最低 2 GB，加上 Chromium 和 worker）。
-- 只在内网/Tailscale 访问，或用 Caddy Basic Auth，不做账号系统。
+- 不做账号系统；部署在公网时用 Caddy Basic Auth（`.env` 配置用户名密码），内网/Tailscale 可关闭。
+- 提供 `.env.example`：翻译服务、云端解析 Key、访问密码，全部由部署者自己填写，仓库里不含任何 Key。
+- 界面“关于”页注明使用了 MinerU、PyMuPDF、BabelDOC 等组件（满足 MinerU 许可中“提供在线服务需署名”的要求）。
 - 模型在构建镜像时预拉，走国内镜像（`HF_ENDPOINT=https://hf-mirror.com` 或 ModelScope）；字体打进镜像，避免调研中最常见的下载失败问题。
-- 第三方词库在首次启动时由脚本下载到 `data/` 或 `glossaries/vendor/`，不进镜像也不进仓库。
+- 第三方词库在首次启动时由脚本下载到 `glossaries/vendor/`，不进镜像也不进仓库。
 
 ---
 
@@ -380,13 +382,15 @@ services:
 | 扫描件 | 不确定占比 → 设计成通用：逐页分类，扫描页和乱码页走 OCR（§4.2） |
 | 翻译方向 | 其他语言 → 简体中文，英文为主 |
 | 云端解析 | 可以用，但每次都要提醒用户（§5.1） |
-| 代码仓库 | 公开仓库 [weandy/doc-translator](https://github.com/weandy/doc-translator) |
+| 代码仓库 | 公开仓库 [weandy/pdf-translator](https://github.com/weandy/pdf-translator)（原名 doc-translator，旧地址自动跳转） |
+| 项目定位 | 开源给大家自部署使用，不只是自用 |
+| 许可证 | AGPL-3.0（与 PyMuPDF、BabelDOC 一致） |
+| 机器之心术语库 | 不集成，README 中给链接 |
 
 **待定**
 
-1. **开源许可证**：仓库已公开但还没有 LICENSE。代码会链接 PyMuPDF（AGPL-3.0），建议直接用 **AGPL-3.0**。
-2. **部署机器配置**：CPU 核数和内存，决定本地 MinerU 是否够快（S2 后再定）。
-3. **Doc2X 是否接入**：付费服务，S3 结果出来再决定。
+1. **推荐配置**：给自部署用户的最低/推荐 CPU、内存，S2 实测后写进 README。
+2. **Doc2X 是否接入**：付费服务，S3 结果出来再决定（用户自带 Key，接入成本不高）。
 
 ---
 
@@ -399,7 +403,7 @@ services:
 | 行内公式混排位置不准 | 公式错位、重叠 | 优先 KaTeX 随文字流动渲染，不按原坐标硬贴 |
 | 扫描页样式估算不准 | 译文字号、颜色与原文有偏差 | 统一样式 + 允许手动调整；扫描件本来就不追求像素级还原 |
 | 术语库译法不适合上下文 | 错译被强制统一 | 术语只作为"推荐译法"注入；术语面板可改；文档内锁定优先级最高 |
-| 第三方词库许可 | 公开仓库误含 NC 数据 | 只提供下载脚本；`glossaries/vendor/` 已加入 `.gitignore` |
+| 第三方词库许可 | 再分发不合规 | 只集成允许再分发的数据（GIST，Apache-2.0，保留署名）；NC 许可的数据只给链接 |
 | LLM 改坏占位符或漏翻 | 公式丢失 | 占位符校验 + 单条重试 + 失败保留原文 |
 | 云端 API 隐私 | 文档外泄 | 默认本地；云端每次确认；任务记录使用了哪个服务 |
-| 许可 | 若将来对外提供服务，AGPL 要求公开源码，MinerU 要求署名 | 仓库本身公开，基本满足；对外开放服务前重新评估 |
+| 许可 | 部署者对外提供服务时：AGPL 要求公开修改后的源码，MinerU 要求署名 | 项目本身 AGPL-3.0；“关于”页内置署名；README 说明部署者义务 |

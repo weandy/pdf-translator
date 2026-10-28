@@ -1,7 +1,7 @@
 # PDF 保留版式翻译 · 调研报告
 
 > 调研日期：2026-10-27 ~ 2026-10-28
-> 目的：搞清楚沉浸式翻译这类"在线 PDF 翻译"是怎么实现的，梳理现有开源/免费方案和它们的不足，为自建网页端版本（见 [01-tech-stack.md](01-tech-stack.md)）提供依据。
+> 目的：搞清楚沉浸式翻译这类"在线 PDF 翻译"是怎么实现的，梳理现有开源/免费方案和它们的不足，为开源项目 pdf-translator（见 [01-tech-stack.md](01-tech-stack.md)）提供依据。
 > 说明：GitHub 数据取自 2026-10-27 的 GitHub API；"不足"部分主要依据官方文档、论文自评和 GitHub issue，**未做本地实测**。
 
 ---
@@ -185,7 +185,7 @@ PDFMathTranslate v1 是它的前身，思路相同但更粗糙：公式靠字体
 | 数据 | 规模 | 许可 | 说明 |
 |---|---|---|---|
 | [GIST 中文](https://huggingface.co/datasets/Jerry999/multilingual-terminology)（[代码](https://github.com/jiarui-liu/MultilingualAITerminology)） | 6426 条 | Apache-2.0 | AI 领域，CSV：`Index,English,Chinese`（已下载核对，如 `1D convolution → 一维卷积`）；中文部分参考了机器之心术语库 |
-| [机器之心 AI 术语库](https://github.com/jiqizhixin/Artificial-Intelligence-Terminology-Database) | ~2442 条 | **CC BY-NC-SA 4.0** | AI 基础术语，含缩写和出处；2022 年后未更新；**非商用可用，但不能放进公开仓库再分发**，只能提供下载脚本 |
+| [机器之心 AI 术语库](https://github.com/jiqizhixin/Artificial-Intelligence-Terminology-Database) | ~2442 条 | **CC BY-NC-SA 4.0** | AI 基础术语，含缩写和出处；2022 年后未更新；非商用、相同方式共享，**本项目不集成**，只在 README 中给链接 |
 | [ECDICT](https://github.com/skywind3000/ECDICT) | 数百万词条 | MIT | 通用英汉词典，含大量专业词，适合作冷门词兜底，不是领域术语库 |
 | Wikidata | 覆盖全学科 | CC0 | 用英文标签查中文标签（`zh-hans`/`zh-cn`），适合 AI 以外的领域按需在线查询 |
 | [术语在线](https://www.termonline.cn)（全国科学技术名词审定委员会） | 全学科规范名词 | — | 最权威，但**未找到开放 API**，只能人工参考，不宜爬取 |
@@ -198,7 +198,7 @@ PDFMathTranslate v1 是它的前身，思路相同但更粗糙：公式靠字体
 1. **"字符级坐标 + 版面语义"必须同时拿到**：PyMuPDF 给精确坐标和样式，MinerU/Doc2X 给块类型、阅读顺序、公式 LaTeX、表格结构，两者融合才能既保版式又懂结构。
 2. **中间表示（IR）是核心资产**：解析器、翻译服务、渲染器都围绕 IR 插拔，才能同时接 MinerU / Doc2X / 外部 LLM。
 3. **网页端天然适合"叠加渲染"**：浏览器的排版能力（自动换行、CSS 缩放、KaTeX 公式）比在 PDF 里手写绘制指令强得多，也便于逐段编辑和重翻。
-4. **BabelDOC 可以直接拿来当基线和备选引擎**：自用不受 AGPL 影响，先用它评估样本、对比效果。
+4. **BabelDOC 可以直接拿来当基线和备选引擎**：本项目同为 AGPL-3.0，许可兼容，先用它评估样本、对比效果。
 5. **保留版式的难点都在边角**：字号溢出、CID 字体、行内公式、表格、扫描件，要按优先级分阶段做。
 6. **论文术语一致性靠"领域词库 + 文档级自动抽取 + 命中注入"**：现成的 GIST（Apache-2.0）可直接用，其他领域用 Wikidata 兜底。
 
