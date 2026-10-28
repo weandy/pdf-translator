@@ -67,13 +67,17 @@ def segments(layout: dict, with_refs: bool):
                 if t == "ref_text" and not with_refs:
                     skipped["ref_text"] += ntok(block_text(x)[0])
                     continue
-                text, _ = block_text(x)
+                text, formulas = block_text(x)
                 if len(re.findall(r"[A-Za-z]{2,}", text)) < 2:
                     continue
                 if segs and x.get("merge_prev"):
-                    segs[-1]["text"] += " " + text  # 跨栏/跨页段落合并
+                    # 跨栏/跨页段落合并，后一段的占位符编号顺延
+                    k = len(segs[-1]["formulas"])
+                    text = re.sub(r"<m(\d+)/>", lambda m: f"<m{int(m.group(1)) + k}/>", text)
+                    segs[-1]["text"] += " " + text
+                    segs[-1]["formulas"] += formulas
                 else:
-                    segs.append({"type": st, "text": text})
+                    segs.append({"type": st, "text": text, "formulas": formulas})
         skipped["header/page"] += sum(1 for b in page["discarded_blocks"] if b["type"] != "page_footnote")
     return segs, skipped
 
