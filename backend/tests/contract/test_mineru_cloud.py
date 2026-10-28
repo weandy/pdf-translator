@@ -102,6 +102,23 @@ def test_network_errors_are_user_facing(tmp_path: Path):
         raise httpx2.ConnectTimeout("timed out", request=request)
 
     for handler, message in [(refuse, "无法连接 MinerU"), (slow, "超时")]:
-        parser = MinerUCloudParser("tok", transport=httpx2.MockTransport(handler))
+        parser = MinerUCloudParser("tok", retry_delays=(0, 0), transport=httpx2.MockTransport(handler))
         with pytest.raises(ParseError, match=message):
             asyncio.run(parser.parse(pdf))
+
+
+def test_transient_network_error_is_retried(tmp_path: Path):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-fake")
+    calls = []
+
+    def flaky(request: httpx2.Request) -> httpx2.Response:
+        calls.append(request.method)
+        if len(calls) == 1:
+            raise httpx2.ConnectTimeout("timed out", request=request)
+        return httpx2.Response(401)  # 第二次请求到达了服务器
+
+    parser = MinerUCloudParser("tok", retry_delays=(0,), transport=httpx2.MockTransport(flaky))
+    with pytest.raises(ParseError, match="Token 无效"):
+        asyncio.run(parser.parse(pdf))
+    assert calls == ["POST", "POST"]

@@ -7,9 +7,11 @@
 import asyncio
 import io
 import json
+import logging
 import time
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import httpx2
 
@@ -18,6 +20,8 @@ from pdftr.parsing.mineru_normalize import normalize
 from pdftr.parsing.port import ParseError
 
 API = "https://mineru.net/api/v4"
+
+log = logging.getLogger(__name__)
 
 
 class MinerUCloudParser:
@@ -32,6 +36,7 @@ class MinerUCloudParser:
         language: str = "en",
         poll_interval: float = 5.0,
         timeout: float = 900.0,
+        retry_delays: tuple[float, ...] = (2.0, 5.0, 10.0),
         transport: httpx2.AsyncBaseTransport | None = None,
     ) -> None:
         if not token:
@@ -41,6 +46,7 @@ class MinerUCloudParser:
         self._language = language
         self._poll_interval = poll_interval
         self._timeout = timeout
+        self._retry_delays = retry_delays
         self._transport = transport  # 测试时注入假传输层
 
     async def parse(self, pdf: Path, pages: list[int] | None = None, raw_dir: Path | None = None) -> LayoutResult:
@@ -54,14 +60,16 @@ class MinerUCloudParser:
     async def _parse(self, pdf: Path, pages: list[int] | None, raw_dir: Path | None) -> LayoutResult:
         headers = {"Authorization": f"Bearer {self._token}"}
         async with (
-            httpx2.AsyncClient(headers=headers, timeout=120, transport=self._transport) as api,
-            httpx2.AsyncClient(timeout=300, transport=self._transport, follow_redirects=True) as plain,
-        ):
+            httpx2.AsyncClient(headers=headers, timeout=httpx2.Timeout(120, connect=15),
+                               transport=self._transport) as api,
+            httpx2.AsyncClient(timeout=httpx2.Timeout(300, connect=15), transport=self._transport,
+                               follow_redirects=True) as plain,
+        ):  # fmt: skip
             batch_id, upload_url = await self._request_upload(api, pdf, pages)
-            r = await plain.put(upload_url, content=pdf.read_bytes())
+            r = await self._send(plain, "PUT", upload_url, content=pdf.read_bytes())
             _check(r, "上传文件")
             zip_url = await self._wait(api, batch_id)
-            r = await plain.get(zip_url)
+            r = await self._send(plain, "GET", zip_url)
             _check(r, "下载解析结果")
         data = r.content
         if raw_dir is not None:
@@ -74,7 +82,9 @@ class MinerUCloudParser:
         # 用户选择的页码范围在翻译阶段筛选（pages 参数在这里不使用）。
         del pages
         file = {"name": pdf.name, "data_id": pdf.stem[:128]}
-        r = await api.post(
+        r = await self._send(
+            api,
+            "POST",
             f"{API}/file-urls/batch",
             json={
                 "files": [file],
@@ -93,7 +103,7 @@ class MinerUCloudParser:
     async def _wait(self, api: httpx2.AsyncClient, batch_id: str) -> str:
         deadline = time.monotonic() + self._timeout
         while time.monotonic() < deadline:
-            r = await api.get(f"{API}/extract-results/batch/{batch_id}")
+            r = await self._send(api, "GET", f"{API}/extract-results/batch/{batch_id}")
             body = _check(r, "查询解析进度")
             result = (body.get("data") or {}).get("extract_result") or [{}]
             state = result[0].get("state")
@@ -103,6 +113,18 @@ class MinerUCloudParser:
                 raise ParseError(f"MinerU 解析失败：{result[0].get('err_msg') or '未知原因'}")
             await asyncio.sleep(self._poll_interval)
         raise ParseError("MinerU 解析超时")
+
+    async def _send(self, client: httpx2.AsyncClient, method: str, url: str, **kwargs: Any) -> httpx2.Response:
+        """网络偶发中断（连接超时、连接被重置）时按退避间隔重试；HTTP 错误码不重试。"""
+        for delay in (*self._retry_delays, None):
+            try:
+                return await client.request(method, url, **kwargs)
+            except httpx2.TransportError:
+                if delay is None:
+                    raise
+                log.warning("访问 MinerU 网络出错，%.0f 秒后重试", delay)
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable")
 
 
 def _check(r: httpx2.Response, action: str) -> dict:
