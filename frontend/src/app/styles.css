@@ -1234,3 +1234,105 @@ input[type="radio"] {
 .field > span small {
   margin-left: 8px;
 }
+
+/* 术语库 */
+.dialog.glossary {
+  width: min(880px, calc(100vw - 32px));
+}
+.glossary-import {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+.glossary-import input[type="file"] {
+  max-width: 100%;
+}
+.glossary-review {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.glossary-review .actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.glossary-list-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.glossary-list-head h3 {
+  margin: 0;
+}
+.glossary-list-head input[type="search"] {
+  width: 220px;
+}
+.term-table {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 46vh;
+  overflow: auto;
+}
+.term-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  font-size: 14px;
+}
+.glossary-review .term-row {
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr);
+}
+.term-row .term-conflict {
+  grid-column: 2 / -1;
+  color: var(--red-pen);
+}
+.term-add {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr) auto;
+}
+.term-line {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.term-source {
+  font-family: var(--serif);
+}
+.segment-terms {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--rule);
+}
+.segment-terms .hint {
+  margin: 0;
+}
+.term-chip {
+  display: inline-block;
+  margin: 2px 6px 2px 0;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--desk);
+}
+.term-quick {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.term-quick input[aria-label="说明"],
+.term-quick button {
+  grid-column: 1 / -1;
+}
+@media (max-width: 640px) {
+  .term-row,
+  .term-add,
+  .glossary-review .term-row {
+    grid-template-columns: 1fr 1fr;
+  }
+}

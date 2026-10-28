@@ -139,6 +139,150 @@
     }
    }
   },
+  "/api/glossary/parse": {
+   "post": {
+    "tags": [
+     "meta"
+    ],
+    "summary": "Parse Glossary",
+    "description": "识别上传的术语表，返回候选条目给用户确认（服务端不保存）。ai=true 时用翻译服务读取任意格式。",
+    "operationId": "parse_glossary_api_glossary_parse_post",
+    "parameters": [
+     {
+      "name": "x-llm-base-url",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Base-Url"
+      }
+     },
+     {
+      "name": "x-llm-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Key"
+      }
+     },
+     {
+      "name": "x-llm-model",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Model"
+      }
+     },
+     {
+      "name": "x-parser-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Parser-Key"
+      }
+     },
+     {
+      "name": "x-paddle-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Paddle-Key"
+      }
+     },
+     {
+      "name": "x-llm-protocol",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "enum": [
+          "openai",
+          "anthropic"
+         ],
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Protocol"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "multipart/form-data": {
+       "schema": {
+        "$ref": "#/components/schemas/Body_parse_glossary_api_glossary_parse_post"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ParsedGlossary"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/llm/check": {
    "post": {
     "tags": [
@@ -1420,6 +1564,51 @@
     ],
     "title": "Body_create_job_api_jobs_post"
    },
+   "Body_parse_glossary_api_glossary_parse_post": {
+    "properties": {
+     "file": {
+      "type": "string",
+      "contentMediaType": "application/octet-stream",
+      "title": "File"
+     },
+     "ai": {
+      "type": "boolean",
+      "title": "Ai",
+      "default": false
+     }
+    },
+    "type": "object",
+    "required": [
+     "file"
+    ],
+    "title": "Body_parse_glossary_api_glossary_parse_post"
+   },
+   "ChatUsage": {
+    "properties": {
+     "prompt_tokens": {
+      "type": "integer",
+      "title": "Prompt Tokens",
+      "default": 0
+     },
+     "cache_hit_tokens": {
+      "type": "integer",
+      "title": "Cache Hit Tokens",
+      "default": 0
+     },
+     "completion_tokens": {
+      "type": "integer",
+      "title": "Completion Tokens",
+      "default": 0
+     },
+     "reasoning_tokens": {
+      "type": "integer",
+      "title": "Reasoning Tokens",
+      "default": 0
+     }
+    },
+    "type": "object",
+    "title": "ChatUsage"
+   },
    "ConfigOut": {
     "properties": {
      "version": {
@@ -1692,6 +1881,14 @@
       "type": "boolean",
       "title": "Cloud Consent",
       "default": false
+     },
+     "user_terms": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "type": "object",
+      "maxProperties": 5000,
+      "title": "User Terms"
      }
     },
     "type": "object",
@@ -1876,6 +2073,41 @@
     ],
     "title": "PageOut"
    },
+   "ParsedGlossary": {
+    "properties": {
+     "entries": {
+      "items": {
+       "$ref": "#/components/schemas/TermEntry"
+      },
+      "type": "array",
+      "title": "Entries"
+     },
+     "method": {
+      "type": "string",
+      "title": "Method"
+     },
+     "lines": {
+      "type": "integer",
+      "title": "Lines"
+     },
+     "usage": {
+      "$ref": "#/components/schemas/ChatUsage",
+      "default": {
+       "prompt_tokens": 0,
+       "cache_hit_tokens": 0,
+       "completion_tokens": 0,
+       "reasoning_tokens": 0
+      }
+     }
+    },
+    "type": "object",
+    "required": [
+     "entries",
+     "method",
+     "lines"
+    ],
+    "title": "ParsedGlossary"
+   },
    "PartOut": {
     "properties": {
      "block_id": {
@@ -1932,6 +2164,21 @@
       ],
       "title": "Quality",
       "default": "careful"
+     },
+     "user_terms": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "type": "string"
+        },
+        "type": "object",
+        "maxProperties": 5000
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "User Terms"
      }
     },
     "type": "object",
@@ -2115,6 +2362,29 @@
      "formulas"
     ],
     "title": "SegmentOut"
+   },
+   "TermEntry": {
+    "properties": {
+     "source": {
+      "type": "string",
+      "title": "Source"
+     },
+     "target": {
+      "type": "string",
+      "title": "Target"
+     },
+     "note": {
+      "type": "string",
+      "title": "Note",
+      "default": ""
+     }
+    },
+    "type": "object",
+    "required": [
+     "source",
+     "target"
+    ],
+    "title": "TermEntry"
    },
    "ValidationError": {
     "properties": {

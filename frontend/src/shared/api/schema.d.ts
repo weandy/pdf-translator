@@ -24,6 +24,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/glossary/parse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Parse Glossary
+         * @description 识别上传的术语表，返回候选条目给用户确认（服务端不保存）。ai=true 时用翻译服务读取任意格式。
+         */
+        post: operations["parse_glossary_api_glossary_parse_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/llm/check": {
         parameters: {
             query?: never;
@@ -359,6 +379,39 @@ export interface components {
              */
             options: string;
         };
+        /** Body_parse_glossary_api_glossary_parse_post */
+        Body_parse_glossary_api_glossary_parse_post: {
+            /** File */
+            file: string;
+            /**
+             * Ai
+             * @default false
+             */
+            ai: boolean;
+        };
+        /** ChatUsage */
+        ChatUsage: {
+            /**
+             * Prompt Tokens
+             * @default 0
+             */
+            prompt_tokens: number;
+            /**
+             * Cache Hit Tokens
+             * @default 0
+             */
+            cache_hit_tokens: number;
+            /**
+             * Completion Tokens
+             * @default 0
+             */
+            completion_tokens: number;
+            /**
+             * Reasoning Tokens
+             * @default 0
+             */
+            reasoning_tokens: number;
+        };
         /**
          * ConfigOut
          * @description 前端需要的公开配置（不含任何 Key）。
@@ -471,6 +524,10 @@ export interface components {
              * @default false
              */
             cloud_consent: boolean;
+            /** User Terms */
+            user_terms?: {
+                [key: string]: string;
+            };
         };
         /** JobOut */
         JobOut: {
@@ -543,6 +600,24 @@ export interface components {
             /** Blocks */
             blocks: components["schemas"]["BlockOut"][];
         };
+        /** ParsedGlossary */
+        ParsedGlossary: {
+            /** Entries */
+            entries: components["schemas"]["TermEntry"][];
+            /** Method */
+            method: string;
+            /** Lines */
+            lines: number;
+            /**
+             * @default {
+             *       "prompt_tokens": 0,
+             *       "cache_hit_tokens": 0,
+             *       "completion_tokens": 0,
+             *       "reasoning_tokens": 0
+             *     }
+             */
+            usage: components["schemas"]["ChatUsage"];
+        };
         /** PartOut */
         PartOut: {
             /** Block Id */
@@ -569,6 +644,10 @@ export interface components {
              * @enum {string}
              */
             quality: "default" | "careful";
+            /** User Terms */
+            user_terms?: {
+                [key: string]: string;
+            } | null;
         };
         /** RevisionOut */
         RevisionOut: {
@@ -632,6 +711,18 @@ export interface components {
                 [key: string]: components["schemas"]["FormulaOut"];
             };
         };
+        /** TermEntry */
+        TermEntry: {
+            /** Source */
+            source: string;
+            /** Target */
+            target: string;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -677,6 +768,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ModelsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    parse_glossary_api_glossary_parse_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-llm-base-url"?: string | null;
+                "x-llm-key"?: string | null;
+                "x-llm-model"?: string | null;
+                "x-parser-key"?: string | null;
+                "x-paddle-key"?: string | null;
+                "x-llm-protocol"?: ("openai" | "anthropic") | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_parse_glossary_api_glossary_parse_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParsedGlossary"];
                 };
             };
             /** @description Validation Error */

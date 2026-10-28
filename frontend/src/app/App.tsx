@@ -3,6 +3,7 @@ import { lazy, Suspense, useState } from "react";
 import { createBrowserRouter, Link, Outlet, RouterProvider, useOutletContext } from "react-router";
 
 import { authHeaders } from "@/entities/settings/model";
+import { GlossaryPanel } from "@/features/glossary/GlossaryPanel";
 import { SettingsPanel } from "@/features/settings/SettingsPanel";
 import { HomePage } from "@/pages/HomePage";
 import { setAuthHeaders } from "@/shared/api/client";
@@ -23,6 +24,7 @@ interface LayoutContext {
 
 function Layout() {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [glossaryOpen, setGlossaryOpen] = useState(false);
   return (
     <>
       <header className="topbar">
@@ -37,12 +39,16 @@ function Layout() {
         <a href="https://github.com/weandy/pdf-translator" target="_blank" rel="noreferrer">
           源代码
         </a>
+        <button type="button" className="quiet" onClick={() => setGlossaryOpen(true)}>
+          术语库
+        </button>
         <button type="button" className="quiet" onClick={() => setSettingsOpen(true)}>
           设置
         </button>
       </header>
       <Outlet context={{ openSettings: () => setSettingsOpen(true) } satisfies LayoutContext} />
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
+      {glossaryOpen && <GlossaryPanel onClose={() => setGlossaryOpen(false)} />}
     </>
   );
 }

@@ -19,13 +19,14 @@ from pdftr.domain.llm import ChatError, ChatModel
 from pdftr.extraction.chars import extract
 from pdftr.fusion.build import fuse
 from pdftr.glossary.extract import extract_terms
-from pdftr.glossary.matcher import TermMatcher
+from pdftr.glossary.matcher import TermMatcher, combine, override
 from pdftr.glossary.normalize import normalize_terms
 from pdftr.parsing.port import LayoutParser, ParseError
 from pdftr.pipeline.events import EventBus
 from pdftr.pipeline.secrets import Secrets, SecretStore
 from pdftr.rendering.background import make_background
 from pdftr.storage.port import ArtifactStore, JobStore
+from pdftr.translation.cost import add_cost
 from pdftr.translation.port import TranslationCache
 from pdftr.translation.prompt import DocContext
 from pdftr.translation.segmenter import segment
@@ -72,12 +73,13 @@ def load_document(deps: PipelineDeps, job_id: str) -> Document:
     return Document.model_validate_json(deps.artifacts.path(job_id, "ir.json").read_text(encoding="utf-8"))
 
 
-def load_context(deps: PipelineDeps, job_id: str) -> DocContext:
+def load_context(deps: PipelineDeps, job_id: str, user_terms: dict[str, str] | None = None) -> DocContext:
+    """user_terms：用户术语库，覆盖自动抽取的同名术语。"""
     doc = load_document(deps, job_id)
     glossary_file = deps.artifacts.path(job_id, "glossary.json")
     g = json.loads(glossary_file.read_text(encoding="utf-8")) if glossary_file.exists() else {}
     return DocContext(title=doc.meta.title, abstract=doc.meta.abstract, domain=g.get("domain", ""),
-                      terms=g.get("terms", {}))  # fmt: skip
+                      terms=override(g.get("terms", {}), user_terms or {}))  # fmt: skip
 
 
 class Pipeline:
@@ -196,6 +198,9 @@ class Pipeline:
         found = await extract_terms(self.deps.chat_factory(secrets), title=doc.meta.title, abstract=doc.meta.abstract,
                                     intro=intro, headings=headings)  # fmt: skip
         terms = normalize_terms(found.terms, body, headings)
+        chat = self.deps.chat_factory(secrets)
+        if (cost := add_cost(None, chat.model, found.usage)) is not None:
+            self._update(job, cost_cny=(job.cost_cny or 0) + cost)  # 术语抽取也计入任务花费
         out.write_text(json.dumps({"domain": found.domain, "terms": terms}, ensure_ascii=False), encoding="utf-8")
 
     async def _translate(self, job: Job, secrets: Secrets) -> None:
@@ -207,8 +212,8 @@ class Pipeline:
             self._update(job, progress=done / total if total else 1.0, message=f"翻译中 {done}/{total}")
 
         out, report = await translate(
-            segs, chat=chat, cache=self.deps.cache, ctx=load_context(self.deps, job.id),
-            lookup_terms=matcher.match if matcher else None,
+            segs, chat=chat, cache=self.deps.cache, ctx=load_context(self.deps, job.id, job.options.user_terms),
+            lookup_terms=combine(job.options.user_terms, matcher),
             opts=TranslateOptions(quality=job.options.quality, concurrency=self._concurrency(secrets)),
             on_progress=progress,
         )  # fmt: skip

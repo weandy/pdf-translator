@@ -33,6 +33,14 @@ def is_deepseek_peak(now: datetime | None = None) -> bool:
     return 9 <= t.hour < 12 or 14 <= t.hour < 18
 
 
+def add_cost(total: float | None, model: str, usage: ChatUsage) -> float | None:
+    """累加一次请求的费用：按请求发出时是否高峰计价（跨越高峰时段边界的任务也不会算错）。未知模型保持 None。"""
+    cost = cost_cny(model, usage, peak=is_deepseek_peak())
+    if cost is None:
+        return total
+    return (total or 0.0) + cost
+
+
 def cost_cny(model: str, usage: ChatUsage, *, peak: bool) -> float | None:
     """未知模型返回 None（界面显示“按服务商计费”）。"""
     price = PRICES.get(model)

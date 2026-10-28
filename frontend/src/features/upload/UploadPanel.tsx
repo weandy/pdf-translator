@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState, type DragEvent } from "react";
 
 import { rememberJob } from "@/entities/job/model";
+import { termMap } from "@/entities/glossary/model";
 import { PARSER_NAMES, useSettings } from "@/entities/settings/model";
 import { api, type Job } from "@/shared/api/client";
 
@@ -93,6 +94,7 @@ export function UploadPanel({ onCreated, onNeedSettings }: Props) {
       const job = await api.createJob(file, {
         cloud_consent: consent,
         parser: settings.parser,
+        user_terms: termMap(),
         quality: settings.quality,
         include_references: settings.includeReferences,
         translate_figures: settings.translateFigures,

@@ -17,6 +17,8 @@ from pdftr.domain.ir import Document, Quality, Revision, RevisionAction, Segment
 from pdftr.domain.job import STAGES, Job, JobOptions, JobStatus
 from pdftr.domain.llm import ChatError, ChatOptions
 from pdftr.extraction.chars import page_count
+from pdftr.glossary.matcher import combine
+from pdftr.glossary.user_import import ParsedGlossary, parse_upload
 from pdftr.pipeline.runner import Pipeline, load_context, load_document
 from pdftr.pipeline.secrets import Secrets
 from pdftr.rendering.background import crop_png
@@ -194,6 +196,18 @@ def edit_segment(pipeline: Pipeline, segment_id: str, target: str) -> Segment:
     return seg
 
 
+GLOSSARY_MAX_BYTES = 2 * 1024 * 1024
+
+
+async def parse_glossary(pipeline: Pipeline, secrets: Secrets, data: bytes, *, use_ai: bool) -> ParsedGlossary:
+    """识别用户上传的术语表（不保存，结果交给用户确认）。use_ai 时用翻译服务读取任意格式，否则按规则识别。"""
+    if len(data) > GLOSSARY_MAX_BYTES:
+        raise UserError("术语表文件太大（上限 2 MB），可以拆成几个文件分别导入")
+    if use_ai and not secrets.llm_api_key:
+        raise UserError("AI 识别要用翻译服务，请先在设置中填写 API Key")
+    return await parse_upload(data, chat=pipeline.deps.chat_factory(secrets) if use_ai else None)
+
+
 class LlmCheck(BaseModel):
     ok: bool
     model: str
@@ -262,21 +276,29 @@ def revert_revision(pipeline: Pipeline, revision_id: int) -> Segment:
     return seg
 
 
-async def retranslate_segment(pipeline: Pipeline, segment_id: str, quality: Quality, secrets: Secrets) -> Segment:
+async def retranslate_segment(
+    pipeline: Pipeline, segment_id: str, quality: Quality, secrets: Secrets, user_terms: dict[str, str] | None = None
+) -> Segment:
+    """user_terms：浏览器里最新的用户术语库（用户纠正术语后重翻这一段时用）；不传则用建任务时的。"""
     _require_secrets(secrets, parser=None)
     seg = _segment(pipeline, segment_id)
+    terms = user_terms if user_terms is not None else get_job(pipeline, seg.job_id).options.user_terms
     before = seg.model_copy()
     seg.status = SegmentStatus.PENDING
     deps = pipeline.deps
     chat = deps.chat_factory(secrets)
     matcher = deps.term_matcher()
-    (out,), _ = await translate(
-        [seg], chat=chat, cache=deps.cache, ctx=load_context(deps, seg.job_id),
-        lookup_terms=matcher.match if matcher else None,
+    (out,), report = await translate(
+        [seg], chat=chat, cache=deps.cache, ctx=load_context(deps, seg.job_id, terms),
+        lookup_terms=combine(terms, matcher),
         opts=TranslateOptions(quality=quality, use_cache=False),
     )  # fmt: skip
     deps.store.save_segments([out])
     _record(pipeline, before, out, "careful" if quality == "careful" else "retranslate")
+    if report.cost_cny is not None:  # 重翻、精修的费用也计入任务花费
+        job = get_job(pipeline, seg.job_id)
+        job.cost_cny = (job.cost_cny or 0) + report.cost_cny
+        deps.store.save_job(job)
     return out
 
 

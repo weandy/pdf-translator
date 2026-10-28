@@ -3,13 +3,14 @@
 import os
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from pdftr import __version__
 from pdftr.api.deps import pipeline, secrets
 from pdftr.api.schemas import ConfigOut, HealthOut, ModelsOut
 from pdftr.glossary.sources import parse_ids
+from pdftr.glossary.user_import import ParsedGlossary
 from pdftr.pipeline import usecases
 from pdftr.pipeline.runner import Pipeline
 from pdftr.pipeline.secrets import Secrets
@@ -23,6 +24,14 @@ SecretsDep = Annotated[Secrets, Depends(secrets)]
 async def llm_models(p: PipelineDep, sec: SecretsDep) -> ModelsOut:
     """用请求头里的接口地址、协议与 Key 拉取模型列表（浏览器不能直接跨域请求翻译服务）。"""
     return ModelsOut(models=await usecases.llm_models(p, sec))
+
+
+@router.post("/glossary/parse", response_model=ParsedGlossary)
+async def parse_glossary(
+    p: PipelineDep, sec: SecretsDep, file: Annotated[UploadFile, File()], ai: Annotated[bool, Form()] = False
+) -> ParsedGlossary:
+    """识别上传的术语表，返回候选条目给用户确认（服务端不保存）。ai=true 时用翻译服务读取任意格式。"""
+    return await usecases.parse_glossary(p, sec, await file.read(usecases.GLOSSARY_MAX_BYTES + 1), use_ai=ai)
 
 
 @router.post("/llm/check", response_model=usecases.LlmCheck)

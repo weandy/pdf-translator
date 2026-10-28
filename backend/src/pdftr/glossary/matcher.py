@@ -4,7 +4,7 @@
 """
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 MAX_WORDS = 6
 _WORD = re.compile(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*")
@@ -50,3 +50,24 @@ class TermMatcher:
             else:
                 i += 1
         return hits
+
+
+def combine(user_terms: Mapping[str, str], library: "TermMatcher | None") -> "Callable[[str], dict[str, str]] | None":
+    """用户术语优先于公共词库：同一术语（不分大小写）以用户的译法为准。用户自己加的短缩写也收（最短 2 个字符）。"""
+    user = TermMatcher(user_terms, min_length=2) if user_terms else None
+    if user is None and library is None:
+        return None
+
+    def lookup(text: str) -> dict[str, str]:
+        mine = user.match(text) if user else {}
+        lowered = {k.lower() for k in mine}
+        base = {k: v for k, v in library.match(text).items() if k.lower() not in lowered} if library else {}
+        return base | mine
+
+    return lookup
+
+
+def override(terms: Mapping[str, str], user_terms: Mapping[str, str]) -> dict[str, str]:
+    """自动抽取的文档术语里，用户术语库已有的（不分大小写）改用用户的译法。"""
+    mine = {k.lower(): v for k, v in user_terms.items()}
+    return {k: mine.get(k.lower(), v) for k, v in terms.items()}

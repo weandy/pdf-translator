@@ -65,7 +65,9 @@ class FakeChat:
         if FakeChat.fail:
             raise ChatError("翻译服务的 API Key 无效")
         if "抽取需要全文统一译法的专业术语" in user:
-            return ChatResult(text="领域：测试\nfunction=函数")
+            return ChatResult(
+                text="领域：测试\nfunction=函数", usage=ChatUsage(prompt_tokens=100, completion_tokens=40)
+            )
         out = []
         for line in user.splitlines():
             if m := re.match(r"^(\d+)\|(.*)$", line):
@@ -95,8 +97,8 @@ def client(tmp_path: Path):
         yield c
 
 
-def _upload(client: TestClient, consent: bool = True, data: bytes | None = None, headers=HEADERS):
-    options = json.dumps({"cloud_consent": consent})
+def _upload(client: TestClient, consent: bool = True, data: bytes | None = None, headers=HEADERS, options=None):
+    options = json.dumps(options or {"cloud_consent": consent})
     files = {"file": ("paper.pdf", data if data is not None else make_pdf(), "application/pdf")}
     return client.post("/api/jobs", files=files, data={"options": options}, headers=headers)
 
@@ -318,3 +320,47 @@ def test_shared_llm_key_only_goes_to_configured_service(tmp_path: Path):
         c.secrets(base_url="https://evil.example/v1", api_key="mine", model=None, parser_token=None).llm_api_key
         == "mine"
     )
+
+
+def test_user_terms_reach_the_prompt_and_glossary_upload(client: TestClient):
+    seen: list[str] = []
+    original = FakeChat.complete
+
+    async def spy(self, system: str, user: str, opts: ChatOptions) -> ChatResult:
+        seen.append(system + "\n" + user)
+        return await original(self, system, user, opts)
+
+    FakeChat.complete = spy  # type: ignore[method-assign]
+    try:
+        r = _upload(client, options={"cloud_consent": True, "user_terms": {"function": "映射", "next page": "下一页"}})
+        job = _wait(client, r.json()["id"])
+        assert job["options"]["user_terms"]["function"] == "映射"
+        prompts = "\n".join(seen)
+        # 自动抽取出的 function=函数 被用户的译法覆盖；用户术语按命中放进本批
+        assert "function=映射" in prompts and "function=函数" not in prompts and "next page=下一页" in prompts
+
+        # 重翻时用浏览器里最新的术语库
+        seg = client.get(f"/api/jobs/{job['id']}/document").json()["segments"][1]
+        seen.clear()
+        client.post(f"/api/segments/{seg['id']}/retranslate", headers=HEADERS,
+                    json={"quality": "default", "user_terms": {"function": "功能"}})  # fmt: skip
+        assert "function=功能" in "\n".join(seen)
+    finally:
+        FakeChat.complete = original  # type: ignore[method-assign]
+
+    files = {"file": ("terms.csv", "英文,中文\ndropout,随机失活\n".encode(), "text/csv")}
+    got = client.post("/api/glossary/parse", files=files, headers=HEADERS).json()
+    assert got["method"] == "rule" and got["entries"] == [{"source": "dropout", "target": "随机失活", "note": ""}]
+    big = {"file": ("big.txt", b"x" * (2 * 1024 * 1024 + 10), "text/plain")}
+    assert client.post("/api/glossary/parse", files=big, headers=HEADERS).status_code == 400
+
+
+def test_cost_includes_term_extraction_and_retranslation(client: TestClient):
+    job = _wait(client, _upload(client).json()["id"])
+    segs = client.get(f"/api/jobs/{job['id']}/document").json()["segments"]
+    # 假模型每次请求 100 个输入 token、40 个输出 token；术语抽取那一次也计入
+    per_request = (100 * 1.0 + 40 * 4.0) / 1e6  # 空闲时段单价；高峰时段翻倍
+    assert job["cost_cny"] >= 2 * per_request - 1e-12
+    client.post(f"/api/segments/{segs[0]['id']}/retranslate", json={"quality": "default"}, headers=HEADERS)
+    after = client.get(f"/api/jobs/{job['id']}").json()["cost_cny"]
+    assert after > job["cost_cny"]  # 重翻的费用也计入

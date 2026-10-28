@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from pdftr.domain.ir import Segment, SegmentStatus
 from pdftr.domain.llm import ChatModel, ChatOptions, ChatUsage
 from pdftr.translation.batching import BATCH_TOKENS, estimate_tokens, make_batches, parse_numbered, placeholders_match
-from pdftr.translation.cost import cost_cny, is_deepseek_peak
+from pdftr.translation.cost import add_cost
 from pdftr.translation.port import TranslationCache
 from pdftr.translation.prompt import PROMPT_VERSION, DocContext, expand_formulas, system_prompt, user_prompt
 
@@ -97,7 +97,9 @@ async def translate(
         if seg.status in (SegmentStatus.DONE, SegmentStatus.EDITED):
             continue
         seg.quality = o.quality
-        key = cache_key(seg, chat.model, ctx.terms, o.quality)
+        # 本段命中的词库与用户术语也算进缓存键：用户改了术语后不会拿到旧译文
+        hits = lookup_terms(seg.source) if lookup_terms else {}
+        key = cache_key(seg, chat.model, ctx.terms | hits, o.quality)
         if o.use_cache and (hit := cache.get(key)) is not None:
             seg.target, seg.status = hit, SegmentStatus.DONE
             report.cached += 1
@@ -129,6 +131,7 @@ async def translate(
             result = await chat.complete(system, user, opts_)
         report.requests += 1
         report.usage = report.usage + result.usage
+        report.cost_cny = add_cost(report.cost_cny, chat.model, result.usage)
         got = parse_numbered(result.text)
         retry = []
         for n, u in enumerate(batch, start=1):
@@ -167,5 +170,4 @@ async def translate(
 
     report.translated = sum(len(u.seg_indexes) for u in pending) - sum(len(u.seg_indexes) for u in failed)
     report.failed = sum(len(u.seg_indexes) for u in failed)
-    report.cost_cny = cost_cny(chat.model, report.usage, peak=is_deepseek_peak())
     return out, report

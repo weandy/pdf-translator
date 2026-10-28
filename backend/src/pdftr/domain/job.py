@@ -29,6 +29,8 @@ class JobOptions(BaseModel):
     translate_figures: bool = True  # 翻译图里的矢量文字（坐标轴、图例、框图标签）
     pages: list[int] | None = None  # 0 起的页码；None 表示全部
     cloud_consent: bool = False  # 用户已确认文件会上传到云端解析服务
+    # 用户自己的术语库（保存在浏览器里，随任务发来）：优先于自动抽取的术语与公共词库
+    user_terms: dict[str, str] = Field(default_factory=dict, max_length=5000)
 
 
 class Job(BaseModel):

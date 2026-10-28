@@ -154,3 +154,15 @@ def test_default_concurrency_by_provider():
     assert default_concurrency("http://localhost:11434/v1") == 1  # Ollama
     assert default_concurrency("https://dashscope.aliyuncs.com/compatible-mode/v1") == 2
     assert default_concurrency("https://notdeepseek.com.example.org") == 2
+
+
+def test_add_cost_prices_each_request_at_its_own_time(monkeypatch):
+    from pdftr.translation import cost
+
+    usage = ChatUsage(prompt_tokens=1_000_000, completion_tokens=0)
+    monkeypatch.setattr(cost, "is_deepseek_peak", lambda: False)
+    total = cost.add_cost(None, "deepseek-flash", usage)
+    monkeypatch.setattr(cost, "is_deepseek_peak", lambda: True)  # 任务中途进入高峰时段
+    total = cost.add_cost(total, "deepseek-flash", usage)
+    assert total == 1.0 + 2.0
+    assert cost.add_cost(None, "unknown-model", usage) is None

@@ -15,6 +15,7 @@ export type ServerConfig = components["schemas"]["ConfigOut"];
 export type Estimate = components["schemas"]["Estimate"];
 export type Revision = components["schemas"]["RevisionOut"];
 export type LlmCheck = components["schemas"]["LlmCheck"];
+export type ParsedGlossary = components["schemas"]["ParsedGlossary"];
 export type Quality = "default" | "careful";
 
 export class ApiError extends Error {
@@ -81,8 +82,18 @@ export const api = {
   document: (id: string) => request<DocumentData>(`/api/jobs/${id}/document`),
   editSegment: (id: string, target: string) =>
     request<SegmentData>(`/api/segments/${id}`, { method: "PATCH", ...json({ target }) }),
-  retranslate: (id: string, quality: Quality) =>
-    request<SegmentData>(`/api/segments/${id}/retranslate`, { method: "POST", ...json({ quality }) }),
+  /** userTerms：浏览器里最新的用户术语库 */
+  retranslate: (id: string, quality: Quality, userTerms?: Record<string, string>) =>
+    request<SegmentData>(`/api/segments/${id}/retranslate`, {
+      method: "POST",
+      ...json({ quality, user_terms: userTerms }),
+    }),
+  parseGlossary: (file: File, ai: boolean) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("ai", String(ai));
+    return request<ParsedGlossary>("/api/glossary/parse", { method: "POST", body: form });
+  },
   /** 翻译服务的模型列表与连通测试；headers 用设置面板里尚未保存的值 */
   llmModels: (headers: Record<string, string>) =>
     request<{ models: string[] }>("/api/llm/models", { headers }).then((r) => r.models),

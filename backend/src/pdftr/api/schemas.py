@@ -166,3 +166,4 @@ class EditIn(BaseModel):
 
 class RetranslateIn(BaseModel):
     quality: Literal["default", "careful"] = "careful"
+    user_terms: dict[str, str] | None = Field(default=None, max_length=5000)  # 浏览器里最新的用户术语库

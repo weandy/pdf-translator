@@ -25,7 +25,7 @@ def edit_segment(segment_id: str, body: EditIn, p: PipelineDep) -> SegmentOut:
 async def retranslate(
     segment_id: str, body: RetranslateIn, p: PipelineDep, sec: Annotated[Secrets, Depends(secrets)]
 ) -> SegmentOut:
-    return SegmentOut.of(await usecases.retranslate_segment(p, segment_id, body.quality, sec))
+    return SegmentOut.of(await usecases.retranslate_segment(p, segment_id, body.quality, sec, body.user_terms))
 
 
 @router.post("/revisions/{revision_id}/revert", response_model=SegmentOut)
