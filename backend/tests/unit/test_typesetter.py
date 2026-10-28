@@ -51,7 +51,7 @@ def test_last_line_not_justified_and_indent():
 
 def test_fake_subscript_is_plain_text():
     assert (
-        drop_fake_scripts("• <sub>LLM-based FJSP modeling is formulated</sub> as")
-        == "• LLM-based FJSP modeling is formulated as"
+        drop_fake_scripts("• <sub>A synthetic first line of a list item</sub> continues")
+        == "• A synthetic first line of a list item continues"
     )
     assert drop_fake_scripts("d<sub>model</sub>") == "d<sub>model</sub>"
