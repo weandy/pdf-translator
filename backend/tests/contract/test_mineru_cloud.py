@@ -131,3 +131,23 @@ def test_transient_network_error_is_retried(tmp_path: Path):
     with pytest.raises(ParseError, match="Token 无效"):
         asyncio.run(parser.parse(pdf))
     assert calls == ["POST", "POST"]
+
+
+def test_stalled_request_hits_deadline_and_retries():
+    """网络时断时续时 httpx 的单次读写超时不会触发，要靠总时限（实测上传曾卡住 7 分钟以上）。"""
+    calls = []
+
+    async def stall(request: httpx2.Request) -> httpx2.Response:
+        calls.append(request.method)
+        await asyncio.sleep(5)
+        return httpx2.Response(200)
+
+    parser = MinerUCloudParser("tok", retry_delays=(0,), transport=httpx2.MockTransport(stall))
+
+    async def run() -> None:
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(stall)) as client:
+            await parser._send(client, "PUT", "https://upload.example/x", content=b"x", deadline=0.05)
+
+    with pytest.raises(httpx2.TimeoutException, match="超过 0 秒未完成"):
+        asyncio.run(run())
+    assert calls == ["PUT", "PUT"]  # 超时后重试了一次

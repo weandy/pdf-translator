@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     llm_concurrency: int = 0  # 每个任务同时发给翻译服务的请求数；0 = 按服务商自动（DeepSeek 4、本机模型 1、其他 2）
     max_concurrent_jobs: int = 2
+    shutdown_grace_s: float = 180  # 服务停止（如部署新版本）时等待进行中的任务完成的最长时间
     max_queued_jobs: int = 10  # 排队中的任务超过这个数时拒绝新上传
     retention_days: int = 7  # 任务文件与译文缓存保留天数，0 表示不自动清理
     min_free_disk_mb: int = 1024  # 磁盘剩余空间低于此值时拒绝新上传

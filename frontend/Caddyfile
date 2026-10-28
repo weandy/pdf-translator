@@ -11,6 +11,9 @@
 		reverse_proxy {$PDFTR_UPSTREAM:app:8000} {
 			# SSE 进度推送不缓冲
 			flush_interval -1
+			# 后端重启（部署新版本）的几秒内先等它恢复，不立即报错
+			lb_try_duration 30s
+			lb_try_interval 500ms
 		}
 	}
 

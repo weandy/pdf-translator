@@ -14,6 +14,8 @@ services:
       # 命名卷沿用镜像中 /data 的属主（非 root 用户），避免宿主机目录权限问题
       - pdftr-data:/data
     restart: unless-stopped
+    # 部署新版本时等待进行中的任务完成（PDFTR_SHUTDOWN_GRACE_S，默认 180 秒）
+    stop_grace_period: 200s
 
   web:
     build: ../frontend

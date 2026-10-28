@@ -75,11 +75,13 @@ class MinerUCloudParser:
         ):  # fmt: skip
             on_progress("正在上传到 MinerU 云端")
             batch_id, upload_url = await self._request_upload(api, pdf, pages)
-            r = await self._send(plain, "PUT", upload_url, content=pdf.read_bytes())
+            data = pdf.read_bytes()
+            # 总时限按 50 KB/s 的最低速度估算，另加 60 秒
+            r = await self._send(plain, "PUT", upload_url, content=data, deadline=60 + len(data) / 50_000)
             _check(r, "上传文件")
             zip_url = await self._wait(api, batch_id, on_progress)
             on_progress("正在下载解析结果", 1.0)
-            r = await self._send(plain, "GET", zip_url)
+            r = await self._send(plain, "GET", zip_url, deadline=300)
             _check(r, "下载解析结果")
         data = r.content
         if raw_dir is not None:
@@ -129,15 +131,23 @@ class MinerUCloudParser:
             await asyncio.sleep(self._poll_interval)
         raise ParseError("MinerU 解析超时")
 
-    async def _send(self, client: httpx2.AsyncClient, method: str, url: str, **kwargs: Any) -> httpx2.Response:
-        """网络偶发中断（连接超时、连接被重置）时按退避间隔重试；HTTP 错误码不重试。"""
+    async def _send(
+        self, client: httpx2.AsyncClient, method: str, url: str, *, deadline: float = 180, **kwargs: Any
+    ) -> httpx2.Response:
+        """网络偶发中断（连接超时、连接被重置）时按退避间隔重试；HTTP 错误码不重试。
+
+        deadline 是单次请求的总时限：httpx 的超时只限制“单次读写”，网络时断时续时每次都能挤出一点数据，
+        永远不会超时（实测上传 4 MB 的 PDF 卡了 7 分钟以上），所以另设总时限。
+        """
         for delay in (*self._retry_delays, None):
             try:
-                return await client.request(method, url, **kwargs)
-            except httpx2.TransportError:
+                return await asyncio.wait_for(client.request(method, url, **kwargs), deadline)
+            except (httpx2.TransportError, TimeoutError) as e:
                 if delay is None:
+                    if isinstance(e, TimeoutError):
+                        raise httpx2.TimeoutException(f"{method} 超过 {deadline:.0f} 秒未完成") from e
                     raise
-                log.warning("访问 MinerU 网络出错，%.0f 秒后重试", delay)
+                log.warning("访问 MinerU 网络出错（%s），%.0f 秒后重试", type(e).__name__, delay)
                 await asyncio.sleep(delay)
         raise AssertionError("unreachable")
 

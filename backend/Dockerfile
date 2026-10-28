@@ -37,4 +37,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).status == 200 else 1)"
 
-CMD ["uvicorn", "pdftr.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+# 停止时只等 10 秒让连接关闭（进度推送是长连接，不会自己结束），之后在 lifespan 里等待进行中的任务
+CMD ["uvicorn", "pdftr.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "10"]

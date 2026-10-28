@@ -7,7 +7,8 @@
 services:
   app:
     network_mode: host
-    command: ["uvicorn", "pdftr.api.app:create_app", "--factory", "--host", "127.0.0.1", "--port", "8000"]
+    command: ["uvicorn", "pdftr.api.app:create_app", "--factory", "--host", "127.0.0.1", "--port", "8000",
+              "--timeout-graceful-shutdown", "10"]
 
   web:
     network_mode: host

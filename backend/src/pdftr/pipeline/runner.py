@@ -107,8 +107,12 @@ class Pipeline:
                 job.status, job.error = JobStatus.FAILED, "服务重启，任务中断，请点击重试"
                 self.deps.store.save_job(job)
 
-    async def wait_all(self) -> None:
-        await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+    async def wait_all(self, timeout: float | None = None) -> bool:
+        """等待进行中的任务完成；超时返回 False（剩下的任务在下次启动时标记为中断，可从断点重试）。"""
+        if not self._tasks:
+            return True
+        _, pending = await asyncio.wait(list(self._tasks.values()), timeout=timeout)
+        return not pending
 
     # ---- 执行 ----
     def _update(self, job: Job, **changes: object) -> None:
