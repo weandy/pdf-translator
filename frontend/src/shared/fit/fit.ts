@@ -1,11 +1,10 @@
 /**
- * 译文块排版拟合：行距固定 1.2（与导出 PDF 的 rendering/export.py 一致，两边排出来相同），
- * 放不下时二分查找字号，下限为原字号的 70%。
- * 在 pt 坐标的排版层里计算（外层整体缩放不影响布局尺寸），结果与缩放无关。
+ * 译文块排版拟合（与导出 PDF 的 rendering/export.py 一致）：按原字号依次尝试 1.5→1.2 倍行距，
+ * 都放不下时用最紧的行距二分查找字号，下限为原字号的 70%。
  */
+import { LINE_HEIGHTS } from "@/shared/text/typeset";
 
 export const MIN_SCALE = 0.7;
-const LINE_HEIGHTS = [1.2];
 
 export interface FitResult {
   fontSize: number;

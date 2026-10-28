@@ -9,8 +9,14 @@ const model = (chars: number, width: number, height: number) => (size: number, l
 };
 
 describe("searchFit", () => {
-  it("放得下时保持原字号，行距与导出 PDF 一致", () => {
-    expect(searchFit(10, model(20, 400, 100))).toEqual({ fontSize: 10, lineHeight: 1.2, overflow: false });
+  it("放得下时保持原字号，优先用宽松行距", () => {
+    expect(searchFit(10, model(20, 400, 100))).toEqual({ fontSize: 10, lineHeight: 1.5, overflow: false });
+  });
+
+  it("先收紧行距，再缩字号", () => {
+    const r = searchFit(10, model(80, 400, 26));
+    expect(r.fontSize).toBe(10);
+    expect(r.lineHeight).toBeLessThan(1.5);
   });
 
   it("再缩字号，不低于下限", () => {

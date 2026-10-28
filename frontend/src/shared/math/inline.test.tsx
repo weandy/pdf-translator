@@ -22,6 +22,11 @@ describe("InlineMathText", () => {
     expect(html).toBe('<span class="zh">作者</span><sup>∗</sup>');
   });
 
+  it("长词在 / 之后可以断行", () => {
+    const html = renderToStaticMarkup(<InlineMathText text="Python/OR-Tools" formulas={{}} fallbackUrl={() => ""} />);
+    expect(html).toBe("Python/<wbr/>OR-Tools");
+  });
+
   it("渲染结果有缓存", () => {
     expect(renderLatex("x^2")).toBe(renderLatex("x^2"));
     expect(renderLatex("\\notacommand{")).toBeNull();

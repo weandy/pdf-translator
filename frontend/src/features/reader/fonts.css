@@ -45,6 +45,14 @@
 .tblock .no {
   font-weight: 700;
 }
+/* 排版规则（W3C《中文排版需求》）：正文与图注两端对齐（§6.2），段首缩进两字（§6.2.1.1）；与导出 PDF 一致 */
+.tblock.role-body,
+.tblock.role-caption {
+  text-align: justify;
+}
+.tblock .indent {
+  text-indent: 2em;
+}
 /* 图里的文字：图表多用无衬线字体，标签（坐标轴标题、框图节点）多居中 */
 .tblock.role-label,
 .tblock.role-label .zh {

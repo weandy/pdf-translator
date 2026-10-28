@@ -20,7 +20,7 @@ FILES = {
 }
 
 # 用中文字体排的字符：汉字、全角标点、中文引号与破折号、省略号（与前端 shared/text/script.ts 一致）。
-# MuPDF 不会按 font-family 列表逐字回退，必须把中文与西文分开包在不同字体里。
+# 排版器据此逐字断行并选用中文字体（MuPDF 的 HTML 排版不会按字体列表逐字回退）。
 CJK_RUN = re.compile(
     "[\u2018\u2019\u201c\u201d\u2014\u2026\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]+"
 )
@@ -32,18 +32,3 @@ def available(font_dir: Path) -> bool:
     if missing:
         log.warning("字体文件缺失（%s），导出 PDF 使用内置字体；运行 scripts/fetch_fonts.py 下载", ", ".join(missing))
     return not missing
-
-
-def font_faces() -> str:
-    """@font-face 规则，字体文件从 Story 的 archive（字体目录）中读取。"""
-    return (
-        f"@font-face {{font-family: Song; src: url({FILES['song']})}}"
-        f" @font-face {{font-family: Hei; src: url({FILES['hei']})}}"
-        f" @font-face {{font-family: Times; src: url({FILES['times']})}}"
-        f" @font-face {{font-family: Times; font-weight: bold; src: url({FILES['times-bold']})}}"
-    )
-
-
-def wrap_cjk(escaped: str) -> str:
-    """把中文片段包进 <span class="zh">（输入是已转义的 HTML 文字，不含标签）。"""
-    return CJK_RUN.sub(lambda m: f'<span class="zh">{m.group(0)}</span>', escaped)

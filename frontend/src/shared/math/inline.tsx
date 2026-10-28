@@ -30,15 +30,22 @@ interface Props {
   fallbackUrl: (key: string) => string;
 }
 
+/** 长词（如 Python/OR-Tools）在 / 之后允许断行（与导出 PDF 一致；浏览器默认只在连字符后断）。 */
+const SLASH_BREAK = /(?<=[A-Za-z0-9]\/)(?=[A-Za-z0-9])/;
+
+function latin(text: string, key: string): ReactNode[] {
+  return text.split(SLASH_BREAK).flatMap((piece, i) => (i ? [<wbr key={`${key}w${i}`} />, piece] : [piece]));
+}
+
 /** 中文片段包进 span.zh，由样式指定中文字体（西文用外层字体）。 */
 function scripts(text: string, key: string): ReactNode[] {
-  return splitScript(text).map((run, i) =>
+  return splitScript(text).flatMap((run, i) =>
     run.cjk ? (
       <span key={`${key}:${i}`} className="zh">
         {run.text}
       </span>
     ) : (
-      run.text
+      latin(run.text, `${key}:${i}`)
     ),
   );
 }

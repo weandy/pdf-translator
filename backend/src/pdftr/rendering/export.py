@@ -1,13 +1,11 @@
 """导出 PDF：在去字背景页上排入译文（纯译文），或与原文左右并排（双语对照）。
 
-只用 PyMuPDF（insert_htmlbox），不需要浏览器，内存占用小。
-行内公式用原文位置的裁剪图（矢量重绘需要 KaTeX，服务端不具备）；排不下时自动缩小字号。
+只用 PyMuPDF，不需要浏览器，内存占用小。译文由 rendering/typesetter.py 按《中文排版需求》排版后直接写入字形；
+行内公式用原文位置的裁剪图（矢量重绘需要 KaTeX，服务端不具备）；排不下时先收紧行距，再缩小字号。
 字体按 GB/T 7713.2 附录 B：正文宋体、标题黑体、图表编号黑体，西文用 Times 类字体（见 rendering/fonts.py），
 与网页阅读器一致；按用到的字形子集嵌入。
 """
 
-import html
-import io
 import re
 from pathlib import Path
 from typing import Literal
@@ -15,15 +13,16 @@ from typing import Literal
 import pymupdf
 
 from pdftr.domain.ir import Block, BlockType, Document, Segment
-from pdftr.rendering import fonts
+from pdftr.rendering.typeset import LINE_HEIGHTS, drop_fake_scripts, wants_indent
+from pdftr.rendering.typesetter import FontSet, Token, Typesetter
 
 ExportMode = Literal["mono", "dual"]
 Side = Literal["left", "right"]  # 双语对照时译文放在哪一边
-LINE_HEIGHT = 1.2  # 与论文正文的行距相近
+LINE_HEIGHT = 1.2  # 最紧的行距（单行框补高按它计算）
+MIN_SCALE = 0.4  # 放不下时字号最多缩到原来的 40%
 
 _BREAK_AFTER = set("，。；：、）！？,;:.)")
 _SEARCH = 40
-_PLACEHOLDER = re.compile(r"<(m\d+)/>")
 # 图表标题开头的编号（“图 4.”“表2：”），按 GB/T 7713.2 用黑体（与前端 entities/document/model.ts 一致）
 CAPTION_NO = re.compile(r"^\s*(?:图|表)\s*[A-Z]?\d+(?:\.\d+)*[.:：．。]?")
 
@@ -72,51 +71,6 @@ def role(block: Block) -> str:
     return "body"
 
 
-def _to_html(text: str, seg: Segment, images: dict[str, tuple[str, float, float]], caption: bool = False) -> str:
-    """译文 → HTML：转义全部文字，只放行上下标等白名单标签，中文包进中文字体，公式占位符换成裁剪图。"""
-    out = []
-    if caption and (m := CAPTION_NO.match(text)):
-        out.append(f'<span class="no">{fonts.wrap_cjk(html.escape(m.group(0), quote=False))}</span>')
-        text = text[m.end() :]
-    for i, piece in enumerate(_PLACEHOLDER.split(text)):
-        if i % 2:  # 占位符
-            img = images.get(f"{seg.id}:{piece}")
-            if img:
-                name, w, h = img
-                # 底边对齐文字底边：公式图比字高时只撑高本行；居中对齐会伸进下一行，与之重叠
-                out.append(f'<img src="{name}" style="width:{w:.1f}pt;height:{h:.1f}pt;vertical-align:text-bottom"/>')
-            continue
-        escaped = fonts.wrap_cjk(html.escape(piece, quote=False))
-        out.append(re.sub(r"&lt;(/?)(sup|sub|b|i)&gt;", r"<\1\2>", escaped))
-    return "".join(out)
-
-
-def _css(block: Block, with_fonts: bool) -> str:
-    color = f"#{block.style.color:06x}"
-    r = role(block)
-    css = (
-        # 左对齐：MuPDF 两端对齐只拉宽空格，中英混排时英文单词两侧会出现大空隙
-        f"* {{font-size: {block.style.font_size:.1f}pt; line-height: {LINE_HEIGHT}; color: {color};"
-        " margin: 0; padding: 0; text-align: left}"
-        # MuPDF 默认给 body 上下各 8pt 边距，且 body 选择器比 * 优先，必须单独清零，否则每个框都少 16pt
-        " html, body, p, div {margin: 0; padding: 0}"
-    )
-    if r == "label":  # 图里的字多为无衬线体，标签多居中（坐标轴标题、框图节点）
-        css += " body {text-align: center}"
-    if not with_fonts:
-        return css + f" body {{font-family: sans-serif; font-weight: {'bold' if r == 'heading' else 'normal'}}}"
-    if r == "label":
-        return f"{fonts.font_faces()} {css} body {{font-family: Hei}} .zh {{font-family: Hei}}"
-    zh = "Hei" if r == "heading" else "Song"
-    latin_weight = "bold" if r == "heading" else "normal"
-    return (
-        f"{fonts.font_faces()} {css}"
-        f" body {{font-family: Times; font-weight: {latin_weight}}}"
-        f" .zh {{font-family: {zh}; font-weight: normal}}"
-        " .no {font-weight: bold} .no .zh {font-family: Hei; font-weight: normal}"
-    )
-
-
 def _box(block: Block) -> pymupdf.Rect:
     """排版框：原文块的范围。解析器给单行文字的框只有字形高，装不下一整行时上下各补一半，
     不再统一往下放宽（那样会压到紧挨着的表格线、图片，如表格标题）。"""
@@ -126,62 +80,73 @@ def _box(block: Block) -> pymupdf.Rect:
     return pymupdf.Rect(r.x0, r.y0 - pad, r.x1, r.y1 + pad)
 
 
-def _segment_archive(
-    original: pymupdf.Document, seg: Segment, font_dir: Path | None
-) -> tuple[pymupdf.Archive | None, dict]:
-    """本段落用到的资源：字体目录 + 公式裁剪图。每个段落单独打包：共用一个大包时每次排版都会处理全部图片。"""
-    if not seg.formula_refs and font_dir is None:
-        return None, {}
-    archive = pymupdf.Archive()
-    if font_dir is not None:
-        archive.add(str(font_dir))
-    images: dict[str, tuple[str, float, float]] = {}
+def _formula_images(original: pymupdf.Document, seg: Segment) -> dict[str, tuple[bytes, float, float]]:
+    """本段落行内公式的裁剪图：占位符 → (PNG, 宽, 高)，宽高为原文中的尺寸（pt）。"""
+    out: dict[str, tuple[bytes, float, float]] = {}
     for key, ref in seg.formula_refs.items():
         if ref.page >= len(original):
             continue
         b = ref.bbox
         clip = pymupdf.Rect(b.x0 - 0.5, b.y0 - 0.5, b.x1 + 0.5, b.y1 + 0.5) & original[ref.page].rect
         pix = original[ref.page].get_pixmap(matrix=pymupdf.Matrix(3, 3), clip=clip, alpha=True)
-        archive.add(pix.tobytes("png"), f"{key}.png")
-        images[f"{seg.id}:{key}"] = (f"{key}.png", clip.width, clip.height)
-    return archive, images
+        out[key] = (pix.tobytes("png"), clip.width, clip.height)
+    return out
 
 
-def _overlay(src: pymupdf.Document, doc: Document, segments: list[Segment], font_dir: Path | None) -> pymupdf.Document:
-    """把全部译文排进一份与原文同尺寸的透明叠加 PDF。
+def _place(
+    ts: Typesetter,
+    page: pymupdf.Page,
+    block: Block,
+    tokens: list[Token],
+    indent: bool,
+    images: dict[str, tuple[bytes, float, float]],
+) -> None:
+    """按原字号依次尝试 1.5→1.2 倍行距，放得下就用；都放不下时用最紧的行距、整体缩小字号。"""
+    box = _box(block)
+    size = block.style.font_size
+    r = role(block)
+    align = {"label": "center", "heading": "left"}.get(r, "justify")
+    scale = 1.0
+    for line_height in LINE_HEIGHTS:
+        lines, bases, height = ts.layout(tokens, box.width, size, line_height, indent)
+        if height <= box.height + 0.5:
+            break
+    else:
+        # 在放大的排版框里排版，再整体缩回，相当于缩小字号；二分查找最大的可行比例
+        lo, hi = MIN_SCALE, 1.0
+        for _ in range(10):
+            mid = (lo + hi) / 2
+            _, _, height = ts.layout(tokens, box.width / mid, size, LINE_HEIGHT, indent)
+            lo, hi = (mid, hi) if height * mid <= box.height + 0.5 else (lo, mid)
+        scale = lo
+        lines, bases, _ = ts.layout(tokens, box.width / scale, size, LINE_HEIGHT, indent)
+    c = block.style.color
+    writer = pymupdf.TextWriter(page.rect)
+    ts.draw(page, writer, (box.x0, box.y0), box.width / scale, lines, bases, size, align, indent,
+            lambda key: images[key][0] if key in images else None, scale)  # fmt: skip
+    writer.write_text(page, color=((c >> 16 & 255) / 255, (c >> 8 & 255) / 255, (c & 255) / 255))
 
-    每页共用一个写入器：PyMuPDF 的 insert_htmlbox 每次调用都会生成一份带完整中文字体的临时 PDF，
-    17 页论文就会嵌入几百份字体，内存超过 1 GB；这里同一份文档里字体只嵌入一次。
-    """
+
+def _typeset_all(src: pymupdf.Document, out: pymupdf.Document, doc: Document, segments: list[Segment],
+                 font_dir: Path | None) -> None:  # fmt: skip
+    """把全部译文排进去字背景页。未翻译或失败的段落排入原文，避免出现空白。"""
+    ts = Typesetter(FontSet.load(font_dir))
     blocks = {b.id: b for b in doc.blocks()}
-    boxes: dict[int, list[tuple[Block, str, pymupdf.Archive | None]]] = {}
     for seg in segments:
-        archive, images = _segment_archive(src, seg, font_dir)
+        images = _formula_images(src, seg)
         texts = split_by_parts(seg.target or seg.source, [p.chars for p in seg.parts] or [len(seg.source)])
         for n, (part, piece) in enumerate(zip(seg.parts, texts, strict=False)):
             block = blocks.get(part.block_id)
-            if block is not None and piece.strip() and block.page < len(src):
-                body = _to_html(piece, seg, images, caption=n == 0 and role(block) == "caption")
-                boxes.setdefault(block.page, []).append((block, body, archive))
-
-    buf = io.BytesIO()
-    writer = pymupdf.DocumentWriter(buf)
-    for i in range(len(src)):
-        dev = writer.begin_page(src[i].rect)
-        for block, body, archive in boxes.get(i, []):
-            target = _box(block)
-            story = pymupdf.Story(html=body, user_css=_css(block, font_dir is not None), archive=archive)
-            # 排不下时把排版框按比例放大，再整体缩回目标框，相当于缩小字号
-            fit = story.fit_scale(pymupdf.Rect(0, 0, target.width, target.height), scale_min=1, scale_max=None)
-            if fit is None or not fit.parameter:
+            if block is None or not piece.strip() or block.page >= len(out):
                 continue
-            scale = 1 / fit.parameter
-            story.reset()
-            story.place(fit.rect)
-            story.draw(dev, pymupdf.Matrix(scale, scale) * pymupdf.Matrix(1, 0, 0, 1, target.x0, target.y0))
-        writer.end_page()
-    writer.close()
-    return pymupdf.open("pdf", buf.getvalue())
+            r = role(block)
+            caption_no = ""
+            if r == "caption" and n == 0 and seg.target and (m := CAPTION_NO.match(piece)):
+                caption_no = m.group(0)
+            size = lambda key, imgs=images: imgs[key][1:] if key in imgs else None  # noqa: E731
+            tokens = ts.tokenize(drop_fake_scripts(piece.strip()), r, block.style.font_size, size, caption_no)
+            indent = bool(seg.target) and wants_indent(block, seg, first=n == 0)
+            _place(ts, out[block.page], block, tokens, indent, images)
 
 
 def export_pdf(
@@ -193,16 +158,10 @@ def export_pdf(
     font_dir: Path | None = None,
     side: Side = "right",
 ) -> bytes:
-    """返回导出的 PDF 字节。未翻译或失败的段落排入原文，避免出现空白。font_dir 缺字体时用内置字体。"""
-    font_dir = font_dir if font_dir is not None and fonts.available(font_dir) else None
-    with (
-        pymupdf.open(original) as src,
-        pymupdf.open(background) as translated,
-        _overlay(src, doc, segments, font_dir) as ov,
-    ):
-        for i in range(len(translated)):
-            translated[i].show_pdf_page(translated[i].rect, ov, i)
-        translated.subset_fonts()  # 中文字体只保留用到的字形，体积从数 MB 降到几百 KB
+    """返回导出的 PDF 字节。font_dir 缺字体时用内置字体。"""
+    with pymupdf.open(original) as src, pymupdf.open(background) as translated:
+        _typeset_all(src, translated, doc, segments, font_dir)
+        translated.subset_fonts()  # 中文字体只保留用到的字形
         if mode == "mono":
             return translated.tobytes(garbage=3, deflate=True)
 

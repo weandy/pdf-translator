@@ -12,6 +12,7 @@ import { fileUrl, formulaUrl, type DocumentData, type PageData } from "@/shared/
 import { fitElement } from "@/shared/fit/fit";
 import { InlineMathText } from "@/shared/math/inline";
 import { splitCaptionNo } from "@/shared/text/script";
+import { dropFakeScripts, spaceCjkLatin, wantsIndent } from "@/shared/text/typeset";
 import { PdfCanvas, usePdf } from "@/shared/pdf/pdf";
 
 export type ViewMode = "both" | "translated" | "original";
@@ -267,7 +268,10 @@ function OverlayBlock({
   const [overflow, setOverflow] = useState(false);
   const role = roleOf(block);
   const rect = layoutBox(block);
-  const [captionNo, rest] = role === "caption" && first ? splitCaptionNo(text) : ["", text];
+  // 排版规则（clreq）：中西文之间加空格、正文段首缩进两字；没有译文时显示原文，不做处理
+  const shown = dropFakeScripts(translated ? spaceCjkLatin(text) : text);
+  const indent = translated && wantsIndent(block, segment, first);
+  const [captionNo, rest] = role === "caption" && first ? splitCaptionNo(shown) : ["", shown];
 
   // 内容（含 KaTeX）渲染后拟合字号。直接按显示尺寸排版（1pt = scale 像素），不用 transform 缩放：
   // 先排小字再放大，或先排大字再缩小，浏览器都会把字宽对齐到像素，英文字母之间出现空隙。
@@ -293,7 +297,7 @@ function OverlayBlock({
       onMouseLeave={() => onHover(null)}
       onClick={() => onSelect(segment.id)}
     >
-      <div ref={inner}>
+      <div ref={inner} className={indent ? "indent" : undefined}>
         {captionNo && (
           <span className="no">
             <InlineMathText text={captionNo} formulas={{}} fallbackUrl={() => ""} />
