@@ -198,6 +198,56 @@ PDFMathTranslate v1 是它的前身，思路相同但更粗糙：公式靠字体
 
 ---
 
+### 4.6 STranslate 的架构（2026-10-28 补充）
+
+[STranslate](https://github.com/STranslate/STranslate)（8.4k⭐，MIT，C# / WPF）是 Windows 上“即用即走”的翻译 + OCR 小工具：输入、划词、截图、剪贴板监听都能触发翻译。仓库 `src/docs/` 有完整的架构文档，以下据此和源码整理。
+
+**整体：宿主 + 插件 SDK**
+
+```
+STranslate（WPF 宿主）                         STranslate.Plugin（SDK，NuGet 包）
+ ├ PluginManager  扫描插件目录、读 plugin.json、反射加载程序集      ITranslatePlugin  翻译（含回译）
+ ├ ServiceManager 插件 → “服务实例”（每个实例一份独立配置）          IDictionaryPlugin 词典
+ ├ MainWindowViewModel 翻译编排                                   IOcrPlugin        OCR（可声明是否返回坐标框）
+ ├ ImageTranslateWindowViewModel 截图翻译编排                     ITtsPlugin        朗读
+ └ SqlService     SQLite 历史 / 缓存                              IVocabularyPlugin 生词本
+                                                                  ILlm              大模型插件的提示词管理
+Plugins/  Translate.OpenAI / DeepL / Baidu / Youdao / BigModel / Google… ；Ocr.* ；Tts.* ；Vocabulary.*
+```
+
+- 插件是独立程序集，打包成 `.spkg`，有插件市场（下载、升级、卸载需重启生效）。
+- **插件 ≠ 服务**：同一个插件可以“复制”出多个服务实例（如两个不同 base_url/模型的 OpenAI），各有独立配置文件。
+
+**文本翻译链路**
+
+1. 输入防抖 → 创建 `TranslationOperation`（快照文本、语种、取消令牌，带递增操作号）。
+2. **缓存优先**：用 `(原文, 源语言, 目标语言)` 查 SQLite 历史，命中的服务直接出结果。
+3. 语言检测，推导目标语种。
+4. **多服务并发扇出**：所有启用的翻译/词典服务用信号量并发执行，结果并排显示；可选自动回译。
+5. 旧请求被新请求取代后，旧结果不能再覆盖界面、复制或写历史（操作号 + 取消令牌保证）。
+
+**大模型插件**：流式输出；提示词是可编辑的 system/user 模板，变量 `$source`、`$target`、`$content`，内置“翻译 / 润色 / 总结”三套；OpenAI 插件默认 `gpt-4o`、温度 0.7、**不发送任何思考参数**；智谱 BigModel 插件默认 `glm-4-flash`、`Thinking = false`。没有术语表和文档级上下文，每次只翻一段文本。
+
+**截图翻译链路**（与本项目的“去字 + 叠加”思路相同，只是对象是图片）：
+
+1. 截图 → 必须用**能返回坐标框**的 OCR 插件。
+2. 分段（`OcrLayoutAnalyzer`）：优先用 OCR 服务商返回的段落结构；没有就本地 `Smart` 分段，按 Y 坐标恢复视觉行、按列聚合区域、识别表格（多行多列、列边缘重复对齐）后禁止跨行合并。
+3. 每个块并发翻译。
+4. `ImageTranslateTextOverlayLayout` 计算擦除矩形、字号、多行回退和裁剪，生成**矢量文字覆盖层**叠在原图上，原文/译文可切换、可选中复制。
+
+**和本项目的对比与可借鉴之处**
+
+| | STranslate | 本项目 |
+|---|---|---|
+| 翻译单位 | 一段短文本，实时 | 整篇文档，批量 |
+| 引擎用法 | 多引擎同时翻、并排对比 | 一篇文档用一个引擎，控制成本 |
+| 上下文 / 术语 | 无 | 标题、摘要、章节、术语表 |
+| 版式 | 截图：OCR 坐标 + 擦除 + 矢量覆盖 | PDF：字符坐标 + 去字 + HTML 覆盖 + 矢量导出 |
+
+可借鉴：①“插件 / 服务实例”分离，同一适配器可配多套参数；②单段“多引擎对比”可作为精修时的辅助；③操作号 + 取消令牌，防止单段重翻时旧结果覆盖新结果；④缓存键包含服务实例；⑤扫描页 OCR 后的本地分段规则（视觉行恢复、列聚合、表格识别）。
+
+---
+
 ## 5. 结论（对自建项目的启示）
 
 1. **"字符级坐标 + 版面语义"必须同时拿到**：PyMuPDF 给精确坐标和样式，MinerU/Doc2X 给块类型、阅读顺序、公式 LaTeX、表格结构，两者融合才能既保版式又懂结构。
@@ -218,4 +268,5 @@ PDFMathTranslate v1 是它的前身，思路相同但更粗糙：公式靠字体
 - Doc2X：[开放平台](https://open.noedgeai.com) · [API 价格](https://open.noedgeai.com/pricing.html) · [常见问题](https://doc2x.noedgeai.com/help/en/faq/doc2x-common-faq.html) · [积分说明](https://doc2x.noedgeai.com/help/en/faq/doc2x-points.html)
 - MinerU API：[API 管理页](https://mineru.net/apiManage) · [限流说明](https://mineru.net/doc/docs/limit_en)
 - 术语：[GIST 论文](https://arxiv.org/abs/2412.18367) · [GIST 数据集](https://huggingface.co/datasets/Jerry999/multilingual-terminology) · [机器之心 AI 术语库](https://github.com/jiqizhixin/Artificial-Intelligence-Terminology-Database) · [ECDICT](https://github.com/skywind3000/ECDICT) · [Kim et al. 2410.15690](https://arxiv.org/abs/2410.15690v1) · [Retrieval vs Generation 2503.05010](https://arxiv.org/pdf/2503.05010) · [术语在线介绍](https://www.iikx.com/web/scientific/tool/214.html) · [ACL 60-60](https://2022.aclweb.org/dispecialinitiative.html) · [linux.do 沉浸式翻译 AI 专家讨论](https://linux.do/t/517192)
+- STranslate：[GitHub](https://github.com/STranslate/STranslate) · 架构文档 `src/docs/flow-main-translation.md`、`runtime-plugin-service.md`、`flow-image-translation.md`
 - 其他：[marker](https://github.com/datalab-to/marker) · [MDTrans](https://pypi.org/project/mdtrans/) · [PolyglotPDF](https://github.com/DsCodeStudioxhpott/PolyglotPDF) · [PDF 转 Markdown 工具对比](https://jimmysong.io/blog/pdf-to-markdown-open-source-deep-dive/) · [PaddleOCR-VL-1.6 论文](https://arxiv.org/pdf/2606.03264) · [本地 OCR 2026 对比](https://pasqualepillitteri.it/zh/news/25574/zui-jia-ben-di-ocr-pc-fuwuqi) · [PyMuPDF 文档](https://pymupdf.readthedocs.io/en/latest/page.html)
