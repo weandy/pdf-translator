@@ -79,8 +79,10 @@ def test_full_flow(tmp_path: Path):
     assert result.parser_version == "hybrid/3.4.4"
     assert fake.polls == 3
     # 排队、逐页解析的状态都转告给用户
-    assert [m for m, _ in seen][:3] == ["正在上传到 MinerU 云端", "MinerU 排队中（免费额度高峰时可能要等 10 分钟以上）",
-                                       "MinerU 正在解析，第 1/2 页"]  # fmt: skip
+    assert seen[0][0] == "正在上传到 MinerU 云端"
+    # 上传结果（大小、用时、速度）带进后续状态里一直显示
+    assert seen[1][0].startswith("MinerU 排队中（免费额度高峰时可能要等 10 分钟以上）（已上传 0.0 MB，用时")
+    assert seen[2][0].startswith("MinerU 正在解析，第 1/2 页（已上传")
     assert seen[2][1] == 0.5
     assert (tmp_path / "raw" / "mineru.zip").exists()
 

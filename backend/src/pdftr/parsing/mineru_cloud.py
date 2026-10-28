@@ -82,9 +82,17 @@ class MinerUCloudParser:
         ):  # fmt: skip
             on_progress("正在上传到 MinerU 云端")
             batch_id, upload_url = await self._request_upload(api, pdf, pages)
-            r = await self._upload(plain, upload_url, pdf.read_bytes(), on_progress)
+            data = pdf.read_bytes()
+            started = time.monotonic()
+            r = await self._upload(plain, upload_url, data, on_progress)
             _check(r, "上传文件")
-            zip_url = await self._wait(api, batch_id, on_progress)
+            # 走代理时上传往往一两秒就结束，进度来不及看到：把上传结果带进后续的状态里一直显示
+            uploaded = upload_summary(len(data), time.monotonic() - started)
+
+            def with_upload(message: str, fraction: float | None = None) -> None:
+                on_progress(f"{message}（{uploaded}）", fraction)
+
+            zip_url = await self._wait(api, batch_id, with_upload)
             on_progress("正在下载解析结果", 1.0)
             r = await self._send(plain, "GET", zip_url, deadline=300)
             _check(r, "下载解析结果")
@@ -210,6 +218,13 @@ def upload_status(sent: int, total: int, elapsed: float, service: str = "MinerU"
     left = (total - sent) / speed
     eta = f"约 {left:.0f} 秒" if left < 60 else f"约 {left // 60:.0f} 分 {left % 60:.0f} 秒"
     return f"{text}，{rate}，{eta}" if sent < total else f"{text}，{rate}，等待对方确认"
+
+
+def upload_summary(size: int, elapsed: float) -> str:
+    """“已上传 2.1 MB，用时 1.2 秒，1.8 MB/s”。"""
+    speed = size / max(elapsed, 0.001)
+    rate = f"{speed / 1048576:.1f} MB/s" if speed >= 1048576 else f"{speed / 1024:.0f} KB/s"
+    return f"已上传 {size / 1048576:.1f} MB，用时 {elapsed:.1f} 秒，{rate}"
 
 
 def _ignore(message: str, fraction: float | None = None) -> None:
