@@ -1,10 +1,12 @@
 /**
  * pdf.js 封装：加载文档（同一地址只加载一次）、渲染单页到 canvas、统计本地文件页数。
  * useWasm=false：WebAssembly 解码需要额外部署 wasm 文件并放宽 CSP，pdf.js 会退回 JS 实现。
+ * 用 legacy 构建：默认构建直接调用 Promise.try、Map.getOrInsertComputed 等 2025 年后才有的 API，
+ * 稍旧的 Chrome 上整页画不出来（原文页空白、译文页没有图片），legacy 构建自带补丁。
  */
-import * as pdfjs from "pdfjs-dist";
-import type { PDFDocumentProxy } from "pdfjs-dist";
-import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
+import type { PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
+import workerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import { useEffect, useRef, useState } from "react";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -53,26 +55,46 @@ interface CanvasProps {
   scale: number; // CSS 像素 / pt
 }
 
-/** 渲染一页；按设备像素比提高分辨率，缩放变化或卸载时取消上一次渲染。 */
+// 每个 canvas 上正在进行的渲染：pdf.js 的取消是异步的，旧渲染没停下时在同一 canvas 上开始新渲染会直接报错
+const rendering = new WeakMap<HTMLCanvasElement, Promise<unknown>>();
+
+/** 渲染一页；按设备像素比提高分辨率，缩放变化或卸载时取消上一次渲染。失败时显示原因，不留空白。 */
 export function PdfCanvas({ doc, page, scale }: CanvasProps) {
   const ref = useRef<HTMLCanvasElement>(null);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
     let task: ReturnType<pdfjs.PDFPageProxy["render"]> | null = null;
     let alive = true;
-    void doc.getPage(page + 1).then((p) => {
-      const canvas = ref.current;
-      if (!alive || !canvas) return;
-      const ratio = Math.min(window.devicePixelRatio || 1, 2);
-      const viewport = p.getViewport({ scale: scale * ratio });
-      canvas.width = Math.floor(viewport.width);
-      canvas.height = Math.floor(viewport.height);
-      task = p.render({ canvas, viewport });
-      task.promise.catch(() => undefined); // 取消渲染时会 reject，忽略
-    });
+    const run = (rendering.get(canvas) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => (alive ? doc.getPage(page + 1) : null))
+      .then((p) => {
+        if (!alive || !p) return;
+        const ratio = Math.min(window.devicePixelRatio || 1, 2);
+        const viewport = p.getViewport({ scale: scale * ratio });
+        canvas.width = Math.floor(viewport.width);
+        canvas.height = Math.floor(viewport.height);
+        task = p.render({ canvas, viewport });
+        return task.promise;
+      })
+      .then(
+        () => alive && setError(null),
+        (e: unknown) => {
+          if (alive && !(e instanceof pdfjs.RenderingCancelledException)) setError(String(e));
+        },
+      );
+    rendering.set(canvas, run);
     return () => {
       alive = false;
       task?.cancel();
     };
   }, [doc, page, scale]);
-  return <canvas ref={ref} className="pdf-canvas" />;
+  return (
+    <>
+      <canvas ref={ref} className="pdf-canvas" />
+      {error && <p className="pdf-error">这一页没能画出来：{error}。请把浏览器更新到最新版后刷新。</p>}
+    </>
+  );
 }
