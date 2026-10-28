@@ -1,0 +1,1377 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "pdf-translator",
+  "version": "0.1.0"
+ },
+ "paths": {
+  "/api/health": {
+   "get": {
+    "tags": [
+     "meta"
+    ],
+    "summary": "Health",
+    "operationId": "health_api_health_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HealthOut"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/config": {
+   "get": {
+    "tags": [
+     "meta"
+    ],
+    "summary": "Config",
+    "operationId": "config_api_config_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ConfigOut"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/estimate": {
+   "get": {
+    "tags": [
+     "meta"
+    ],
+    "summary": "Estimate",
+    "operationId": "estimate_api_estimate_get",
+    "parameters": [
+     {
+      "name": "pages",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "maximum": 2000,
+       "minimum": 1,
+       "title": "Pages"
+      }
+     },
+     {
+      "name": "quality",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "enum": [
+        "default",
+        "careful"
+       ],
+       "type": "string",
+       "default": "default",
+       "title": "Quality"
+      }
+     },
+     {
+      "name": "model",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Model"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Estimate"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/jobs": {
+   "post": {
+    "tags": [
+     "jobs"
+    ],
+    "summary": "Create Job",
+    "operationId": "create_job_api_jobs_post",
+    "parameters": [
+     {
+      "name": "x-llm-base-url",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Base-Url"
+      }
+     },
+     {
+      "name": "x-llm-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Key"
+      }
+     },
+     {
+      "name": "x-llm-model",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Model"
+      }
+     },
+     {
+      "name": "x-parser-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Parser-Key"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "multipart/form-data": {
+       "schema": {
+        "$ref": "#/components/schemas/Body_create_job_api_jobs_post"
+       }
+      }
+     }
+    },
+    "responses": {
+     "202": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/JobOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "tags": [
+     "jobs"
+    ],
+    "summary": "Recent Jobs",
+    "operationId": "recent_jobs_api_jobs_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/JobOut"
+         },
+         "title": "Response Recent Jobs Api Jobs Get"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/jobs/{job_id}": {
+   "get": {
+    "tags": [
+     "jobs"
+    ],
+    "summary": "Get Job",
+    "operationId": "get_job_api_jobs__job_id__get",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/JobOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/jobs/{job_id}/events": {
+   "get": {
+    "tags": [
+     "jobs"
+    ],
+    "summary": "Job Events",
+    "operationId": "job_events_api_jobs__job_id__events_get",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/jobs/{job_id}/document": {
+   "get": {
+    "tags": [
+     "jobs"
+    ],
+    "summary": "Get Document",
+    "operationId": "get_document_api_jobs__job_id__document_get",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/DocumentOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/jobs/{job_id}/files/{name}": {
+   "get": {
+    "tags": [
+     "jobs"
+    ],
+    "summary": "Get File",
+    "operationId": "get_file_api_jobs__job_id__files__name__get",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     },
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "enum": [
+        "original.pdf",
+        "background.pdf"
+       ],
+       "type": "string",
+       "title": "Name"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/jobs/{job_id}/retry": {
+   "post": {
+    "tags": [
+     "jobs"
+    ],
+    "summary": "Retry Job",
+    "operationId": "retry_job_api_jobs__job_id__retry_post",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     },
+     {
+      "name": "x-llm-base-url",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Base-Url"
+      }
+     },
+     {
+      "name": "x-llm-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Key"
+      }
+     },
+     {
+      "name": "x-llm-model",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Model"
+      }
+     },
+     {
+      "name": "x-parser-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Parser-Key"
+      }
+     }
+    ],
+    "responses": {
+     "202": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/JobOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/segments/{segment_id}": {
+   "patch": {
+    "tags": [
+     "segments"
+    ],
+    "summary": "Edit Segment",
+    "operationId": "edit_segment_api_segments__segment_id__patch",
+    "parameters": [
+     {
+      "name": "segment_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Segment Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/EditIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SegmentOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/segments/{segment_id}/retranslate": {
+   "post": {
+    "tags": [
+     "segments"
+    ],
+    "summary": "Retranslate",
+    "operationId": "retranslate_api_segments__segment_id__retranslate_post",
+    "parameters": [
+     {
+      "name": "segment_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Segment Id"
+      }
+     },
+     {
+      "name": "x-llm-base-url",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Base-Url"
+      }
+     },
+     {
+      "name": "x-llm-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Key"
+      }
+     },
+     {
+      "name": "x-llm-model",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Model"
+      }
+     },
+     {
+      "name": "x-parser-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Parser-Key"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RetranslateIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SegmentOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/segments/{segment_id}/formulas/{key}.png": {
+   "get": {
+    "tags": [
+     "segments"
+    ],
+    "summary": "Formula Png",
+    "operationId": "formula_png_api_segments__segment_id__formulas__key__png_get",
+    "parameters": [
+     {
+      "name": "segment_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Segment Id"
+      }
+     },
+     {
+      "name": "key",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Key"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "schemas": {
+   "BlockOut": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "page": {
+      "type": "integer",
+      "title": "Page"
+     },
+     "type": {
+      "type": "string",
+      "title": "Type"
+     },
+     "bbox": {
+      "$ref": "#/components/schemas/RectOut"
+     },
+     "font_size": {
+      "type": "number",
+      "title": "Font Size"
+     },
+     "bold": {
+      "type": "boolean",
+      "title": "Bold"
+     },
+     "italic": {
+      "type": "boolean",
+      "title": "Italic"
+     },
+     "serif": {
+      "type": "boolean",
+      "title": "Serif"
+     },
+     "color": {
+      "type": "integer",
+      "title": "Color"
+     },
+     "translatable": {
+      "type": "boolean",
+      "title": "Translatable"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "page",
+     "type",
+     "bbox",
+     "font_size",
+     "bold",
+     "italic",
+     "serif",
+     "color",
+     "translatable"
+    ],
+    "title": "BlockOut"
+   },
+   "Body_create_job_api_jobs_post": {
+    "properties": {
+     "file": {
+      "type": "string",
+      "contentMediaType": "application/octet-stream",
+      "title": "File"
+     },
+     "options": {
+      "type": "string",
+      "title": "Options",
+      "default": "{}"
+     }
+    },
+    "type": "object",
+    "required": [
+     "file"
+    ],
+    "title": "Body_create_job_api_jobs_post"
+   },
+   "ConfigOut": {
+    "properties": {
+     "version": {
+      "type": "string",
+      "title": "Version"
+     },
+     "default_base_url": {
+      "type": "string",
+      "title": "Default Base Url"
+     },
+     "default_model": {
+      "type": "string",
+      "title": "Default Model"
+     },
+     "server_has_llm_key": {
+      "type": "boolean",
+      "title": "Server Has Llm Key"
+     },
+     "server_has_parser_token": {
+      "type": "boolean",
+      "title": "Server Has Parser Token"
+     },
+     "max_upload_mb": {
+      "type": "integer",
+      "title": "Max Upload Mb"
+     },
+     "max_pages": {
+      "type": "integer",
+      "title": "Max Pages"
+     },
+     "attributions": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Attributions"
+     }
+    },
+    "type": "object",
+    "required": [
+     "version",
+     "default_base_url",
+     "default_model",
+     "server_has_llm_key",
+     "server_has_parser_token",
+     "max_upload_mb",
+     "max_pages",
+     "attributions"
+    ],
+    "title": "ConfigOut",
+    "description": "前端需要的公开配置（不含任何 Key）。"
+   },
+   "DocumentOut": {
+    "properties": {
+     "job": {
+      "$ref": "#/components/schemas/JobOut"
+     },
+     "title": {
+      "type": "string",
+      "title": "Title"
+     },
+     "pages": {
+      "items": {
+       "$ref": "#/components/schemas/PageOut"
+      },
+      "type": "array",
+      "title": "Pages"
+     },
+     "segments": {
+      "items": {
+       "$ref": "#/components/schemas/SegmentOut"
+      },
+      "type": "array",
+      "title": "Segments"
+     }
+    },
+    "type": "object",
+    "required": [
+     "job",
+     "title",
+     "pages",
+     "segments"
+    ],
+    "title": "DocumentOut"
+   },
+   "EditIn": {
+    "properties": {
+     "target": {
+      "type": "string",
+      "maxLength": 20000,
+      "minLength": 1,
+      "title": "Target"
+     }
+    },
+    "type": "object",
+    "required": [
+     "target"
+    ],
+    "title": "EditIn"
+   },
+   "Estimate": {
+    "properties": {
+     "pages": {
+      "type": "integer",
+      "title": "Pages"
+     },
+     "cny_low": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Cny Low"
+     },
+     "cny_high": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Cny High"
+     },
+     "peak": {
+      "type": "boolean",
+      "title": "Peak"
+     },
+     "minutes": {
+      "type": "number",
+      "title": "Minutes"
+     }
+    },
+    "type": "object",
+    "required": [
+     "pages",
+     "cny_low",
+     "cny_high",
+     "peak",
+     "minutes"
+    ],
+    "title": "Estimate"
+   },
+   "FormulaOut": {
+    "properties": {
+     "latex": {
+      "type": "string",
+      "title": "Latex"
+     },
+     "page": {
+      "type": "integer",
+      "title": "Page"
+     },
+     "bbox": {
+      "$ref": "#/components/schemas/RectOut"
+     }
+    },
+    "type": "object",
+    "required": [
+     "latex",
+     "page",
+     "bbox"
+    ],
+    "title": "FormulaOut"
+   },
+   "HTTPValidationError": {
+    "properties": {
+     "detail": {
+      "items": {
+       "$ref": "#/components/schemas/ValidationError"
+      },
+      "type": "array",
+      "title": "Detail"
+     }
+    },
+    "type": "object",
+    "title": "HTTPValidationError"
+   },
+   "HealthOut": {
+    "properties": {
+     "status": {
+      "type": "string",
+      "title": "Status"
+     },
+     "version": {
+      "type": "string",
+      "title": "Version"
+     },
+     "data_dir_writable": {
+      "type": "boolean",
+      "title": "Data Dir Writable"
+     }
+    },
+    "type": "object",
+    "required": [
+     "status",
+     "version",
+     "data_dir_writable"
+    ],
+    "title": "HealthOut"
+   },
+   "JobOptions": {
+    "properties": {
+     "parser": {
+      "type": "string",
+      "const": "mineru-cloud",
+      "title": "Parser",
+      "default": "mineru-cloud"
+     },
+     "quality": {
+      "type": "string",
+      "enum": [
+       "default",
+       "careful"
+      ],
+      "title": "Quality",
+      "default": "default"
+     },
+     "include_references": {
+      "type": "boolean",
+      "title": "Include References",
+      "default": false
+     },
+     "pages": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "integer"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Pages"
+     },
+     "cloud_consent": {
+      "type": "boolean",
+      "title": "Cloud Consent",
+      "default": false
+     }
+    },
+    "type": "object",
+    "title": "JobOptions"
+   },
+   "JobOut": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "filename": {
+      "type": "string",
+      "title": "Filename"
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "queued",
+       "running",
+       "done",
+       "failed"
+      ],
+      "title": "Status"
+     },
+     "stage": {
+      "type": "string",
+      "title": "Stage"
+     },
+     "progress": {
+      "type": "number",
+      "title": "Progress"
+     },
+     "message": {
+      "type": "string",
+      "title": "Message"
+     },
+     "error": {
+      "type": "string",
+      "title": "Error"
+     },
+     "page_count": {
+      "type": "integer",
+      "title": "Page Count"
+     },
+     "options": {
+      "$ref": "#/components/schemas/JobOptions"
+     },
+     "model": {
+      "type": "string",
+      "title": "Model"
+     },
+     "cost_cny": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Cost Cny"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Created At"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "filename",
+     "status",
+     "stage",
+     "progress",
+     "message",
+     "error",
+     "page_count",
+     "options",
+     "model",
+     "cost_cny",
+     "created_at"
+    ],
+    "title": "JobOut"
+   },
+   "PageOut": {
+    "properties": {
+     "index": {
+      "type": "integer",
+      "title": "Index"
+     },
+     "width": {
+      "type": "number",
+      "title": "Width"
+     },
+     "height": {
+      "type": "number",
+      "title": "Height"
+     },
+     "kind": {
+      "type": "string",
+      "title": "Kind"
+     },
+     "blocks": {
+      "items": {
+       "$ref": "#/components/schemas/BlockOut"
+      },
+      "type": "array",
+      "title": "Blocks"
+     }
+    },
+    "type": "object",
+    "required": [
+     "index",
+     "width",
+     "height",
+     "kind",
+     "blocks"
+    ],
+    "title": "PageOut"
+   },
+   "PartOut": {
+    "properties": {
+     "block_id": {
+      "type": "string",
+      "title": "Block Id"
+     },
+     "chars": {
+      "type": "integer",
+      "title": "Chars"
+     }
+    },
+    "type": "object",
+    "required": [
+     "block_id",
+     "chars"
+    ],
+    "title": "PartOut"
+   },
+   "RectOut": {
+    "properties": {
+     "x0": {
+      "type": "number",
+      "title": "X0"
+     },
+     "y0": {
+      "type": "number",
+      "title": "Y0"
+     },
+     "x1": {
+      "type": "number",
+      "title": "X1"
+     },
+     "y1": {
+      "type": "number",
+      "title": "Y1"
+     }
+    },
+    "type": "object",
+    "required": [
+     "x0",
+     "y0",
+     "x1",
+     "y1"
+    ],
+    "title": "RectOut"
+   },
+   "RetranslateIn": {
+    "properties": {
+     "quality": {
+      "type": "string",
+      "enum": [
+       "default",
+       "careful"
+      ],
+      "title": "Quality",
+      "default": "careful"
+     }
+    },
+    "type": "object",
+    "title": "RetranslateIn"
+   },
+   "SegmentOut": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "block_ids": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Block Ids"
+     },
+     "parts": {
+      "items": {
+       "$ref": "#/components/schemas/PartOut"
+      },
+      "type": "array",
+      "title": "Parts"
+     },
+     "source": {
+      "type": "string",
+      "title": "Source"
+     },
+     "target": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Target"
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "pending",
+       "done",
+       "failed",
+       "edited"
+      ],
+      "title": "Status"
+     },
+     "quality": {
+      "type": "string",
+      "enum": [
+       "default",
+       "careful"
+      ],
+      "title": "Quality"
+     },
+     "formulas": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/FormulaOut"
+      },
+      "type": "object",
+      "title": "Formulas"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "block_ids",
+     "parts",
+     "source",
+     "target",
+     "status",
+     "quality",
+     "formulas"
+    ],
+    "title": "SegmentOut"
+   },
+   "ValidationError": {
+    "properties": {
+     "loc": {
+      "items": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      },
+      "type": "array",
+      "title": "Location"
+     },
+     "msg": {
+      "type": "string",
+      "title": "Message"
+     },
+     "type": {
+      "type": "string",
+      "title": "Error Type"
+     },
+     "input": {
+      "title": "Input"
+     },
+     "ctx": {
+      "type": "object",
+      "title": "Context"
+     }
+    },
+    "type": "object",
+    "required": [
+     "loc",
+     "msg",
+     "type"
+    ],
+    "title": "ValidationError"
+   }
+  }
+ }
+}

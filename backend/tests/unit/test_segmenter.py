@@ -98,3 +98,18 @@ def test_ordinal_formulas_become_text():
     (seg,) = segment(doc)
     assert seg.source == "estimates of the 1st moment and <m1/>"
     assert seg.formulas == {"m1": r"\beta_1"}  # 序数不占公式编号
+
+
+def test_front_matter_between_title_and_abstract_is_kept_original():
+    def at(bid: str, btype: BlockType, text: str, y: float) -> Block:
+        b = _block(bid, 0, btype, [_text(text)])
+        return b.model_copy(update={"bbox": Rect.of([0, y, 100, y + 10])})
+
+    blocks = [
+        at("p0-b0", BlockType.TITLE, "Attention Is All You Need", 50),
+        at("p0-b1", BlockType.TEXT, "Ashish Vaswani Google Brain avaswani@google.com", 100),
+        at("p0-b2", BlockType.TITLE, "Abstract", 200),
+        at("p0-b3", BlockType.TEXT, "The dominant sequence transduction models are based on networks.", 220),
+    ]
+    doc = Document(job_id="0123456789abcdef", pages=[Page(index=0, width=600, height=800, blocks=blocks)])
+    assert [s.block_ids for s in segment(doc)] == [["p0-b0"], ["p0-b2"], ["p0-b3"]]

@@ -73,6 +73,26 @@ def _wanted(block: Block, include_references: bool) -> bool:
     return block.translatable
 
 
+def front_matter_ids(doc: Document) -> set[str]:
+    """首页标题与“Abstract”之间的正文块：作者、单位、邮箱，翻译无益且重排后很挤，保留原文。"""
+    if not doc.pages:
+        return set()
+    blocks = doc.pages[0].blocks
+    abstract = next(
+        (b for b in blocks if b.type is BlockType.TITLE
+         and re.sub(r"[^a-z]", "", block_source(b, {}).lower()) == "abstract"),
+        None,
+    )  # fmt: skip
+    title = next((b for b in blocks if b.type is BlockType.TITLE), None)
+    if abstract is None or title is None or title is abstract:
+        return set()
+    return {
+        b.id
+        for b in blocks
+        if b.type is BlockType.TEXT and title.order < b.order < abstract.order and b.bbox.y1 <= abstract.bbox.y0
+    }
+
+
 def segment(
     doc: Document,
     *,
@@ -81,6 +101,7 @@ def segment(
 ) -> list[Segment]:
     page_set = set(pages) if pages is not None else None
     next_of = {b.continues_from: b for b in doc.blocks() if b.continues_from}
+    skip = front_matter_ids(doc)
     segments: list[Segment] = []
     section = ""
     for block in doc.blocks():
@@ -88,7 +109,7 @@ def segment(
             section = (
                 block_source(block, {f.key: f.key for f in block.formulas if not textual_formula(f.latex)}) or section
             )
-        if block.continues_from or not _wanted(block, include_references):
+        if block.continues_from or block.id in skip or not _wanted(block, include_references):
             continue  # 续接块随链头一起处理
         if page_set is not None and block.page not in page_set:
             continue

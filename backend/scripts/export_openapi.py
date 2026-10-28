@@ -1,7 +1,7 @@
 """导出接口的 OpenAPI 描述，供前端生成类型：
 
-  cd backend && uv run python scripts/export_openapi.py ../frontend/openapi.json
-  cd frontend && npm run gen:api
+cd backend && uv run python scripts/export_openapi.py ../frontend/openapi.json
+cd frontend && npm run gen:api
 """
 
 import json
