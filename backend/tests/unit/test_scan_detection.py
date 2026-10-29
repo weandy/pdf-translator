@@ -37,3 +37,18 @@ def test_scan_font_size_from_block_shape():
     two_lines = block("The specific heats at constant pressure and constant volume are defined by", 24)
     assert 9 <= _size_for_scan(two_lines) <= 10.5
     assert 9 <= _size_for_scan(block("It can be shown that", 12)) <= 10.5
+
+
+def test_body_text_on_scanned_pages_gets_one_size():
+    from pdftr.domain.ir import Block, BlockStyle, Page
+    from pdftr.fusion.build import _even_scan_sizes
+
+    def blk(i: int, size: float, kind: BlockType = BlockType.TEXT) -> Block:
+        box = Rect(x0=0, y0=i * 20, x1=100, y1=i * 20 + 10)
+        return Block(id=f"p0-b{i}", page=0, type=kind, bbox=box, order=i, style=BlockStyle(font_size=size),
+                     translatable=True)  # fmt: skip
+
+    page = Page(index=0, width=600, height=800, kind=PageKind.SCANNED,
+                blocks=[blk(0, 9.6), blk(1, 10.4), blk(2, 8.1), blk(3, 9.7), blk(4, 8.0, BlockType.TITLE)])  # fmt: skip
+    _even_scan_sizes([page])
+    assert [b.style.font_size for b in page.blocks] == [9.65, 9.65, 9.65, 9.65, 8.0]

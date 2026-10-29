@@ -5,6 +5,7 @@
 """
 
 import re
+import statistics
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -87,9 +88,23 @@ def fuse(
             Page(index=cp.index, width=cp.width, height=cp.height, rotation=cp.rotation, kind=cp.kind, blocks=blocks)
         )
 
+    _even_scan_sizes(pages)
     report.pages = len(pages)
     doc = Document(job_id=job_id, pages=pages, meta=_meta(pages, layout.parser, used_cloud))
     return doc, report
+
+
+def _even_scan_sizes(pages: list[Page]) -> None:
+    """扫描页的字号是逐块估的，短块误差大，同一页正文忽大忽小。论文正文字号基本统一，
+    扫描页上的正文块统一用全文正文估计值的中位数（标题、图注、脚注保留各自的估计）。"""
+    body = [b for p in pages if p.kind is PageKind.SCANNED for b in p.blocks if b.type is BlockType.TEXT]
+    if len(body) < 3:
+        return
+    size = round(statistics.median(b.style.font_size for b in body), 2)
+    for b in body:
+        b.style.font_size = size
+        for span in b.spans:
+            span.size = size
 
 
 def _size_from_lines(lb: LayoutBlock) -> float:
