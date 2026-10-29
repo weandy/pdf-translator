@@ -88,112 +88,137 @@ export function SettingsPanel({ onClose }: Props) {
             关闭
           </button>
         </div>
-        <p className="hint">
-          Key 只保存在这个浏览器里。翻译时随请求交给本站后端转发给服务商，后端不保存。不要在公用电脑上保存 Key。
-        </p>
+        <p className="hint">Key 只保存在这个浏览器里，翻译时随请求交给本站转发给服务商，本站不保存。</p>
 
         <section>
-          <h3>翻译服务</h3>
-          <p className="hint">
-            支持 OpenAI 兼容接口（默认 DeepSeek）与 Anthropic 接口（Claude，或 DeepSeek 等提供的兼容地址）。
-          </p>
-          <label className="field">
-            <span>接口协议</span>
-            <select
-              value={protocol}
-              onChange={(e) => {
-                const next = { ...form, protocol: e.target.value as Settings["protocol"] };
-                setForm(next);
-                setCheck(null);
-                void loadModels(next);
-              }}
-            >
-              <option value="openai">OpenAI 兼容（DeepSeek、通义千问、GLM、Ollama 等）</option>
-              <option value="anthropic">Anthropic（Claude）</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>API Key</span>
-            <input
-              type="password"
-              autoComplete="off"
-              value={form.llmKey}
-              onChange={(e) => set("llmKey", e.target.value.trim())}
-              onBlur={() => void loadModels()}
-              placeholder={config?.server_has_llm_key ? "留空则使用本站提供的 Key" : "sk-..."}
-            />
-          </label>
-          <label className="field">
-            <span>接口地址</span>
-            <input
-              value={form.baseUrl}
-              onChange={(e) => set("baseUrl", e.target.value.trim())}
-              onBlur={() => void loadModels()}
-              placeholder={
-                form.protocol && form.protocol !== config?.default_protocol
-                  ? BASE_URLS[protocol]
-                  : (config?.default_base_url ?? BASE_URLS[protocol])
-              }
-            />
-          </label>
-          <label className="field">
-            <span>
-              模型
-              {models.busy && <small className="muted">正在获取模型列表…</small>}
-              {!models.busy && models.list.length > 0 && (
-                <small className="muted">已获取 {models.list.length} 个模型，可直接选择</small>
-              )}
+          <h3>开始使用只需两步</h3>
+          <div className="step">
+            <span className="step-no" aria-hidden="true">
+              1
             </span>
-            <input
-              value={form.model}
-              list="model-options"
-              onChange={(e) => set("model", e.target.value.trim())}
-              onFocus={() => models.list.length === 0 && !models.busy && void loadModels()}
-              placeholder={config?.default_model ?? "deepseek-flash"}
-            />
-            <datalist id="model-options">
-              {models.list.map((m) => (
-                <option key={m} value={m} />
-              ))}
-            </datalist>
-          </label>
-          {models.error && <p className="hint">{models.error}</p>}
-          <div className="check-row">
-            <button type="button" disabled={!canAsk || check === "busy"} onClick={() => void runCheck()}>
-              {check === "busy" ? "测试中…" : "测试连接"}
-            </button>
-            {check && check !== "busy" && (
-              <span className={check.ok ? "check-ok" : "error"} role="status">
-                {check.ok
-                  ? `已连通：${check.model}，用时 ${(check.latency_ms / 1000).toFixed(1)} 秒`
-                  : `连接失败：${check.detail}`}
-              </span>
-            )}
+            <div className="step-body">
+              <label className="field">
+                <span>翻译服务 API Key</span>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={form.llmKey}
+                  onChange={(e) => set("llmKey", e.target.value.trim())}
+                  onBlur={() => {
+                    void loadModels();
+                    if (form.llmKey && form.llmKey !== saved.llmKey) void runCheck(); // 填完自动测试连接
+                  }}
+                  placeholder={config?.server_has_llm_key ? "留空则使用本站提供的 Key" : "sk-..."}
+                />
+              </label>
+              <p className="hint">
+                默认使用 DeepSeek：在{" "}
+                <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer">
+                  DeepSeek 开放平台
+                </a>{" "}
+                创建 API Key，一篇论文约几分钱。
+              </p>
+              <div className="check-row">
+                <button type="button" disabled={!canAsk || check === "busy"} onClick={() => void runCheck()}>
+                  {check === "busy" ? "测试中…" : "测试连接"}
+                </button>
+                {check && check !== "busy" && (
+                  <span className={check.ok ? "check-ok" : "error"} role="status">
+                    {check.ok
+                      ? `已连通：${check.model}，用时 ${(check.latency_ms / 1000).toFixed(1)} 秒`
+                      : `连接失败：${check.detail}`}
+                  </span>
+                )}
+              </div>
+              <details className="more">
+                <summary>用其他翻译服务（接口协议、地址、模型）</summary>
+                <p className="hint">
+                  支持 OpenAI 兼容接口（通义千问、GLM、Ollama 等）与 Anthropic 接口（Claude，或 DeepSeek
+                  等提供的兼容地址）。
+                </p>
+                <label className="field">
+                  <span>接口协议</span>
+                  <select
+                    value={protocol}
+                    onChange={(e) => {
+                      const next = { ...form, protocol: e.target.value as Settings["protocol"] };
+                      setForm(next);
+                      setCheck(null);
+                      void loadModels(next);
+                    }}
+                  >
+                    <option value="openai">OpenAI 兼容（DeepSeek、通义千问、GLM、Ollama 等）</option>
+                    <option value="anthropic">Anthropic（Claude）</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>接口地址</span>
+                  <input
+                    value={form.baseUrl}
+                    onChange={(e) => set("baseUrl", e.target.value.trim())}
+                    onBlur={() => void loadModels()}
+                    placeholder={
+                      form.protocol && form.protocol !== config?.default_protocol
+                        ? BASE_URLS[protocol]
+                        : (config?.default_base_url ?? BASE_URLS[protocol])
+                    }
+                  />
+                </label>
+                <label className="field">
+                  <span>
+                    模型
+                    {models.busy && <small className="muted">正在获取模型列表…</small>}
+                    {!models.busy && models.list.length > 0 && (
+                      <small className="muted">已获取 {models.list.length} 个模型，可直接选择</small>
+                    )}
+                  </span>
+                  <input
+                    value={form.model}
+                    list="model-options"
+                    onChange={(e) => set("model", e.target.value.trim())}
+                    onFocus={() => models.list.length === 0 && !models.busy && void loadModels()}
+                    placeholder={config?.default_model ?? "deepseek-flash"}
+                  />
+                  <datalist id="model-options">
+                    {models.list.map((m) => (
+                      <option key={m} value={m} />
+                    ))}
+                  </datalist>
+                </label>
+                {models.error && <p className="hint">{models.error}</p>}
+              </details>
+            </div>
+          </div>
+          <div className="step">
+            <span className="step-no" aria-hidden="true">
+              2
+            </span>
+            <div className="step-body">
+              <label className="field">
+                <span>MinerU Token（版面解析）</span>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={form.parserKey}
+                  onChange={(e) => set("parserKey", e.target.value.trim())}
+                  placeholder={
+                    config?.server_has_parser_token ? "留空则使用本站提供的 Token" : "在 mineru.net 免费申请"
+                  }
+                />
+              </label>
+              <p className="hint">
+                在{" "}
+                <a href="https://mineru.net/apiManage" target="_blank" rel="noreferrer">
+                  mineru.net
+                </a>{" "}
+                免费申请，每天 1000 页优先额度。
+              </p>
+            </div>
           </div>
         </section>
 
-        <section>
-          <h3>版面解析</h3>
-          <label className="field">
-            <span>MinerU Token</span>
-            <input
-              type="password"
-              autoComplete="off"
-              value={form.parserKey}
-              onChange={(e) => set("parserKey", e.target.value.trim())}
-              placeholder={config?.server_has_parser_token ? "留空则使用本站提供的 Token" : "在 mineru.net 免费申请"}
-            />
-          </label>
-          <p className="hint">
-            在{" "}
-            <a href="https://mineru.net/apiManage" target="_blank" rel="noreferrer">
-              mineru.net
-            </a>{" "}
-            免费申请，每天 1000 页优先额度。
-          </p>
-        </section>
-
-        <section>
+        <details className="group">
+          <summary>翻译偏好</summary>
           <h3>翻译方式</h3>
           <label className="choice">
             <input type="radio" checked={form.quality === "default"} onChange={() => set("quality", "default")} />
@@ -217,20 +242,6 @@ export function SettingsPanel({ onClose }: Props) {
             />
             <span>翻译参考文献</span>
           </label>
-          <label className="choice">
-            <input
-              type="checkbox"
-              checked={form.rememberKeys}
-              onChange={(e) => set("rememberKeys", e.target.checked)}
-            />
-            <span>
-              在这个浏览器里记住 Key
-              <small>不勾选时，关闭页面后需要重新填写。</small>
-            </span>
-          </label>
-        </section>
-
-        <section>
           <h3>双语对照</h3>
           <label className="choice">
             <input
@@ -251,9 +262,26 @@ export function SettingsPanel({ onClose }: Props) {
               <small>阅读器的“对照”模式按这里的设置排列；下载双语 PDF 时两种都可以选。</small>
             </span>
           </label>
-        </section>
+          <h3>Key</h3>
+          <label className="choice">
+            <input
+              type="checkbox"
+              checked={form.rememberKeys}
+              onChange={(e) => set("rememberKeys", e.target.checked)}
+            />
+            <span>
+              在这个浏览器里记住 Key
+              <small>不勾选时，关闭页面后需要重新填写。不要在公用电脑上保存 Key。</small>
+            </span>
+          </label>
+        </details>
 
-        {config && <p className="hint">使用的开源组件：{config.attributions.join("；")}</p>}
+        {config && (
+          <details className="group">
+            <summary>使用的开源组件</summary>
+            <p className="hint">{config.attributions.join("；")}</p>
+          </details>
+        )}
 
         <div className="dialog-actions">
           <button

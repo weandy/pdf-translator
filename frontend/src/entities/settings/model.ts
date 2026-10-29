@@ -19,6 +19,7 @@ export interface Settings {
   includeReferences: boolean;
   translationSide: "left" | "right"; // 双语对照时译文在左边还是右边
   rememberKeys: boolean;
+  cloudConsent: boolean; // 已确认过“文件会上传到 MinerU”：以后默认勾上（可以取消）
 }
 
 const KEY = "pdftr.settings.v1";
@@ -33,6 +34,7 @@ export const DEFAULTS: Settings = {
   includeReferences: false,
   translationSide: "right",
   rememberKeys: true,
+  cloudConsent: false,
 };
 
 let current: Settings = { ...DEFAULTS, ...readJSON<Partial<Settings>>(KEY, {}) };

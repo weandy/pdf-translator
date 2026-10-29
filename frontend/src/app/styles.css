@@ -259,7 +259,7 @@ input[type="radio"] {
 .home {
   max-width: 1120px;
   margin: 0 auto;
-  padding: 56px 24px 80px;
+  padding: 40px 24px 80px;
 }
 .home-hero {
   display: grid;
@@ -307,13 +307,13 @@ input[type="radio"] {
 /* 上传：对开页 */
 .upload {
   display: grid;
-  gap: 16px;
+  gap: 12px;
 }
 .spread {
   position: relative;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  aspect-ratio: 1.42;
+  aspect-ratio: 1.6; /* 选好文件后“开始翻译”在 900 px 高的屏幕上也要完整可见 */
   border-radius: 3px;
   background: var(--paper);
   box-shadow: var(--sheet-shadow);
@@ -1592,4 +1592,59 @@ input[type="radio"] {
 }
 .seen-tag {
   color: var(--pen);
+}
+
+/* 设置面板：两步开始，进阶选项折叠 */
+.step {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 10px;
+}
+.step-no {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--pen);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+.step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.step-body .hint {
+  margin: 0;
+}
+.dialog details.more,
+.dialog details.group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dialog details > summary {
+  color: var(--pen);
+  font-size: 14px;
+  cursor: pointer;
+}
+.dialog details.group {
+  padding-top: 10px;
+  border-top: 1px solid var(--rule);
+}
+.dialog details.group > summary {
+  color: var(--ink);
+  font-weight: 600;
+}
+.dialog details[open] > summary {
+  margin-bottom: 6px;
+}
+.dialog details h3 {
+  margin: 8px 0 0;
+  color: var(--ink-soft);
+  font-size: 13px;
 }

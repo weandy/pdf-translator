@@ -1,11 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState, type DragEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent } from "react";
 import { Link } from "react-router";
 
 import { addHistory, findByHash, type HistoryEntry } from "@/entities/history/model";
 import { rememberJob } from "@/entities/job/model";
 import { termMap } from "@/entities/glossary/model";
-import { useSettings } from "@/entities/settings/model";
+import { getSettings, saveSettings, useSettings } from "@/entities/settings/model";
 import { parsePageRange } from "@/features/upload/pages";
 import { api, type Job } from "@/shared/api/client";
 import { fingerprint } from "@/shared/file/fingerprint";
@@ -61,7 +61,8 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
   });
   const [items, setItems] = useState<Item[]>([]);
   const [rangeText, setRangeText] = useState("");
-  const [consent, setConsent] = useState(false);
+  const consent = settings.cloudConsent; // 勾一次就记在浏览器里，以后默认勾上
+  const setConsent = (v: boolean) => saveSettings({ ...getSettings(), cloudConsent: v });
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -81,6 +82,14 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
     queryFn: () => api.estimate(pages ?? 1, settings.quality, settings.model || undefined),
     enabled: pages !== null && pages > 0,
   });
+
+  const actions = useRef<HTMLDivElement>(null);
+  const ready = items.length > 0 && items.every((it) => it.pages !== null || it.error);
+  const shown = ready && Boolean(estimate);
+  useEffect(() => {
+    // 选好文件后，小屏上“开始翻译”可能在屏幕外：费用预估出来（会把按钮往下推）后滚到能看见的位置
+    if (shown) actions.current?.scrollIntoView({ block: "nearest" });
+  }, [shown]);
 
   const missingKey = config && !settings.llmKey && !config.server_has_llm_key;
   const service = "MinerU";
@@ -372,7 +381,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
       </label>
 
       {error && <p className="error">{error}</p>}
-      <div className="upload-actions">
+      <div className="upload-actions" ref={actions}>
         <button
           type="button"
           className="primary"
