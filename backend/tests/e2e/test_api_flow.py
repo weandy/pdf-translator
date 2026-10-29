@@ -519,3 +519,12 @@ def test_unexpected_errors_name_the_stage(client: TestClient):
     pipeline._glossary = boom
     job = _wait(client, _upload(client).json()["id"])
     assert job["status"] == "failed" and "意外错误（抽取术语）" in job["error"] and "重试" in job["error"]
+
+
+def test_translate_selected_pages_only(client: TestClient):
+    job = _wait(client, _upload(client, options={"cloud_consent": True, "pages": [1]}).json()["id"])
+    assert job["status"] == "done" and job["options"]["pages"] == [1]
+    segs = client.get(f"/api/jobs/{job['id']}/document").json()["segments"]
+    assert segs and all(all(b.startswith("p1-") for b in s["block_ids"]) for s in segs)  # 只有第 2 页
+    bad = _upload(client, options={"cloud_consent": True, "pages": [5]})
+    assert bad.status_code == 400 and "共 2 页" in bad.json()["detail"]

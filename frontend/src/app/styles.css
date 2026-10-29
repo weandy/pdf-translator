@@ -1428,3 +1428,6 @@ input[type="radio"] {
   display: flex;
   gap: 8px;
 }
+.page-range small {
+  font-size: 12px;
+}

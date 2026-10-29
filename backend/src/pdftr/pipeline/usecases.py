@@ -87,6 +87,10 @@ def create_job(
             raise UserError(str(e)) from e
     if pages > limits.max_pages:
         raise UserError(f"PDF 共 {pages} 页，超过上限 {limits.max_pages} 页")
+    if options.pages is not None:  # 只翻部分页（0 起页码）：版面仍解析全文，翻译阶段按页筛选
+        if not options.pages or any(not 0 <= p < pages for p in options.pages):
+            raise UserError(f"页码范围不对：这份 PDF 共 {pages} 页")
+        options = options.model_copy(update={"pages": sorted(set(options.pages))})
 
     deps = pipeline.deps
     job = Job(id=new_job_id(), filename=Path(filename).name[:200] or "document.pdf", page_count=pages,

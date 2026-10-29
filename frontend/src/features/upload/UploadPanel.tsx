@@ -4,6 +4,7 @@ import { useState, type DragEvent } from "react";
 import { rememberJob } from "@/entities/job/model";
 import { termMap } from "@/entities/glossary/model";
 import { useSettings } from "@/entities/settings/model";
+import { parsePageRange } from "@/features/upload/pages";
 import { api, type Job } from "@/shared/api/client";
 
 interface Props {
@@ -49,6 +50,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
     queryFn: api.config,
   });
   const [items, setItems] = useState<Item[]>([]);
+  const [rangeText, setRangeText] = useState("");
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -56,8 +58,12 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
 
   const usable = items.filter((it) => !it.error);
   const counted = usable.every((it) => it.pages !== null);
-  const pages = items.length && counted ? usable.reduce((n, it) => n + (it.pages ?? 0), 0) : null;
   const file = items.length === 1 ? items[0] : null;
+  // 只选一个文件时可以只翻部分页（版面仍解析全文，翻译与费用按所选页数）
+  const range = file && file.pages !== null && !file.error ? parsePageRange(rangeText, file.pages) : null;
+  const rangeError = range && !Array.isArray(range) ? range.error : null;
+  const selected = Array.isArray(range) ? range : null;
+  const pages = items.length && counted ? (selected?.length ?? usable.reduce((n, it) => n + (it.pages ?? 0), 0)) : null;
 
   const { data: estimate } = useQuery({
     queryKey: ["estimate", pages, settings.quality, settings.model],
@@ -82,6 +88,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
         : config && f.size > config.max_upload_mb * 1024 * 1024
           ? `超过 ${config.max_upload_mb} MB`
           : null;
+    setRangeText("");
     setItems(chosen.map((f) => ({ file: f, pages: null, error: check(f), state: "ready" })));
     const { countPages } = await import("@/shared/pdf/pdf"); // pdf.js 较大，选了文件才加载
     await Promise.all(
@@ -115,6 +122,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
       user_terms: termMap(),
       quality: settings.quality,
       include_references: settings.includeReferences,
+      ...(items.length === 1 && selected ? { pages: selected } : {}),
     };
     const created: Job[] = [];
     // 最多同时上传 PARALLEL_UPLOADS 个；某个失败（如服务器排队已满）只标在那个文件上
@@ -241,6 +249,22 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
         </ul>
       )}
       {items.length > 1 && <p className="hint">几篇同时解析，翻译一篇接一篇进行；完成后在下方“我的任务”里打开。</p>}
+      {file && file.pages !== null && !file.error && (
+        <label className="field page-range">
+          <span>页码范围（可选）</span>
+          <input
+            value={rangeText}
+            onChange={(e) => setRangeText(e.target.value)}
+            placeholder={`如 1-10, 15；留空翻译全部 ${file.pages} 页`}
+            aria-invalid={Boolean(rangeError)}
+          />
+          {rangeError ? (
+            <small className="error">{rangeError}</small>
+          ) : selected ? (
+            <small className="muted">只翻译这 {selected.length} 页，其余页保持原文</small>
+          ) : null}
+        </label>
+      )}
       {file?.error && (
         <p className="error">
           {file.file.name}：{file.error}
@@ -280,7 +304,9 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
         <button
           type="button"
           className="primary"
-          disabled={!usable.length || !counted || !consent || busy || Boolean(missingKey || missingToken)}
+          disabled={
+            !usable.length || !counted || !consent || busy || Boolean(rangeError) || Boolean(missingKey || missingToken)
+          }
           onClick={() => void submit()}
         >
           {busy
