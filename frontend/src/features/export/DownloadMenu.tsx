@@ -26,7 +26,9 @@ export function DownloadMenu({ jobId }: { jobId: string }) {
   return (
     <div className="download" ref={root}>
       <button type="button" className="primary" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
-        下载<span className="wide-only"> PDF</span>
+        <span>
+          下载<span className="wide-only"> PDF</span>
+        </span>
       </button>
       {open && (
         <div className="download-menu" role="menu">

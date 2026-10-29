@@ -252,7 +252,9 @@ export function ReaderView({
           aria-pressed={tips}
           onClick={() => setTips((v) => !v)}
         >
-          <span className="wide-only">使用</span>说明
+          <span>
+            <span className="wide-only">使用</span>说明
+          </span>
         </button>
         {actions}
       </div>
