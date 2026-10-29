@@ -166,3 +166,23 @@ def test_add_cost_prices_each_request_at_its_own_time(monkeypatch):
     total = cost.add_cost(total, "deepseek-flash", usage)
     assert total == 1.0 + 2.0
     assert cost.add_cost(None, "unknown-model", usage) is None
+
+
+def test_final_round_is_time_boxed_and_reported():
+    class StuckWhenThinking(FakeChat):
+        """前几轮丢占位符；最后一轮（开思考）一直不返回。"""
+
+        async def complete(self, system, user, opts):
+            if opts.thinking != "off":
+                await asyncio.sleep(10)
+            r = await super().complete(system, user, opts)
+            return ChatResult(text=re.sub(r"<m\d+/>", "", r.text), usage=r.usage)
+
+    notes: list[str] = []
+    segs = [_seg(0, "Hard <m1/> one.", {"m1": "x"}), _seg(1, "Easy sentence.")]
+    out, report = asyncio.run(
+        translate(segs, chat=StuckWhenThinking(), cache=DictCache(), ctx=DocContext(),
+                  opts=TranslateOptions(final_round_timeout_s=0.05), on_progress=lambda d, t, n: notes.append(n))
+    )  # fmt: skip
+    assert out[0].status is SegmentStatus.FAILED and out[1].status is SegmentStatus.DONE  # 超时的段落标灰，其余照常
+    assert report.failed == 1 and "还有 1 段较难，正在开思考重翻" in notes

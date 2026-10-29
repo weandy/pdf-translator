@@ -296,8 +296,9 @@ class Pipeline:
         chat = self.deps.chat_factory(secrets)
         matcher = await asyncio.to_thread(self.deps.term_matcher)
 
-        def progress(done: int, total: int) -> None:
-            self._update(job, progress=done / total if total else 1.0, message=f"翻译中 {done}/{total}")
+        def progress(done: int, total: int, note: str = "") -> None:
+            message = f"翻译中 {done}/{total}" + (f"，{note}" if note else "")
+            self._update(job, progress=done / total if total else 1.0, message=message)
 
         out, report = await translate(
             segs, chat=chat, cache=self.deps.cache, ctx=load_context(self.deps, job.id, job.options.user_terms),

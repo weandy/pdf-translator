@@ -23,7 +23,7 @@ from pdftr.translation.prompt import PROMPT_VERSION, DocContext, expand_formulas
 
 Quality = Literal["default", "careful"]
 TermLookup = Callable[[str], dict[str, str]]
-Progress = Callable[[int, int], None]
+Progress = Callable[[int, int, str], None]  # （已完成, 总数, 补充说明；平常为空）
 
 
 def default_concurrency(base_url: str) -> int:
@@ -42,6 +42,7 @@ class TranslateOptions(BaseModel):
     concurrency: int = 4
     batch_tokens: int = BATCH_TOKENS
     max_retries: int = 2
+    final_round_timeout_s: float = 90  # 最后一轮逐段思考重翻的每段时限：超时按失败处理，不拖住整篇任务
     use_cache: bool = True  # 单段“重翻”时为 False：用户要的是另一个译文
 
 
@@ -117,6 +118,7 @@ async def translate(
     system = system_prompt(ctx)
     chat_opts = ChatOptions(thinking="low" if o.quality == "careful" else "off")
     sem = asyncio.Semaphore(o.concurrency)
+    note = ""  # 进度的补充说明（最后一轮时提示还剩几段难段落）
 
     async def run(batch: list[_Unit], opts_: ChatOptions) -> list[_Unit]:
         """翻译一批，返回不合格、需要重试的单元。"""
@@ -144,7 +146,7 @@ async def translate(
             else:
                 retry.append(u)
         if on_progress:
-            on_progress(done, total_units)
+            on_progress(done, total_units, note)
         return retry
 
     async def run_all(units: list[_Unit], opts_: ChatOptions) -> list[_Unit]:
@@ -163,7 +165,17 @@ async def translate(
             failed = await run_all(failed, chat_opts)
         else:
             thinking = ChatOptions(thinking="low")
-            failed = [u for r in await asyncio.gather(*(run([u], thinking) for u in failed)) for u in r]
+            note = f"还有 {len(failed)} 段较难，正在开思考重翻"
+            if on_progress:
+                on_progress(done, total_units, note)
+
+            async def final(u: _Unit, opts_: ChatOptions = thinking) -> list[_Unit]:
+                try:
+                    return await asyncio.wait_for(run([u], opts_), o.final_round_timeout_s)
+                except TimeoutError:
+                    return [u]  # 超时：这段标为失败，用户可在阅读器里点灰色段落重翻
+
+            failed = [u for r in await asyncio.gather(*(final(u) for u in failed)) for u in r]
     for u in failed:
         for i in u.seg_indexes:
             out[i].status = SegmentStatus.FAILED

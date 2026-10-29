@@ -78,7 +78,7 @@ async def _translate_async(args: argparse.Namespace) -> None:
 
     ctx = DocContext(title=doc.meta.title, abstract=doc.meta.abstract, domain=found.domain, terms=terms)
     cache = SqliteTranslationCache(settings.data_dir / "app.db")
-    progress = lambda done, total: print(f"\r翻译 {done}/{total}", end="", flush=True)  # noqa: E731
+    progress = lambda done, total, note="": print(f"\r翻译 {done}/{total} {note}", end="", flush=True)  # noqa: E731
     out, report = await translate(
         segments, chat=chat, cache=cache, ctx=ctx, lookup_terms=matcher.match,
         opts=TranslateOptions(quality=args.quality), on_progress=progress,
