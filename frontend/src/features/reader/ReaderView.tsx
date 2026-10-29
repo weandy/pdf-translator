@@ -74,6 +74,8 @@ export function ReaderView({
   const [zoom, setZoom] = useState<number | null>(null); // null = 自适应宽度
   const [width, setWidth] = useState(1200);
   const [hovered, setHovered] = useState<string | null>(null);
+  const [flash, setFlash] = useState<string | null>(null); // 刚跳到的标题段落：原文与译文上短暂高亮
+  const flashTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [showOutline, setShowOutline] = useState(() => window.innerWidth >= 1280 && doc.outline.length > 0);
   const [current, setCurrent] = useState(0); // 当前页（0 起）
   const [pageDraft, setPageDraft] = useState<string | null>(null); // 正在输入的页码
@@ -121,7 +123,7 @@ export function ReaderView({
       const row = el?.querySelector<HTMLElement>(`.page-row[data-page="${page}"]`);
       if (!el || !row) return;
       const offset = row.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
-      el.scrollTo({ top: Math.max(offset + top * scale - 24, 0), behavior: smooth ? "smooth" : "auto" });
+      el.scrollTo({ top: Math.max(offset + top * scale - 56, 0), behavior: smooth ? "smooth" : "auto" });
     },
     [scale],
   );
@@ -162,6 +164,9 @@ export function ReaderView({
   const goOutline = (item: OutlineData) => {
     setPicked(doc.outline.indexOf(item));
     goTo(item.page, item.top);
+    clearTimeout(flashTimer.current);
+    setFlash(item.segment_id ?? null);
+    flashTimer.current = setTimeout(() => setFlash(null), 2400);
     if (window.innerWidth < NARROW) setShowOutline(false); // 手机上点完收起
   };
 
@@ -260,6 +265,7 @@ export function ReaderView({
               background={background.doc}
               texts={texts}
               hovered={hovered}
+              flash={flash}
               selected={selectedSegment}
               fontsVersion={fontsVersion}
               side={side}
@@ -284,6 +290,7 @@ interface RowProps {
   background: PDFDocumentProxy | null;
   texts: Map<string, BlockText>;
   hovered: string | null;
+  flash: string | null;
   selected: string | null;
   fontsVersion: number;
   side: "left" | "right";
@@ -365,6 +372,7 @@ function PageRow({
   background,
   texts,
   hovered,
+  flash,
   selected,
   fontsVersion,
   side,
@@ -377,7 +385,8 @@ function PageRow({
   const [ref, near] = useNearViewport<HTMLDivElement>();
   const size = { width: page.width * scale, height: page.height * scale };
   const blocks = page.blocks.filter((b) => texts.has(b.id));
-  const mark = (segId: string) => (segId === selected ? " selected" : segId === hovered ? " hovered" : "");
+  const mark = (segId: string) =>
+    (segId === selected ? " selected" : segId === hovered ? " hovered" : "") + (segId === flash ? " flash" : "");
 
   return (
     <div

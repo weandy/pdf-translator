@@ -54,3 +54,14 @@ def test_without_bookmarks_titles_are_levelled_by_numbering(tmp_path: Path):
         ("Abstract", 1, 0), ("3. Method", 1, 1), ("3.1. Model", 2, 1), ("A.2 Proofs", 2, 2)
     ]  # fmt: skip
     assert items[1].top == 140 and items[1].translated == "译:3. Method"
+
+
+def test_bookmark_that_does_not_match_text_falls_back_to_nearest_heading(tmp_path: Path):
+    doc = pymupdf.open()
+    doc.new_page(width=600, height=800)
+    doc.set_toc([[1, "Overview", 1, {"kind": pymupdf.LINK_GOTO, "page": 0, "to": pymupdf.Point(50, 800 - 118)}]])
+    pdf = tmp_path / "y.pdf"
+    doc.save(pdf)
+    d, segs = _doc([(0, "Paper Title"), (0, "1 Introduction and Motivation")])  # 书签文字与标题对不上
+    (item,) = build_outline(pdf, d, segs)
+    assert item.segment_id == "s1" and abs(item.top - 118) < 1

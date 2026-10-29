@@ -252,6 +252,9 @@ def build_outline(pdf: Path, doc: Document, segments: list[Segment]) -> list[Out
         for item in items:  # 书签标题常不带编号：在同页附近的标题里找文字包含它的
             key = _norm(item.title)
             match = next((h for h in heads if key and key in _norm(h[2]) and abs(h[0].page - item.page) <= 1), None)
+            if match is None:  # 文字对不上（如书签是缩写）：同一页离书签位置最近的标题，上下 60 点内
+                near = [h for h in heads if h[0].page == item.page and abs(h[0].bbox.y0 - item.top) <= 60]
+                match = min(near, key=lambda h: abs(h[0].bbox.y0 - item.top), default=None)
             if match:
                 item.translated, item.segment_id = translated(match[1]), match[1].id if match[1] else None
         return items
