@@ -1435,3 +1435,135 @@ input[type="radio"] {
   gap: 12px;
   align-items: center;
 }
+
+/* 手机：顶栏不折行，工具栏紧凑，段落编辑与修改记录从底部弹出（docs/04-ux-round-1.md §1） */
+.topbar a,
+.topbar button {
+  white-space: nowrap;
+}
+@media (max-width: 640px) {
+  .wordmark-prefix,
+  .topbar-source {
+    display: none;
+  }
+  .topbar {
+    gap: 4px;
+  }
+  .toolbar {
+    gap: 6px 8px;
+    padding: 6px 10px;
+  }
+  .doc-heading {
+    flex-basis: 100%;
+  }
+  .doc-heading .doc-title {
+    font-size: 15px;
+  }
+  .doc-meta {
+    font-size: 12px;
+  }
+  .toolbar button,
+  .toolbar .button {
+    min-height: 30px;
+    padding: 2px 8px;
+    font-size: 13px;
+  }
+  .toolbar .segmented button {
+    min-height: 26px;
+    padding: 0 8px;
+  }
+  .toolbar .back {
+    display: none;
+  }
+  .editor {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 20;
+    width: auto;
+    max-height: 72vh;
+    border-top: 1px solid var(--rule);
+    border-radius: 12px 12px 0 0;
+    box-shadow: 0 -8px 24px rgb(0 0 0 / 0.18);
+  }
+  .editor .panes {
+    height: 34vh;
+    min-height: 200px;
+  }
+}
+
+/* 阅读视图：按阅读顺序排成正常字号的文字流（手机默认） */
+.flow {
+  max-width: 40em;
+  margin: 0 auto;
+  padding: 8px 4px 48px;
+  color: var(--ink);
+  font-family: "Pdftr Times", "Times New Roman", serif;
+  font-size: 17px;
+  line-height: 1.8;
+}
+.flow .zh {
+  font-family: "Pdftr Song", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", SimSun, serif;
+}
+.flow p,
+.flow h3 {
+  margin: 0 0 0.9em;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.flow-body {
+  text-align: justify;
+  text-indent: 2em;
+}
+.flow h3 {
+  margin-top: 1.2em;
+  font-size: 1.12em;
+  font-weight: 700;
+  line-height: 1.5;
+}
+.flow h3 .zh {
+  font-family: "Pdftr Hei", "Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", SimHei, sans-serif;
+}
+.flow-caption {
+  color: var(--ink-soft);
+  font-size: 0.88em;
+}
+.flow .untranslated {
+  color: var(--ink-soft);
+}
+.flow .selected {
+  background: var(--pencil-strong);
+}
+.flow-page {
+  margin: 1.6em 0 0.8em;
+  color: var(--ink-soft);
+  font-family: var(--sans);
+  font-size: 12px;
+  text-align: center;
+  cursor: default;
+}
+.flow-figure {
+  display: block;
+  max-width: 100%;
+  margin: 0.4em auto 1em;
+  background: var(--paper);
+}
+.flow-formula {
+  margin: 0.4em 0 1em;
+  overflow-x: auto;
+}
+.zoom[hidden] {
+  display: none;
+}
+@media (max-width: 380px) {
+  .toolbar {
+    gap: 6px 6px;
+  }
+  .toolbar button,
+  .toolbar .button,
+  .toolbar .segmented button {
+    padding: 0 6px;
+  }
+}

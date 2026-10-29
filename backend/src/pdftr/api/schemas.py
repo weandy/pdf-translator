@@ -70,6 +70,7 @@ class BlockOut(BaseModel):
     serif: bool
     color: int
     translatable: bool
+    latex: str | None = None  # 独立公式的 LaTeX（阅读视图里用 KaTeX 显示）
 
 
 class PageOut(BaseModel):
@@ -151,7 +152,8 @@ class DocumentOut(BaseModel):
                 blocks=[
                     BlockOut(id=b.id, page=b.page, type=b.type.value, bbox=RectOut(**b.bbox.model_dump()),
                              font_size=b.style.font_size, bold=b.style.bold, italic=b.style.italic,
-                             serif=b.style.serif, color=b.style.color, translatable=b.translatable)
+                             serif=b.style.serif, color=b.style.color, translatable=b.translatable,
+                             latex=b.latex)
                     for b in p.blocks
                 ],
             )

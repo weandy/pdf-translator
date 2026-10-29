@@ -110,6 +110,7 @@ export type ExportMode = "mono" | "dual";
 export const exportUrl = (jobId: string, mode: ExportMode, side: "left" | "right" = "right") =>
   `/api/jobs/${jobId}/export?mode=${mode}${mode === "dual" ? `&side=${side}` : ""}`;
 export const formulaUrl = (segmentId: string, key: string) => `/api/segments/${segmentId}/formulas/${key}.png`;
+export const blockImageUrl = (jobId: string, blockId: string) => `/api/jobs/${jobId}/blocks/${blockId}.png`;
 
 /** 订阅任务进度（SSE）。返回取消订阅函数。 */
 export function subscribeJob(id: string, onJob: (job: Job) => void, onError?: () => void): () => void {

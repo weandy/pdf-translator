@@ -16,7 +16,9 @@ import { splitCaptionNo } from "@/shared/text/script";
 import { dropFakeScripts, spaceCjkLatin, wantsIndent } from "@/shared/text/typeset";
 import { PdfCanvas, usePdf } from "@/shared/pdf/pdf";
 
-export type ViewMode = "both" | "translated" | "original";
+import { ReadingView } from "./ReadingView";
+
+export type ViewMode = "both" | "translated" | "original" | "reading";
 
 interface Props {
   doc: DocumentData;
@@ -34,6 +36,7 @@ interface Props {
 
 const PADDING = 48; // .pages 左右内边距之和
 const SPINE = 2; // 对照模式两页之间的装订线
+const NARROW = 760; // 视口窄于这个宽度时默认只显示译文
 
 export function ReaderView({
   doc,
@@ -45,14 +48,16 @@ export function ReaderView({
   side = "right",
   revealKey = 0,
 }: Props) {
-  const [mode, setMode] = useState<ViewMode>("both");
+  // 窄屏（手机）上整页缩到屏幕宽，正文只剩 4–5 像素，默认用阅读视图；用户切换后以用户的选择为准
+  const [mode, setMode] = useState<ViewMode>(() => (window.innerWidth < NARROW ? "reading" : "both"));
   const [zoom, setZoom] = useState<number | null>(null); // null = 自适应宽度
   const [width, setWidth] = useState(1200);
   const [hovered, setHovered] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
 
-  const original = usePdf(mode !== "translated" ? fileUrl(jobId, "original.pdf") : null);
-  const background = usePdf(mode !== "original" ? fileUrl(jobId, "background.pdf") : null);
+  // 阅读视图不用 PDF：手机上省流量、省内存
+  const original = usePdf(mode === "both" || mode === "original" ? fileUrl(jobId, "original.pdf") : null);
+  const background = usePdf(mode === "both" || mode === "translated" ? fileUrl(jobId, "background.pdf") : null);
   const texts = useMemo(() => blockTexts(doc), [doc]);
   // 链接：原文页上全部按原位置；译文页上，译文块外的按原位置，块内的落在译文文字上
   const { byPage, byBlock } = useMemo(() => groupLinks(doc.links), [doc.links]);
@@ -103,6 +108,7 @@ export function ReaderView({
               ["both", "对照"],
               ["translated", "译文"],
               ["original", "原文"],
+              ["reading", "阅读"],
             ] as const
           ).map(([m, label]) => (
             <button
@@ -116,7 +122,7 @@ export function ReaderView({
             </button>
           ))}
         </div>
-        <div className="zoom" role="group" aria-label="缩放">
+        <div className="zoom" role="group" aria-label="缩放" hidden={mode === "reading"}>
           <button
             type="button"
             className="quiet"
@@ -138,26 +144,30 @@ export function ReaderView({
         {(original.error || background.error) && (
           <p className="error">PDF 加载失败：{original.error ?? background.error}</p>
         )}
-        {doc.pages.map((page) => (
-          <PageRow
-            key={page.index}
-            page={page}
-            scale={scale}
-            mode={mode}
-            original={original.doc}
-            background={background.doc}
-            texts={texts}
-            hovered={hovered}
-            selected={selectedSegment}
-            fontsVersion={fontsVersion}
-            side={side}
-            onHover={setHovered}
-            onSelect={onSelectSegment}
-            pageLinks={byPage.get(page.index)}
-            blockLinks={byBlock}
-            onJump={jump}
-          />
-        ))}
+        {mode === "reading" ? (
+          <ReadingView doc={doc} jobId={jobId} selected={selectedSegment} onSelect={onSelectSegment} />
+        ) : (
+          doc.pages.map((page) => (
+            <PageRow
+              key={page.index}
+              page={page}
+              scale={scale}
+              mode={mode}
+              original={original.doc}
+              background={background.doc}
+              texts={texts}
+              hovered={hovered}
+              selected={selectedSegment}
+              fontsVersion={fontsVersion}
+              side={side}
+              onHover={setHovered}
+              onSelect={onSelectSegment}
+              pageLinks={byPage.get(page.index)}
+              blockLinks={byBlock}
+              onJump={jump}
+            />
+          ))
+        )}
       </div>
     </div>
   );

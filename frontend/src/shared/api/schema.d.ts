@@ -235,6 +235,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/{job_id}/blocks/{block_id}.png": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Block Png
+         * @description 图、表、独立公式按原文位置裁成的图片（阅读视图用）。
+         */
+        get: operations["block_png_api_jobs__job_id__blocks__block_id__png_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/{job_id}/revisions": {
         parameters: {
             query?: never;
@@ -388,6 +408,8 @@ export interface components {
             color: number;
             /** Translatable */
             translatable: boolean;
+            /** Latex */
+            latex?: string | null;
         };
         /** Body_create_job_api_jobs_post */
         Body_create_job_api_jobs_post: {
@@ -1213,6 +1235,38 @@ export interface operations {
             header?: never;
             path: {
                 job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    block_png_api_jobs__job_id__blocks__block_id__png_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                block_id: string;
             };
             cookie?: never;
         };

@@ -33,10 +33,12 @@ function Layout() {
             <span>A</span>
             <span>文</span>
           </span>
-          PDF 保版式翻译
+          <span>
+            <span className="wordmark-prefix">PDF </span>保版式翻译
+          </span>
         </Link>
         <span className="spacer" />
-        <a href="https://github.com/weandy/pdf-translator" target="_blank" rel="noreferrer">
+        <a className="topbar-source" href="https://github.com/weandy/pdf-translator" target="_blank" rel="noreferrer">
           源代码
         </a>
         <button type="button" className="quiet" onClick={() => setGlossaryOpen(true)}>

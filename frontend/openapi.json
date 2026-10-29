@@ -1000,6 +1000,56 @@
     }
    }
   },
+  "/api/jobs/{job_id}/blocks/{block_id}.png": {
+   "get": {
+    "tags": [
+     "jobs"
+    ],
+    "summary": "Block Png",
+    "description": "图、表、独立公式按原文位置裁成的图片（阅读视图用）。",
+    "operationId": "block_png_api_jobs__job_id__blocks__block_id__png_get",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     },
+     {
+      "name": "block_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Block Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/jobs/{job_id}/revisions": {
    "get": {
     "tags": [
@@ -1571,6 +1621,17 @@
      "translatable": {
       "type": "boolean",
       "title": "Translatable"
+     },
+     "latex": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Latex"
      }
     },
     "type": "object",

@@ -11,17 +11,18 @@ import { parseRich, tokenize, type RichNode } from "@/shared/text/split";
 
 const cache = new Map<string, string | null>();
 
-/** 返回 KaTeX 生成的 HTML；LaTeX 有误时返回 null。 */
-export function renderLatex(latex: string): string | null {
-  const hit = cache.get(latex);
+/** 返回 KaTeX 生成的 HTML；LaTeX 有误时返回 null。display 为独立公式（居中、大号）。 */
+export function renderLatex(latex: string, display = false): string | null {
+  const key = display ? `D:${latex}` : latex;
+  const hit = cache.get(key);
   if (hit !== undefined) return hit;
   let html: string | null;
   try {
-    html = katex.renderToString(latex, { throwOnError: true, displayMode: false, output: "html", strict: "ignore" });
+    html = katex.renderToString(latex, { throwOnError: true, displayMode: display, output: "html", strict: "ignore" });
   } catch {
     html = null;
   }
-  cache.set(latex, html);
+  cache.set(key, html);
   return html;
 }
 
