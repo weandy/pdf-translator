@@ -27,15 +27,19 @@ export function TermsPanel({ jobId, doc, onChange, onSpot, onMark, onClose }: Pr
   const rows = useMemo(() => termRows(uses ?? [], mine, doc.segments), [uses, mine, doc.segments]);
   const [query, setQuery] = useState("");
   const [onlyMismatch, setOnlyMismatch] = useState(false);
+  // 公共词库按单词匹配，常见词（如 instance、cost）也会命中，默认只看本文抽取的和我的术语
+  const [withLibrary, setWithLibrary] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
 
   const q = query.trim().toLowerCase();
-  const shown = rows.filter(
+  const libraryCount = rows.filter((r) => r.origin === "library").length;
+  const pool = withLibrary ? rows : rows.filter((r) => r.origin !== "library");
+  const shown = pool.filter(
     (r) =>
       (!onlyMismatch || r.mismatchedIds.length > 0) &&
       (!q || r.source.toLowerCase().includes(q) || r.target.toLowerCase().includes(q)),
   );
-  const mismatchTerms = rows.filter((r) => r.mismatchedIds.length > 0).length;
+  const mismatchTerms = pool.filter((r) => r.mismatchedIds.length > 0).length;
 
   const toggle = (row: TermRow) => {
     const next = open === row.source ? null : row.source;
@@ -48,7 +52,7 @@ export function TermsPanel({ jobId, doc, onChange, onSpot, onMark, onClose }: Pr
     <aside className="editor terms-panel" aria-label="本文术语">
       <header>
         <strong>本文术语</strong>
-        {uses && <span className="muted num">{rows.length} 个</span>}
+        {uses && <span className="muted num">{pool.length} 个</span>}
         <span className="spacer" />
         <button
           type="button"
@@ -74,10 +78,20 @@ export function TermsPanel({ jobId, doc, onChange, onSpot, onMark, onClose }: Pr
           <input type="checkbox" checked={onlyMismatch} onChange={(e) => setOnlyMismatch(e.target.checked)} />
           只看可能不一致（{mismatchTerms}）
         </label>
+        {libraryCount > 0 && (
+          <label className="choice-inline">
+            <input type="checkbox" checked={withLibrary} onChange={(e) => setWithLibrary(e.target.checked)} />
+            包含公共词库（{libraryCount}）
+          </label>
+        )}
       </div>
       {error && <p className="error">{String(error)}</p>}
       {!uses && !error && <p className="muted">正在查找…</p>}
-      {uses && rows.length === 0 && <p className="muted">这篇没有用到术语库里的术语。</p>}
+      {uses && pool.length === 0 && (
+        <p className="muted">
+          {rows.length === 0 ? "这篇没有用到术语库里的术语。" : "本文没有抽取到术语，勾选“包含公共词库”查看词库匹配。"}
+        </p>
+      )}
       <ul className="terms-list">
         {shown.map((row) => (
           <li key={row.source} className={open === row.source ? "open" : ""}>
