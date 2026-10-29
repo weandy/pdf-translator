@@ -18,6 +18,7 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
   const queryClient = useQueryClient();
   const { data: jobs } = useMyJobs();
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const remove = async (id: string, filename: string) => {
     if (!window.confirm(`删除“${filename}”的原文与译文？删除后无法恢复。`)) return;
@@ -59,7 +60,14 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
             </li>
           </ul>
         </div>
-        <UploadPanel onCreated={(job) => void navigate(`/jobs/${job.id}`)} onNeedSettings={openSettings} />
+        <UploadPanel
+          onCreated={(job) => void navigate(`/jobs/${job.id}`)}
+          onBatchCreated={(count) => {
+            setNotice(`已加入 ${count} 篇，进度见下方“我的任务”。`);
+            void queryClient.invalidateQueries({ queryKey: MY_JOBS_QUERY });
+          }}
+          onNeedSettings={openSettings}
+        />
       </div>
 
       {jobs && jobs.length > 0 && (
@@ -69,14 +77,18 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
             <span className="hint">只显示在这个浏览器里上传的论文</span>
           </div>
           {error && <p className="error">{error}</p>}
+          {notice && <p className="check-ok">{notice}</p>}
           <ul className="job-list">
             {jobs.map((j) => (
               <li key={j.id} className="job-item">
                 <Link to={`/jobs/${j.id}`} className="name" title={j.filename}>
                   {j.filename}
                 </Link>
-                <span className={`status ${j.status}`}>
+                <span className={`status ${j.status}`} title={j.message || undefined}>
                   {j.status === "running" ? (STAGE_LABELS[j.stage] ?? STATUS.running) : STATUS[j.status]}
+                  {(j.status === "running" || j.status === "queued") && j.message && (
+                    <small className="job-message">{j.message}</small>
+                  )}
                 </span>
                 <span className="facts-cell num">
                   {j.page_count} 页{j.cost_cny !== null && `，¥${j.cost_cny.toFixed(3)}`}

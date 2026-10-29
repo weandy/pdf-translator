@@ -7,8 +7,19 @@ import { PARSER_NAMES, useSettings } from "@/entities/settings/model";
 import { api, type Job } from "@/shared/api/client";
 
 interface Props {
-  onCreated: (job: Job) => void;
+  onCreated: (job: Job) => void; // 只上传一个文件时：进入这个任务
+  onBatchCreated: (count: number) => void; // 一次上传多个文件时：留在首页看列表
   onNeedSettings: () => void;
+}
+
+const MAX_BATCH = 10; // 一次最多选几个文件
+const PARALLEL_UPLOADS = 4; // 同时上传几个
+
+interface Item {
+  file: File;
+  pages: number | null;
+  error: string | null;
+  state: "ready" | "uploading" | "done";
 }
 
 /** 对开页里的版面示意：标题、正文、公式。左页英文、右页中文（中文行用蓝铅笔色）。 */
@@ -31,23 +42,27 @@ function SketchPage({ lang }: { lang: "en" | "zh" }) {
   );
 }
 
-export function UploadPanel({ onCreated, onNeedSettings }: Props) {
+export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props) {
   const settings = useSettings();
   const { data: config } = useQuery({
     queryKey: ["config"],
     queryFn: api.config,
   });
-  const [file, setFile] = useState<File | null>(null);
-  const [pages, setPages] = useState<number | null>(null);
+  const [items, setItems] = useState<Item[]>([]);
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const usable = items.filter((it) => !it.error);
+  const counted = usable.every((it) => it.pages !== null);
+  const pages = items.length && counted ? usable.reduce((n, it) => n + (it.pages ?? 0), 0) : null;
+  const file = items.length === 1 ? items[0] : null;
+
   const { data: estimate } = useQuery({
     queryKey: ["estimate", pages, settings.quality, settings.model],
     queryFn: () => api.estimate(pages ?? 1, settings.quality, settings.model || undefined),
-    enabled: pages !== null,
+    enabled: pages !== null && pages > 0,
   });
 
   const missingKey = config && !settings.llmKey && !config.server_has_llm_key;
@@ -57,56 +72,80 @@ export function UploadPanel({ onCreated, onNeedSettings }: Props) {
     (settings.parser === "paddleocr-vl"
       ? !settings.paddleKey && !config.server_has_paddle_token
       : !settings.parserKey && !config.server_has_parser_token);
-  const tooManyPages = config && pages !== null && pages > config.max_pages;
+  const update = (f: File, patch: Partial<Item>) =>
+    setItems((list) => list.map((it) => (it.file === f ? { ...it, ...patch } : it)));
 
-  const pick = async (f: File | undefined) => {
+  const pick = async (picked: File[]) => {
     setError(null);
-    setPages(null);
-    if (!f) return;
-    if (f.type && f.type !== "application/pdf") {
-      setError("只支持 PDF 文件");
-      return;
-    }
-    if (config && f.size > config.max_upload_mb * 1024 * 1024) {
-      setError(`文件超过 ${config.max_upload_mb} MB`);
-      return;
-    }
-    setFile(f);
-    try {
-      const { countPages } = await import("@/shared/pdf/pdf"); // pdf.js 较大，选了文件才加载
-      setPages(await countPages(f));
-    } catch {
-      setError("无法打开文件，请确认是有效的 PDF");
-    }
+    if (!picked.length) return;
+    if (picked.length > MAX_BATCH) setError(`一次最多上传 ${MAX_BATCH} 个文件，只取前 ${MAX_BATCH} 个`);
+    const chosen = picked.slice(0, MAX_BATCH);
+    const check = (f: File) =>
+      f.type && f.type !== "application/pdf"
+        ? "只支持 PDF 文件"
+        : config && f.size > config.max_upload_mb * 1024 * 1024
+          ? `超过 ${config.max_upload_mb} MB`
+          : null;
+    setItems(chosen.map((f) => ({ file: f, pages: null, error: check(f), state: "ready" })));
+    const { countPages } = await import("@/shared/pdf/pdf"); // pdf.js 较大，选了文件才加载
+    await Promise.all(
+      chosen
+        .filter((f) => !check(f))
+        .map(async (f) => {
+          try {
+            const n = await countPages(f);
+            const over = config && n > config.max_pages ? `共 ${n} 页，超过上限 ${config.max_pages} 页` : null;
+            update(f, { pages: n, error: over });
+          } catch {
+            update(f, { error: "无法打开，请确认是有效的 PDF" });
+          }
+        }),
+    );
   };
 
   const onDrop = (e: DragEvent) => {
     e.preventDefault();
     setDragging(false);
-    void pick(e.dataTransfer.files[0]);
+    void pick([...e.dataTransfer.files]);
   };
 
   const submit = async () => {
-    if (!file) return;
+    const queue = items.filter((it) => !it.error && it.state === "ready");
+    if (!queue.length) return;
     setBusy(true);
     setError(null);
-    try {
-      const job = await api.createJob(file, {
-        cloud_consent: consent,
-        parser: settings.parser,
-        user_terms: termMap(),
-        quality: settings.quality,
-        include_references: settings.includeReferences,
-        translate_figures: settings.translateFigures,
-      });
-      rememberJob(job.id);
-      onCreated(job);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
+    const options = {
+      cloud_consent: consent,
+      parser: settings.parser,
+      user_terms: termMap(),
+      quality: settings.quality,
+      include_references: settings.includeReferences,
+      translate_figures: settings.translateFigures,
+    };
+    const created: Job[] = [];
+    // 最多同时上传 PARALLEL_UPLOADS 个；某个失败（如服务器排队已满）只标在那个文件上
+    const worker = async () => {
+      for (let it = queue.shift(); it; it = queue.shift()) {
+        update(it.file, { state: "uploading" });
+        try {
+          const job = await api.createJob(it.file, options);
+          rememberJob(job.id);
+          created.push(job);
+          update(it.file, { state: "done" });
+        } catch (e) {
+          update(it.file, { state: "ready", error: e instanceof Error ? e.message : String(e) });
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: PARALLEL_UPLOADS }, worker));
+    setBusy(false);
+    if (items.length === 1 && created[0]) onCreated(created[0]);
+    else if (created.length) {
+      onBatchCreated(created.length);
+      setItems((list) => list.filter((it) => it.state !== "done")); // 留下没传成功的，方便重试
     }
   };
+  const uploading = items.filter((it) => it.state !== "ready").length;
 
   const cost =
     estimate &&
@@ -128,21 +167,32 @@ export function UploadPanel({ onCreated, onNeedSettings }: Props) {
         <input
           type="file"
           accept="application/pdf"
+          multiple
           className="visually-hidden"
-          onChange={(e) => void pick(e.target.files?.[0])}
+          onChange={(e) => {
+            void pick([...(e.target.files ?? [])]);
+            e.target.value = ""; // 允许再次选择同一个文件
+          }}
         />
         <SketchPage lang="en" />
         <SketchPage lang="zh" />
         <span className="spread-label">
           {file ? (
             <>
-              <span className="file-name">{file.name}</span>
-              <span>{pages === null ? "正在读取页数…" : `${pages} 页，点击可换一个文件`}</span>
+              <span className="file-name">{file.file.name}</span>
+              <span>
+                {file.error ?? (file.pages === null ? "正在读取页数…" : `${file.pages} 页，点击可换一个文件`)}
+              </span>
+            </>
+          ) : items.length > 1 ? (
+            <>
+              <span className="file-name">{items.length} 个文件</span>
+              <span>{pages === null ? "正在读取页数…" : `共 ${pages} 页，点击可重新选择`}</span>
             </>
           ) : (
             <>
               <strong>选择英文论文 PDF</strong>
-              <span>或拖到这里</span>
+              <span>或拖到这里，一次可以选多个</span>
             </>
           )}
         </span>
@@ -165,9 +215,41 @@ export function UploadPanel({ onCreated, onNeedSettings }: Props) {
           {estimate.peak && <p className="hint">现在是 DeepSeek 高峰时段，价格翻倍。</p>}
         </dl>
       )}
-      {tooManyPages && (
+      {items.length > 1 && (
+        <ul className="batch-list" aria-label="待上传的文件">
+          {items.map((it) => (
+            <li key={`${it.file.name}:${it.file.size}:${it.file.lastModified}`}>
+              <span className="file-name" title={it.file.name}>
+                {it.file.name}
+              </span>
+              <span className={it.error ? "error" : "muted num"}>
+                {it.error ??
+                  (it.state === "uploading"
+                    ? "上传中…"
+                    : it.state === "done"
+                      ? "已加入"
+                      : it.pages === null
+                        ? "读取中…"
+                        : `${it.pages} 页`)}
+              </span>
+              {it.state === "ready" && !busy && (
+                <button
+                  type="button"
+                  className="quiet"
+                  aria-label={`移除 ${it.file.name}`}
+                  onClick={() => setItems((list) => list.filter((x) => x !== it))}
+                >
+                  移除
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {items.length > 1 && <p className="hint">几篇同时解析，翻译一篇接一篇进行；完成后在下方“我的任务”里打开。</p>}
+      {file?.error && (
         <p className="error">
-          这份 PDF 共 {pages} 页，超过上限 {config.max_pages} 页。
+          {file.file.name}：{file.error}
         </p>
       )}
 
@@ -204,10 +286,14 @@ export function UploadPanel({ onCreated, onNeedSettings }: Props) {
         <button
           type="button"
           className="primary"
-          disabled={!file || pages === null || !consent || busy || tooManyPages || Boolean(missingKey || missingToken)}
+          disabled={!usable.length || !counted || !consent || busy || Boolean(missingKey || missingToken)}
           onClick={() => void submit()}
         >
-          {busy ? "正在上传…" : "开始翻译"}
+          {busy
+            ? `正在上传…${items.length > 1 ? ` ${uploading}/${items.length}` : ""}`
+            : usable.length > 1
+              ? `开始翻译 ${usable.length} 篇`
+              : "开始翻译"}
         </button>
       </div>
     </section>

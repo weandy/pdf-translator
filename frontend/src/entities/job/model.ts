@@ -75,6 +75,11 @@ export function useMyJobs() {
       ids.forEach((id, i) => jobs[i] === null && forgetJob(id));
       return jobs.filter((j): j is Job => j !== null);
     },
+    // 有任务在排队或进行时每 3 秒刷新一次（批量上传后留在首页看进度）
+    refetchInterval: (q) =>
+      q.state.data?.some((j) => j.status === "queued" || j.status === "running")
+        ? 3000
+        : false,
   });
 }
 

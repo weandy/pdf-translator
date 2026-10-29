@@ -1376,3 +1376,33 @@ input[type="radio"] {
 .tblock .ref-link:hover {
   text-decoration: underline;
 }
+
+/* 批量上传 */
+.batch-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+  font-size: 14px;
+}
+.batch-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+}
+.batch-list .file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.job-message {
+  display: block;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 400;
+}

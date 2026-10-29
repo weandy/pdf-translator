@@ -7,7 +7,8 @@
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -50,7 +51,8 @@ class PipelineDeps:
     parser_factory: ParserFactory
     chat_factory: ChatFactory
     term_matcher: MatcherLoader
-    max_concurrent_jobs: int = 2
+    max_concurrent_jobs: int = 4  # 同时上传、解析的任务数（主要在等云端，不占本机资源）
+    max_concurrent_translations: int = 1  # 同时翻译的任务数：一篇接一篇，每篇内部并发请求翻译服务
     font_dir: Path | None = None  # 导出 PDF 用的字体目录
     llm_concurrency: int = 0  # 0 = 按服务商自动选择（translation.service.default_concurrency）
 
@@ -83,10 +85,46 @@ def load_context(deps: PipelineDeps, job_id: str, user_terms: dict[str, str] | N
                       terms=override(g.get("terms", {}), user_terms or {}))  # fmt: skip
 
 
+class Slots:
+    """有名额限制的一类阶段：先到先得；排队的任务显示自己排在第几位，队伍前进时更新。"""
+
+    def __init__(self, size: int, waiting: Callable[[int], str]) -> None:
+        self._sem = asyncio.Semaphore(size)
+        self._queue: list[Job] = []
+        self._waiting = waiting  # 排在第 n 位时显示的说明
+
+    @asynccontextmanager
+    async def hold(self, job: Job, notify: Callable[[Job, str], None]) -> AsyncIterator[None]:
+        if self._sem.locked():
+            self._queue.append(job)
+            self._refresh(notify)
+            try:
+                await self._sem.acquire()
+            finally:
+                self._queue.remove(job)
+                self._refresh(notify)
+        else:
+            await self._sem.acquire()
+        try:
+            yield
+        finally:
+            self._sem.release()
+
+    def _refresh(self, notify: Callable[[Job, str], None]) -> None:
+        for n, job in enumerate(self._queue, start=1):
+            notify(job, self._waiting(n))
+
+
 class Pipeline:
     def __init__(self, deps: PipelineDeps) -> None:
         self.deps = deps
-        self._sem = asyncio.Semaphore(deps.max_concurrent_jobs)
+        # 解析可以几篇同时进行；对齐与生成背景页用 PyMuPDF，耗内存，一次一篇（每篇只要一两秒）；
+        # 术语抽取与翻译一篇接一篇，每篇内部并发请求翻译服务（DeepSeek 默认 4 路）
+        parse = Slots(deps.max_concurrent_jobs, lambda n: f"排队等待解析，排在第 {n} 位")
+        local = Slots(1, lambda n: f"排队等待处理，前面还有 {n} 篇")
+        llm = Slots(deps.max_concurrent_translations, lambda n: f"等待翻译，前面还有 {n} 篇")
+        self._slots = {"parse": parse, "fuse": local, "segment": local, "glossary": llm, "translate": llm,
+                       "render": local}  # fmt: skip
         self._tasks: dict[str, asyncio.Task[None]] = {}
 
     # ---- 调度 ----
@@ -130,16 +168,25 @@ class Pipeline:
         if job is None or secrets is None:
             return
         try:
-            async with self._sem:
-                self._update(job, status=JobStatus.RUNNING, error="")
-                start = STAGES.index(job.stage) if job.stage in STAGES else len(STAGES)
-                for stage in STAGES[start:]:
-                    # 生成背景页只要一两秒，保留翻译阶段的总结（“已翻译 N 段”），完成后显示的就是它
-                    message = job.message if stage == "render" else STAGE_MESSAGES[stage]
-                    self._update(job, stage=stage, progress=0.0, message=message,
-                                 stage_started_at=datetime.now(UTC))  # fmt: skip
-                    await getattr(self, f"_{stage}")(job, secrets)
-                self._update(job, status=JobStatus.DONE, stage="done", progress=1.0)
+            start = STAGES.index(job.stage) if job.stage in STAGES else len(STAGES)
+            todo = list(STAGES[start:])
+            while todo:
+                # 连续几个阶段属于同一类名额时一次拿下（术语抽取与翻译之间不让别的任务插队）
+                slots = self._slots[todo[0]]
+                n = next((i for i, s in enumerate(todo) if self._slots[s] is not slots), len(todo))
+                group, todo = todo[:n], todo[n:]
+                summary = job.message  # 排队说明会覆盖消息，先记下翻译阶段的总结
+                self._update(job, stage=group[0], progress=0.0)
+                async with slots.hold(job, lambda j, msg: self._update(j, message=msg)):
+                    if job.status is not JobStatus.RUNNING:
+                        self._update(job, status=JobStatus.RUNNING, error="")
+                    for stage in group:
+                        # 生成背景页只要一两秒，保留翻译阶段的总结（“已翻译 N 段”），完成后显示的就是它
+                        message = summary if stage == "render" else STAGE_MESSAGES[stage]
+                        self._update(job, stage=stage, progress=0.0, message=message,
+                                     stage_started_at=datetime.now(UTC))  # fmt: skip
+                        await getattr(self, f"_{stage}")(job, secrets)
+            self._update(job, status=JobStatus.DONE, stage="done", progress=1.0)
         except (ParseError, ChatError, StageError) as e:
             self._update(job, status=JobStatus.FAILED, error=str(e))
         except Exception:

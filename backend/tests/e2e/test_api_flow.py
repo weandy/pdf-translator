@@ -3,6 +3,7 @@
 解析服务和大模型用假实现（不访问网络），PDF 按合成夹具的坐标现场生成。
 """
 
+import asyncio
 import json
 import re
 import time
@@ -397,3 +398,34 @@ def test_links_survive_translation(client: TestClient):
         # 两半各一个，跳转目标落在同一半
         assert sorted(x["from"].x0 >= 600 for x in jumps) == [False, True]
         assert all((x["from"].x0 >= 600) == (x["to"].x >= 600) for x in jumps)
+
+
+def test_batch_parses_in_parallel_and_translates_one_by_one(client: TestClient):
+    pipeline = client.app.state.container.pipeline  # type: ignore[attr-defined]
+    active = {"parse": 0, "translate": 0}
+    peak = {"parse": 0, "translate": 0}
+    messages: list[str] = []
+
+    def track(stage: str, original):
+        async def wrapped(job, secrets):
+            active[stage] += 1
+            peak[stage] = max(peak[stage], active[stage])
+            await asyncio.sleep(0.3)  # 让几篇任务在这一阶段重叠
+            try:
+                return await original(job, secrets)
+            finally:
+                active[stage] -= 1
+
+        return wrapped
+
+    pipeline._parse = track("parse", pipeline._parse)
+    pipeline._translate = track("translate", pipeline._translate)
+    publish = pipeline.deps.events.publish
+    pipeline.deps.events.publish = lambda job: (messages.append(job.message), publish(job))[1]
+
+    ids = [_upload(client).json()["id"] for _ in range(3)]
+    jobs = [_wait(client, i) for i in ids]
+    assert all(j["status"] == "done" for j in jobs)
+    assert peak["parse"] >= 2 and peak["translate"] == 1  # 解析同时进行，翻译一篇接一篇
+    assert any(m.startswith("等待翻译，前面还有") for m in messages)
+    assert all(j["message"].startswith("已翻译") for j in jobs)  # 排队说明不会留成最终消息

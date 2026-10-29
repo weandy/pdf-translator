@@ -26,7 +26,8 @@ class Settings(BaseSettings):
     paddle_proxy: str = ""  # 发往 PaddleOCR 的代理（可选，写法同 PDFTR_MINERU_PROXY）
 
     llm_concurrency: int = 0  # 每个任务同时发给翻译服务的请求数；0 = 按服务商自动（DeepSeek 4、本机模型 1、其他 2）
-    max_concurrent_jobs: int = 2
+    max_concurrent_jobs: int = 4  # 同时上传、解析的任务数
+    max_concurrent_translations: int = 1  # 同时翻译的任务数（一篇接一篇；每篇内部的并发见 llm_concurrency）
     shutdown_grace_s: float = 180  # 服务停止（如部署新版本）时等待进行中的任务完成的最长时间
     max_queued_jobs: int = 10  # 排队中的任务超过这个数时拒绝新上传
     retention_days: int = 7  # 任务文件与译文缓存保留天数，0 表示不自动清理
