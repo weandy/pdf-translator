@@ -28,11 +28,11 @@ _SECURITY_HEADERS = {
 }
 
 
-async def _purge_periodically(c: Container, interval_s: float = 3600) -> None:
-    """启动时和之后每小时清理一次过期任务。"""
+async def _purge_periodically(c: Container, interval_s: float = 600) -> None:
+    """启动时和之后每 10 分钟清理一次到期任务（保留期只有 24 小时，按小时清理会多留近一小时）。"""
     while True:
         try:
-            await asyncio.to_thread(purge_expired, c.pipeline, c.settings.retention_days)
+            await asyncio.to_thread(purge_expired, c.pipeline, c.settings.retention_hours)
         except Exception:
             log.exception("清理过期任务失败")
         await asyncio.sleep(interval_s)

@@ -27,11 +27,11 @@ class SqliteTranslationCache:
             self._db.execute("INSERT OR REPLACE INTO translation_cache (key, target) VALUES (?, ?)", (key, target))
             self._db.commit()
 
-    def purge_older_than(self, days: int) -> int:
+    def purge_older_than(self, hours: int) -> int:
         """删除超过保留期的译文（其中含有用户文档内容），返回删除条数。"""
         with self._lock:
             n = self._db.execute(
-                "DELETE FROM translation_cache WHERE created_at < datetime('now', ?)", (f"-{days} days",)
+                "DELETE FROM translation_cache WHERE created_at < datetime('now', ?)", (f"-{hours} hours",)
             ).rowcount
             self._db.commit()
         return n

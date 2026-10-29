@@ -69,10 +69,10 @@ class SqliteStore:
             self._db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
             self._db.commit()
 
-    def jobs_created_before(self, cutoff: datetime) -> list[str]:
+    def all_jobs(self) -> list[Job]:
         with self._lock:
-            rows = self._db.execute("SELECT id FROM jobs WHERE created_at < ?", (cutoff.isoformat(),)).fetchall()
-        return [r[0] for r in rows]
+            rows = self._db.execute("SELECT data FROM jobs").fetchall()
+        return [Job.model_validate_json(r[0]) for r in rows]
 
     def jobs_with_status(self, status: JobStatus) -> list[Job]:
         with self._lock:

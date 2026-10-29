@@ -51,6 +51,7 @@ class Limits(BaseModel):
     max_active_jobs: int = 1_000_000
     min_free_disk_mb: int = 0
     data_dir: Path = Path(".")
+    retention_hours: int = 0  # 0 = 不自动删除
 
 
 PARSER_NAMES = {"mineru-cloud": "MinerU", "paddleocr-vl": "PaddleOCR"}
@@ -93,8 +94,9 @@ def create_job(
         options = options.model_copy(update={"pages": sorted(set(options.pages))})
 
     deps = pipeline.deps
+    expires = datetime.now(UTC) + timedelta(hours=limits.retention_hours) if limits.retention_hours > 0 else None
     job = Job(id=new_job_id(), filename=Path(filename).name[:200] or "document.pdf", page_count=pages,
-              options=options, model=secrets.llm_model)  # fmt: skip
+              options=options, model=secrets.llm_model, expires_at=expires)  # fmt: skip
     deps.artifacts.path(job.id, "original.pdf").write_bytes(data)
     deps.store.save_job(job)
     pipeline.submit(job, secrets)
@@ -117,19 +119,26 @@ def delete_job(pipeline: Pipeline, job_id: str) -> None:
     pipeline.deps.artifacts.remove(job_id)
 
 
-def purge_expired(pipeline: Pipeline, retention_days: int, now: datetime | None = None) -> int:
-    """删除超过保留期的任务（跳过进行中的）与译文缓存，返回删除的任务数。"""
-    if retention_days <= 0:
+def purge_expired(pipeline: Pipeline, retention_hours: int, now: datetime | None = None) -> int:
+    """删除已到期的任务（跳过进行中的）与超过保留期的译文缓存，返回删除的任务数。
+
+    没有到期时间的旧任务（保留期改为 24 小时之前创建的）不立即删除：从现在起再给一个保留期，留出下载时间。
+    """
+    if retention_hours <= 0:
         return 0
-    cutoff = (now or datetime.now(UTC)) - timedelta(days=retention_days)
+    now = now or datetime.now(UTC)
     removed = 0
-    for job_id in pipeline.deps.store.jobs_created_before(cutoff):
-        if pipeline.is_running(job_id):
+    for job in pipeline.deps.store.all_jobs():
+        if job.expires_at is None:
+            job.expires_at = now + timedelta(hours=retention_hours)
+            pipeline.deps.store.save_job(job)
             continue
-        pipeline.deps.store.delete_job(job_id)
-        pipeline.deps.artifacts.remove(job_id)
+        if job.expires_at > now or pipeline.is_running(job.id):
+            continue
+        pipeline.deps.store.delete_job(job.id)
+        pipeline.deps.artifacts.remove(job.id)
         removed += 1
-    cached = pipeline.deps.cache.purge_older_than(retention_days)
+    cached = pipeline.deps.cache.purge_older_than(retention_hours)
     if removed or cached:
         log.info("已清理过期任务 %d 个、译文缓存 %d 条", removed, cached)
     return removed

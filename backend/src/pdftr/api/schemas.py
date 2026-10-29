@@ -28,7 +28,7 @@ class ConfigOut(BaseModel):
     server_has_paddle_token: bool
     max_upload_mb: int
     max_pages: int
-    retention_days: int
+    retention_hours: int
     attributions: list[str]
 
 
@@ -46,6 +46,7 @@ class JobOut(BaseModel):
     cost_cny: float | None
     created_at: datetime
     stage_started_at: datetime | None
+    expires_at: datetime | None  # 到期后服务器自动删除；None 表示不自动删除
 
     @classmethod
     def of(cls, job: Job) -> "JobOut":

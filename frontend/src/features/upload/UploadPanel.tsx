@@ -289,8 +289,8 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
       <p className="notice">
         文件会上传到 {service} 云端解析版面，正文会发给你设置的翻译服务，请不要上传涉密或未公开的文档。
         {config &&
-          config.retention_days > 0 &&
-          `文件在本站保留 ${config.retention_days} 天后自动删除，也可以随时手动删除。`}
+          config.retention_hours > 0 &&
+          `原文与译文在服务器上只保留 ${config.retention_hours} 小时，之后自动删除，请及时下载。`}
         版面解析在高峰时可能要排队 10 分钟以上。
       </p>
 

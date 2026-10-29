@@ -48,5 +48,6 @@ class Job(BaseModel):
     model: str = ""
     cost_cny: float | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    expires_at: datetime | None = None  # 到期后自动删除（文件与译文）；None 表示不自动删除
     stage_started_at: datetime | None = None  # 当前阶段开始时间，前端据此显示“已等待多久”
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

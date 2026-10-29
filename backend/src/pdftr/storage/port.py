@@ -1,6 +1,5 @@
 """存储端口：任务工件文件、任务与段落。翻译缓存的端口由 translation 定义，这里按结构实现。"""
 
-from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -23,7 +22,7 @@ class JobStore(Protocol):
 
     def delete_job(self, job_id: str) -> None: ...
 
-    def jobs_created_before(self, cutoff: datetime) -> list[str]: ...
+    def all_jobs(self) -> list[Job]: ...
 
     def jobs_with_status(self, status: JobStatus) -> list[Job]: ...
 

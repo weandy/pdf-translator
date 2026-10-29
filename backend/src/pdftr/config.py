@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     max_concurrent_translations: int = 1  # 同时翻译的任务数（一篇接一篇；每篇内部的并发见 llm_concurrency）
     shutdown_grace_s: float = 180  # 服务停止（如部署新版本）时等待进行中的任务完成的最长时间
     max_queued_jobs: int = 10  # 排队中的任务超过这个数时拒绝新上传
-    retention_days: int = 7  # 任务文件与译文缓存保留天数，0 表示不自动清理
+    retention_hours: int = 24  # 任务文件与译文缓存在服务器上保留的小时数，0 表示不自动删除
     min_free_disk_mb: int = 1024  # 磁盘剩余空间低于此值时拒绝新上传
     # 论文术语库来源，逗号分隔，排在前面的优先；首次使用时下载（见 glossary/sources.py）。
     # 机器之心术语库（aitd）为 CC BY-NC-SA 4.0，不可商用：商业部署请去掉 aitd；留空则不用术语库

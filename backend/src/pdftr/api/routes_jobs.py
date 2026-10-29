@@ -45,6 +45,7 @@ async def create_job(
         max_active_jobs=settings.max_concurrent_jobs + settings.max_queued_jobs,
         min_free_disk_mb=settings.min_free_disk_mb,
         data_dir=settings.data_dir,
+        retention_hours=settings.retention_hours,
     )
     job = usecases.create_job(p, data, file.filename or "document.pdf", opts, sec, limits)
     return JobOut.of(job)

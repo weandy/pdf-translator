@@ -480,8 +480,8 @@ export interface components {
             max_upload_mb: number;
             /** Max Pages */
             max_pages: number;
-            /** Retention Days */
-            retention_days: number;
+            /** Retention Hours */
+            retention_hours: number;
             /** Attributions */
             attributions: string[];
         };
@@ -612,6 +612,8 @@ export interface components {
             created_at: string;
             /** Stage Started At */
             stage_started_at: string | null;
+            /** Expires At */
+            expires_at: string | null;
         };
         /**
          * LinkOut

@@ -6,6 +6,7 @@ import { deleteJob, MY_JOBS_QUERY, STAGE_LABELS, useMyJobs } from "@/entities/jo
 import { UploadPanel } from "@/features/upload/UploadPanel";
 import { api, exportUrl } from "@/shared/api/client";
 import { APP_TITLE, notify } from "@/shared/attention/attention";
+import { expiresSoon, formatRemaining } from "@/shared/time/elapsed";
 
 const STATUS: Record<string, string> = {
   queued: "排队中",
@@ -109,6 +110,11 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
                   {j.status === "running" ? (STAGE_LABELS[j.stage] ?? STATUS.running) : STATUS[j.status]}
                   {(j.status === "running" || j.status === "queued") && j.message && (
                     <small className="job-message">{j.message}</small>
+                  )}
+                  {j.status !== "running" && j.status !== "queued" && j.expires_at && (
+                    <small className={`job-message${expiresSoon(j.expires_at) ? " expiring" : ""}`}>
+                      服务器保留{formatRemaining(j.expires_at)}
+                    </small>
                   )}
                 </span>
                 <span className="facts-cell num">

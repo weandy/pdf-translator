@@ -15,6 +15,7 @@ import { RevisionList } from "@/features/revisions/RevisionList";
 import { SegmentEditor } from "@/features/segment-edit/SegmentEditor";
 import { api, type DocumentData, type Job, type Revision, type SegmentData } from "@/shared/api/client";
 import { APP_TITLE, notify, useVisible } from "@/shared/attention/attention";
+import { expiresSoon, formatRemaining } from "@/shared/time/elapsed";
 
 export function JobPage() {
   const { id = "" } = useParams();
@@ -76,6 +77,12 @@ export function JobPage() {
           </span>
           {stats.failed > 0 && <span className="error">{stats.failed} 段未通过校验，点击灰色段落重翻</span>}
           {job.cost_cny !== null && <span>花费 ¥{job.cost_cny.toFixed(3)}</span>}
+          {job.expires_at &&
+            (expiresSoon(job.expires_at) ? (
+              <span className="error">服务器保留{formatRemaining(job.expires_at)}，到期自动删除，请先下载</span>
+            ) : (
+              <span title="到期后原文与译文自动删除">服务器保留{formatRemaining(job.expires_at)}</span>
+            ))}
         </span>
       </div>
     </>

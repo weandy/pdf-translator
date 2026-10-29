@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router";
 import { deleteJob, STAGE_LABELS, STAGE_ORDER } from "@/entities/job/model";
 import { api, type Job } from "@/shared/api/client";
 import { askNotify, notifyState, type NotifyState } from "@/shared/attention/attention";
-import { formatDuration, useNow } from "@/shared/time/elapsed";
+import { formatDuration, formatRemaining, useNow } from "@/shared/time/elapsed";
 
 interface Props {
   job: Job;
@@ -70,6 +70,9 @@ export function JobProgress({ job, onRetried }: Props) {
         {job.status === "failed" && "任务没有完成。已完成的步骤会保留，重试时从中断处继续，不会重复收费。"}
         {job.status === "cancelled" && "已取消。已完成的步骤会保留，重新开始时从中断处继续，已翻过的段落不会重复收费。"}
       </p>
+      {job.expires_at && (
+        <p className="hint">原文与译文在服务器上{formatRemaining(job.expires_at)}，到期自动删除，完成后请及时下载。</p>
+      )}
 
       <ol className="timeline">
         {STAGE_ORDER.map((stage, i) => {

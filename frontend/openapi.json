@@ -1755,9 +1755,9 @@
       "type": "integer",
       "title": "Max Pages"
      },
-     "retention_days": {
+     "retention_hours": {
       "type": "integer",
-      "title": "Retention Days"
+      "title": "Retention Hours"
      },
      "attributions": {
       "items": {
@@ -1778,7 +1778,7 @@
      "server_has_paddle_token",
      "max_upload_mb",
      "max_pages",
-     "retention_days",
+     "retention_hours",
      "attributions"
     ],
     "title": "ConfigOut",
@@ -2096,6 +2096,18 @@
        }
       ],
       "title": "Stage Started At"
+     },
+     "expires_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Expires At"
      }
     },
     "type": "object",
@@ -2112,7 +2124,8 @@
      "model",
      "cost_cny",
      "created_at",
-     "stage_started_at"
+     "stage_started_at",
+     "expires_at"
     ],
     "title": "JobOut"
    },

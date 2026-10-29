@@ -49,7 +49,7 @@ class DictCache:
     def put(self, key: str, target: str) -> None:
         self.data[key] = target
 
-    def purge_older_than(self, days: int) -> int:
+    def purge_older_than(self, hours: int) -> int:
         return 0
 
 

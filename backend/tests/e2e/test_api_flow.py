@@ -216,13 +216,28 @@ def test_chat_error_fails_job_and_retry_resumes(client: TestClient):
 def test_expired_jobs_and_cache_are_purged(client: TestClient):
     pipeline = client.app.state.container.pipeline  # type: ignore[attr-defined]
     job = _wait(client, _upload(client).json()["id"])
+    created = datetime.fromisoformat(job["created_at"])
+    assert abs((datetime.fromisoformat(job["expires_at"]) - created) - timedelta(hours=24)) < timedelta(seconds=5)
     job_dir = pipeline.deps.artifacts.job_dir(job["id"])
-    assert usecases.purge_expired(pipeline, 7) == 0  # 未过期
+    assert usecases.purge_expired(pipeline, 24) == 0  # 未到期
 
-    later = datetime.now(UTC) + timedelta(days=8)
-    assert usecases.purge_expired(pipeline, 7, now=later) == 1
+    later = datetime.now(UTC) + timedelta(hours=25)
+    assert usecases.purge_expired(pipeline, 24, now=later) == 1
     assert client.get(f"/api/jobs/{job['id']}").status_code == 404
     assert not job_dir.exists()
+
+
+def test_old_jobs_without_expiry_get_a_grace_period(client: TestClient):
+    pipeline = client.app.state.container.pipeline  # type: ignore[attr-defined]
+    job_id = _wait(client, _upload(client).json()["id"])["id"]
+    old = pipeline.deps.store.get_job(job_id)
+    old.expires_at, old.created_at = None, datetime.now(UTC) - timedelta(days=3)  # 改成 24 小时保留之前的旧任务
+    pipeline.deps.store.save_job(old)
+    now = datetime.now(UTC)
+    assert usecases.purge_expired(pipeline, 24, now=now) == 0  # 不立即删除
+    expires = datetime.fromisoformat(client.get(f"/api/jobs/{job_id}").json()["expires_at"])
+    assert abs(expires - (now + timedelta(hours=24))) < timedelta(seconds=5)  # 从现在起再保留 24 小时
+    assert usecases.purge_expired(pipeline, 24, now=now + timedelta(hours=25)) == 1
 
 
 def test_busy_server_rejects_uploads(client: TestClient):
@@ -238,7 +253,7 @@ def test_busy_server_rejects_uploads(client: TestClient):
 
 def test_meta(client: TestClient):
     cfg = client.get("/api/config").json()
-    assert cfg["server_has_llm_key"] is False and cfg["max_pages"] == 200 and cfg["retention_days"] == 7
+    assert cfg["server_has_llm_key"] is False and cfg["max_pages"] == 200 and cfg["retention_hours"] == 24
     est = client.get("/api/estimate", params={"pages": 15}).json()
     assert est["pages"] == 15 and 0 < est["cny_low"] <= est["cny_high"] < 0.2
     assert client.get("/api/jobs/0123456789abcdef").status_code == 404

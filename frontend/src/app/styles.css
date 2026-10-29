@@ -1567,3 +1567,6 @@ input[type="radio"] {
     padding: 0 6px;
   }
 }
+.job-message.expiring {
+  color: var(--red-pen);
+}
