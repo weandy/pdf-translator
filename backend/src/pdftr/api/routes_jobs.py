@@ -116,9 +116,10 @@ async def export_job(
     side: Literal["left", "right"] = "right",  # 双语对照时译文放在左边还是右边
 ) -> Response:
     async with _export_slot:
-        filename, data = await asyncio.to_thread(usecases.export_job, p, job_id, mode, side)
+        filename, path = await asyncio.to_thread(usecases.export_job, p, job_id, mode, side)
     disposition = f"attachment; filename=\"translated.pdf\"; filename*=UTF-8''{quote(filename)}"
-    return Response(data, media_type="application/pdf", headers={"Content-Disposition": disposition})
+    # 文件响应支持 HTTP Range：浏览器下载中断后可以续传
+    return FileResponse(path, media_type="application/pdf", headers={"Content-Disposition": disposition})
 
 
 @router.get("/{job_id}/blocks/{block_id}.png")

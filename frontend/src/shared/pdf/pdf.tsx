@@ -18,7 +18,15 @@ const DECODERS = "/pdfjs/";
 export function loadPdf(url: string): Promise<PDFDocumentProxy> {
   let p = docs.get(url);
   if (!p) {
-    p = pdfjs.getDocument({ url, useWasm: false, wasmUrl: DECODERS }).promise;
+    // 分段加载：只按需下载看到的页所需的数据（服务器支持 HTTP Range），不在后台把整份 PDF 下完
+    p = pdfjs.getDocument({
+      url,
+      useWasm: false,
+      wasmUrl: DECODERS,
+      disableAutoFetch: true,
+      disableStream: true,
+      rangeChunkSize: 256 * 1024,
+    }).promise;
     p.catch(() => docs.delete(url));
     docs.set(url, p);
   }

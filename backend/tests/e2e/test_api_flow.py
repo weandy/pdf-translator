@@ -570,3 +570,20 @@ def test_manual_edit_must_keep_every_formula(client: TestClient):
     assert twice.status_code == 400 and "出现了 2 次" in twice.json()["detail"]
     ok = client.patch(f"/api/segments/{seg['id']}", json={"target": "设 <m1/> 为函数"})
     assert ok.status_code == 200 and ok.json()["status"] == "edited"
+
+
+def test_export_is_cached_resumable_and_refreshed_after_edits(client: TestClient):
+    job = _wait(client, _upload(client).json()["id"])
+    url = f"/api/jobs/{job['id']}/export"
+    full = client.get(url, params={"mode": "mono"})
+    assert full.status_code == 200 and full.headers["accept-ranges"] == "bytes"
+    part = client.get(url, params={"mode": "mono"}, headers={"Range": "bytes=0-99"})
+    assert part.status_code == 206 and part.content == full.content[:100]  # 分段下载、续传
+    exports = client.app.state.container.pipeline.deps.artifacts.job_dir(job["id"]) / "exports"  # type: ignore[attr-defined]
+    assert len(list(exports.glob("mono-right-*.pdf"))) == 1
+
+    seg = next(s for s in client.get(f"/api/jobs/{job['id']}/document").json()["segments"] if not s["formulas"])
+    client.patch(f"/api/segments/{seg['id']}", json={"target": "导出缓存要更新"})
+    with pymupdf.open(stream=client.get(url, params={"mode": "mono"}).content, filetype="pdf") as pdf:
+        assert "导出缓存要更新" in "".join(str(p.get_text()) for p in pdf).replace("\n", "")
+    assert len(list(exports.glob("mono-right-*.pdf"))) == 1  # 旧缓存删掉了

@@ -3,6 +3,7 @@
 接口层（api）只做 HTTP 与这些函数之间的转换，不含业务规则。
 """
 
+import hashlib
 import json
 import logging
 import shutil
@@ -145,19 +146,39 @@ def purge_expired(pipeline: Pipeline, retention_hours: int, now: datetime | None
     return removed
 
 
-def export_job(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "right") -> tuple[str, bytes]:
-    """导出纯译文或双语对照 PDF，返回（建议的文件名, 内容）。每次按当前译文生成，包含用户的修改。"""
+# 导出 PDF 的生成方式（排版、字体、链接等）变了就加一，让已缓存的导出文件失效
+EXPORT_CACHE_VERSION = 1
+
+
+def export_job(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "right") -> tuple[str, Path]:
+    """导出纯译文或双语对照 PDF，返回（建议的文件名, 文件路径）。包含用户的修改。
+
+    结果按“方式 + 当前译文”缓存成文件：再次下载不用重新生成，并能以 HTTP Range 分段下载、中断后续传；
+    译文有修改时摘要变化，自动重新生成（同一方式的旧文件删掉）。
+    """
     job = get_job(pipeline, job_id)
     if job.status is not JobStatus.DONE:
         raise UserError("任务完成后才能下载")
     deps = pipeline.deps
-    doc, segments = load_document(deps, job_id), deps.store.segments(job_id)
-    data = export_pdf(deps.artifacts.path(job_id, "original.pdf"), deps.artifacts.path(job_id, "background.pdf"),
-                      doc, segments, mode, deps.font_dir, side,
-                      _raw_links(pipeline, job_id, doc, segments))  # fmt: skip
-    release_memory()
+    segments = deps.store.segments(job_id)
+    state = json.dumps([EXPORT_CACHE_VERSION, [(s.id, s.target, s.status.value) for s in segments]], ensure_ascii=False)
+    digest = hashlib.sha256(state.encode()).hexdigest()[:16]
+    folder = deps.artifacts.job_dir(job_id) / "exports"
+    out = folder / f"{mode}-{side}-{digest}.pdf"
+    if not out.exists():
+        doc = load_document(deps, job_id)
+        data = export_pdf(deps.artifacts.path(job_id, "original.pdf"), deps.artifacts.path(job_id, "background.pdf"),
+                          doc, segments, mode, deps.font_dir, side,
+                          _raw_links(pipeline, job_id, doc, segments))  # fmt: skip
+        release_memory()
+        folder.mkdir(parents=True, exist_ok=True)
+        for old in folder.glob(f"{mode}-{side}-*.pdf"):
+            old.unlink(missing_ok=True)
+        tmp = out.with_suffix(".part")
+        tmp.write_bytes(data)
+        tmp.replace(out)
     suffix = "译文" if mode == "mono" else "双语对照"
-    return f"{Path(job.filename).stem}-{suffix}.pdf", data
+    return f"{Path(job.filename).stem}-{suffix}.pdf", out
 
 
 def cancel_job(pipeline: Pipeline, job_id: str) -> Job:
