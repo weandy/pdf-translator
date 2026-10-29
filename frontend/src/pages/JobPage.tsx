@@ -155,7 +155,8 @@ function useJobTitle(job: Job | null): void {
       if (job.status === "failed") notify("翻译失败", job.filename);
     }
     if (visible) unseen.current = false;
-    const pct = job.stage === "parse" || job.stage === "translate" ? ` ${Math.round(job.progress * 100)}%` : "";
+    // 只有翻译阶段的进度是真实完成比例（解析阶段的进度条先是上传进度，传完还要等云端解析）
+    const pct = job.stage === "translate" ? ` ${Math.round(job.progress * 100)}%` : "";
     document.title =
       job.status === "queued"
         ? `排队中 · ${job.filename}`
