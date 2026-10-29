@@ -428,18 +428,6 @@ async def retranslate_segment(
     return out
 
 
-CROPPABLE = frozenset({BlockType.FIGURE, BlockType.TABLE, BlockType.FORMULA, BlockType.CODE})
-
-
-def block_crop(pipeline: Pipeline, job_id: str, block_id: str) -> bytes:
-    """图、表、独立公式、算法框按原文位置裁成图片（手机阅读视图把它们插在正文里）。"""
-    get_job(pipeline, job_id)
-    block = load_document(pipeline.deps, job_id).block(block_id)
-    if block is None or block.type not in CROPPABLE:
-        raise NotFound("没有这个图表")
-    return crop_png(pipeline.deps.artifacts.path(job_id, "original.pdf"), block.page, block.bbox, zoom=2.5)
-
-
 def formula_crop(pipeline: Pipeline, segment_id: str, key: str) -> bytes:
     seg = _segment(pipeline, segment_id)
     ref = seg.formula_refs.get(key)

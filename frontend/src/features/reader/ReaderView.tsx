@@ -26,9 +26,8 @@ import { PdfCanvas, usePdf } from "@/shared/pdf/pdf";
 
 import { OutlinePanel } from "./OutlinePanel";
 import { ReaderTips, tipsSeen } from "./ReaderTips";
-import { ReadingView } from "./ReadingView";
 
-export type ViewMode = "both" | "translated" | "original" | "reading";
+export type ViewMode = "both" | "translated" | "original";
 
 interface Props {
   doc: DocumentData;
@@ -71,8 +70,8 @@ export function ReaderView({
   side = "right",
   revealKey = 0,
 }: Props) {
-  // 窄屏（手机）上整页缩到屏幕宽，正文只剩 4–5 像素，默认用阅读视图；用户切换后以用户的选择为准
-  const [mode, setMode] = useState<ViewMode>(() => (window.innerWidth < NARROW ? "reading" : "both"));
+  // 窄屏（手机）上默认只显示译文、适应宽度；用户切换后以用户的选择为准
+  const [mode, setMode] = useState<ViewMode>(() => (window.innerWidth < NARROW ? "translated" : "both"));
   const [zoom, setZoom] = useState<number | null>(null); // null = 自适应宽度
   const [tips, setTips] = useState(() => !tipsSeen()); // 第一次打开时显示操作提示
   const [width, setWidth] = useState(1200);
@@ -85,7 +84,7 @@ export function ReaderView({
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const restored = useRef(false);
 
-  // 阅读视图不用 PDF：手机上省流量、省内存
+  // 只加载当前显示方式用得到的 PDF
   const original = usePdf(mode === "both" || mode === "original" ? fileUrl(jobId, "original.pdf") : null);
   const background = usePdf(mode === "both" || mode === "translated" ? fileUrl(jobId, "background.pdf") : null);
   const texts = useMemo(() => blockTexts(doc), [doc]);
@@ -117,24 +116,16 @@ export function ReaderView({
   const columns = mode === "both" ? 2 : 1;
   const fitZoom = Math.max(0.3, (width - PADDING - (columns - 1) * SPINE) / columns / maxPageWidth);
   const scale = zoom ?? fitZoom;
-  // 跳到某页的某个位置；阅读视图没有整页，跳到那个段落或那一页的分隔处
+  // 跳到某页的某个位置（top 为离页顶的 PDF 点）
   const goTo = useCallback(
-    (page: number, top = 0, segmentId?: string | null, smooth = true) => {
+    (page: number, top = 0, smooth = true) => {
       const el = scroller.current;
-      if (!el) return;
-      const behavior = smooth ? "smooth" : "auto";
-      const offsetOf = (t: Element) => t.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
-      if (mode === "reading") {
-        const target =
-          (segmentId && el.querySelector(`[data-seg="${segmentId}"]`)) ||
-          el.querySelector(`.flow-page[data-page="${page}"]`);
-        if (target) el.scrollTo({ top: Math.max(offsetOf(target) - 12, 0), behavior });
-        return;
-      }
-      const row = el.querySelector(`.page-row[data-page="${page}"]`);
-      if (row) el.scrollTo({ top: Math.max(offsetOf(row) + top * scale - 24, 0), behavior });
+      const row = el?.querySelector<HTMLElement>(`.page-row[data-page="${page}"]`);
+      if (!el || !row) return;
+      const offset = row.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
+      el.scrollTo({ top: Math.max(offset + top * scale - 24, 0), behavior: smooth ? "smooth" : "auto" });
     },
-    [scale, mode],
+    [scale],
   );
   const jump = useCallback((page: number, top: number) => goTo(page, top), [goTo]);
 
@@ -147,7 +138,7 @@ export function ReaderView({
       if (!el) return;
       const limit = el.getBoundingClientRect().top + 80;
       let page = 0;
-      for (const m of el.querySelectorAll<HTMLElement>(mode === "reading" ? ".flow-page" : ".page-row")) {
+      for (const m of el.querySelectorAll<HTMLElement>(".page-row")) {
         if (m.getBoundingClientRect().top > limit) break;
         page = Number(m.dataset.page ?? 0);
       }
@@ -166,13 +157,13 @@ export function ReaderView({
     if (restored.current) return;
     restored.current = true;
     const page = savedPage(jobId);
-    if (page > 0 && page < doc.pages.length) setTimeout(() => goToRef.current(page, 0, null, false), 400);
+    if (page > 0 && page < doc.pages.length) setTimeout(() => goToRef.current(page, 0, false), 400);
   }, [jobId, doc.pages.length]);
 
   const [picked, setPicked] = useState<number | null>(null); // 刚在目录里点的一项（同一页有好几节时高亮它）
   const goOutline = (item: OutlineData) => {
     setPicked(doc.outline.indexOf(item));
-    goTo(item.page, item.top, item.segment_id);
+    goTo(item.page, item.top);
     if (window.innerWidth < NARROW) setShowOutline(false); // 手机上点完收起
   };
 
@@ -186,7 +177,6 @@ export function ReaderView({
               ["both", "对照"],
               ["translated", "译文"],
               ["original", "原文"],
-              ["reading", "阅读"],
             ] as const
           ).map(([m, label]) => (
             <button
@@ -200,7 +190,7 @@ export function ReaderView({
             </button>
           ))}
         </div>
-        <div className="zoom" role="group" aria-label="缩放" hidden={mode === "reading"}>
+        <div className="zoom" role="group" aria-label="缩放">
           <button
             type="button"
             className="quiet"
@@ -273,10 +263,7 @@ export function ReaderView({
           {(original.error || background.error) && (
             <p className="error">PDF 加载失败：{original.error ?? background.error}</p>
           )}
-          {mode === "reading" ? (
-            <ReadingView doc={doc} jobId={jobId} selected={selectedSegment} onSelect={onSelectSegment} />
-          ) : (
-            doc.pages.map((page) => (
+          {doc.pages.map((page) => (
               <PageRow
                 key={page.index}
                 page={page}
@@ -295,8 +282,7 @@ export function ReaderView({
                 blockLinks={byBlock}
                 onJump={jump}
               />
-            ))
-          )}
+            ))}
         </div>
       </div>
     </div>

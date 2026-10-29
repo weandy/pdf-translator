@@ -550,17 +550,6 @@ def test_translate_selected_pages_only(client: TestClient):
     assert bad.status_code == 400 and "共 2 页" in bad.json()["detail"]
 
 
-def test_block_crops_for_reading_view(client: TestClient):
-    job = _wait(client, _upload(client).json()["id"])
-    blocks = [b for p in client.get(f"/api/jobs/{job['id']}/document").json()["pages"] for b in p["blocks"]]
-    figure = next(b for b in blocks if b["type"] in ("figure", "table", "formula"))
-    png = client.get(f"/api/jobs/{job['id']}/blocks/{figure['id']}.png")
-    assert png.status_code == 200 and png.content.startswith(b"\x89PNG")
-    text = next(b for b in blocks if b["type"] == "text")
-    assert client.get(f"/api/jobs/{job['id']}/blocks/{text['id']}.png").status_code == 404  # 正文不裁图
-    assert "latex" in figure
-
-
 def test_manual_edit_must_keep_every_formula(client: TestClient):
     job = _wait(client, _upload(client).json()["id"])
     seg = next(s for s in client.get(f"/api/jobs/{job['id']}/document").json()["segments"] if s["formulas"])

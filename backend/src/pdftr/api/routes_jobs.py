@@ -122,13 +122,6 @@ async def export_job(
     return FileResponse(path, media_type="application/pdf", headers={"Content-Disposition": disposition})
 
 
-@router.get("/{job_id}/blocks/{block_id}.png")
-def block_png(job_id: str, block_id: str, p: PipelineDep) -> Response:
-    """图、表、独立公式按原文位置裁成的图片（阅读视图用）。"""
-    png = usecases.block_crop(p, job_id, block_id)
-    return Response(png, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
-
-
 @router.get("/{job_id}/revisions", response_model=list[RevisionOut])
 def list_revisions(job_id: str, p: PipelineDep) -> list[RevisionOut]:
     """手动修改记录（保存修改、重翻、精修、撤回），按时间先后。"""
