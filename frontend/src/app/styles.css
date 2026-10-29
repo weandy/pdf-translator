@@ -735,6 +735,7 @@ input[type="radio"] {
   flex: 1;
   flex-direction: column;
   min-width: 0;
+  container-type: inline-size; /* 旁边开着面板时阅读器变窄，工具栏按阅读器自身宽度收紧 */
 }
 .toolbar {
   display: flex;
@@ -2208,4 +2209,16 @@ input[type="radio"] {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+@container (max-width: 1180px) {
+  .toolbar .wide-only,
+  .toolbar .zoom-label {
+    display: none;
+  }
+  .toolbar {
+    gap: 8px;
+  }
+  .toolbar .doc-heading {
+    flex-basis: 180px;
+  }
 }
