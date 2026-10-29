@@ -1,6 +1,6 @@
 [project]
 name = "pdftr"
-version = "0.1.0"
+version = "0.2.0"
 description = "开源可自部署的网页端 PDF 保版式翻译：后端"
 license = "AGPL-3.0-only"
 requires-python = ">=3.12,<3.13"
