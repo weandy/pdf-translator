@@ -7,11 +7,6 @@ import { useSyncExternalStore } from "react";
 import type { Quality } from "@/shared/api/client";
 import { readJSON, remove, writeJSON } from "@/shared/storage/local";
 
-export type ParserId = "mineru-cloud" | "paddleocr-vl";
-
-/** 解析服务的显示名称。 */
-export const PARSER_NAMES: Record<ParserId, string> = { "mineru-cloud": "MinerU", "paddleocr-vl": "PaddleOCR" };
-
 export type Protocol = "openai" | "anthropic";
 
 export interface Settings {
@@ -20,11 +15,8 @@ export interface Settings {
   model: string;
   llmKey: string;
   parserKey: string; // MinerU Token
-  parser: ParserId; // 版面解析服务，默认 MinerU
-  paddleKey: string; // PaddleOCR（星河社区）Token
   quality: Quality;
   includeReferences: boolean;
-  translateFigures: boolean;
   translationSide: "left" | "right"; // 双语对照时译文在左边还是右边
   rememberKeys: boolean;
 }
@@ -37,11 +29,8 @@ export const DEFAULTS: Settings = {
   model: "",
   llmKey: "",
   parserKey: "",
-  parser: "mineru-cloud",
-  paddleKey: "",
   quality: "default",
   includeReferences: false,
-  translateFigures: true,
   translationSide: "right",
   rememberKeys: true,
 };
@@ -55,13 +44,13 @@ export function getSettings(): Settings {
 
 export function saveSettings(next: Settings): void {
   current = next;
-  const persisted = next.rememberKeys ? next : { ...next, llmKey: "", parserKey: "", paddleKey: "" };
+  const persisted = next.rememberKeys ? next : { ...next, llmKey: "", parserKey: "" };
   writeJSON(KEY, persisted);
   listeners.forEach((l) => l());
 }
 
 export function clearKeys(): void {
-  saveSettings({ ...current, llmKey: "", parserKey: "", paddleKey: "" });
+  saveSettings({ ...current, llmKey: "", parserKey: "" });
   if (!current.rememberKeys) remove(KEY);
 }
 
@@ -83,6 +72,5 @@ export function authHeaders(s: Settings = current): Record<string, string> {
   if (s.model) h["X-LLM-Model"] = s.model;
   if (s.llmKey) h["X-LLM-Key"] = s.llmKey;
   if (s.parserKey) h["X-Parser-Key"] = s.parserKey;
-  if (s.paddleKey) h["X-Paddle-Key"] = s.paddleKey;
   return h;
 }

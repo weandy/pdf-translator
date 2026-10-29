@@ -519,7 +519,7 @@ export interface components {
             include_references: boolean;
             /**
              * Translate Figures
-             * @default true
+             * @default false
              */
             translate_figures: boolean;
             /** Pages */

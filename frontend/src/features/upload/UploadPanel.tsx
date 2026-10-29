@@ -3,7 +3,7 @@ import { useState, type DragEvent } from "react";
 
 import { rememberJob } from "@/entities/job/model";
 import { termMap } from "@/entities/glossary/model";
-import { PARSER_NAMES, useSettings } from "@/entities/settings/model";
+import { useSettings } from "@/entities/settings/model";
 import { api, type Job } from "@/shared/api/client";
 
 interface Props {
@@ -66,12 +66,8 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
   });
 
   const missingKey = config && !settings.llmKey && !config.server_has_llm_key;
-  const service = PARSER_NAMES[settings.parser];
-  const missingToken =
-    config &&
-    (settings.parser === "paddleocr-vl"
-      ? !settings.paddleKey && !config.server_has_paddle_token
-      : !settings.parserKey && !config.server_has_parser_token);
+  const service = "MinerU";
+  const missingToken = config && !settings.parserKey && !config.server_has_parser_token;
   const update = (f: File, patch: Partial<Item>) =>
     setItems((list) => list.map((it) => (it.file === f ? { ...it, ...patch } : it)));
 
@@ -116,11 +112,9 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
     setError(null);
     const options = {
       cloud_consent: consent,
-      parser: settings.parser,
       user_terms: termMap(),
       quality: settings.quality,
       include_references: settings.includeReferences,
-      translate_figures: settings.translateFigures,
     };
     const created: Job[] = [];
     // 最多同时上传 PARALLEL_UPLOADS 个；某个失败（如服务器排队已满）只标在那个文件上

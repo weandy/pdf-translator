@@ -1869,7 +1869,7 @@
      "translate_figures": {
       "type": "boolean",
       "title": "Translate Figures",
-      "default": true
+      "default": false
      },
      "pages": {
       "anyOf": [
