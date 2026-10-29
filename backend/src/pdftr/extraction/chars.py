@@ -7,6 +7,7 @@ import pymupdf
 
 from pdftr.domain.chars import Char, CharPage
 from pdftr.domain.geometry import Rect
+from pdftr.domain.ir import PageKind
 from pdftr.extraction.classify import classify_page
 
 _FLAG_ITALIC = 1 << 1
@@ -51,13 +52,14 @@ def _page(page: pymupdf.Page) -> CharPage:
                     )
             line_no += 1
     rect = page.rect
+    kind = classify_page(page, chars)
     return CharPage(
         index=page.number or 0,
         width=rect.width,
         height=rect.height,
         rotation=page.rotation,
-        kind=classify_page(page, chars),
-        chars=chars,
+        kind=kind,
+        chars=[] if kind is PageKind.SCANNED else chars,  # 扫描页的隐形 OCR 文字不可靠，一律用解析服务的识别结果
     )
 
 

@@ -101,8 +101,21 @@ def _size_from_lines(lb: LayoutBlock) -> float:
     return round(min(10.0, max(5.0, heights[len(heights) // 2])), 2)
 
 
+def _size_for_scan(lb: LayoutBlock) -> float:
+    """扫描页只有块级坐标：先按块面积与文字长度粗估字号（字宽约 0.5、行距约 1.2 字号）得出行数，
+    再按行数反推（最后一行通常不满，直接用粗估会偏大）；块框比字形略高，按每行 1.25 字号算。"""
+    text = "".join(s.content for ln in lb.lines for s in ln.spans)
+    width, height = lb.bbox.width, lb.bbox.height
+    if not text or width <= 0 or height <= 0:
+        return 10.0
+    rough = (width * height / (0.6 * len(text))) ** 0.5
+    lines = max(1, round(height / (1.2 * rough)))
+    return round(min(max(height / (1.25 * lines), 5.0), 24.0), 2)
+
+
 def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], links: dict, report: FusionReport) -> Block:
-    style = block_style(chars, fallback_size=_size_from_lines(lb))
+    scanned = cp.kind is PageKind.SCANNED
+    style = block_style(chars, fallback_size=_size_for_scan(lb) if scanned else _size_from_lines(lb))
     spans: list[Span] = []
     formulas: list[InlineFormula] = []
     for li, line in enumerate(lb.lines):
@@ -110,7 +123,7 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], links: dict, report
         for s in line.spans:
             if s.kind == "inline_formula":
                 key = f"m{len(formulas) + 1}"
-                formulas.append(InlineFormula(key=key, latex=s.content, bbox=s.bbox))
+                formulas.append(InlineFormula(key=key, latex=s.content, bbox=s.bbox, located=not scanned))
                 spans.append(Span(kind="formula", formula=key, line=li, bbox=s.bbox, size=style.font_size))
                 continue
             report.text_spans += 1

@@ -1406,3 +1406,7 @@ input[type="radio"] {
   font-size: 12px;
   font-weight: 400;
 }
+.math-raw {
+  font-family: var(--sans);
+  font-size: 0.85em;
+}

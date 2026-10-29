@@ -1790,11 +1790,25 @@
       "title": "Latex"
      },
      "page": {
-      "type": "integer",
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
       "title": "Page"
      },
      "bbox": {
-      "$ref": "#/components/schemas/RectOut"
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/RectOut"
+       },
+       {
+        "type": "null"
+       }
+      ]
      }
     },
     "type": "object",
@@ -1803,7 +1817,8 @@
      "page",
      "bbox"
     ],
-    "title": "FormulaOut"
+    "title": "FormulaOut",
+    "description": "page、bbox 为空：没有精确位置（扫描页），KaTeX 渲染失败时显示 LaTeX 原文而不是裁剪图。"
    },
    "HTTPValidationError": {
     "properties": {

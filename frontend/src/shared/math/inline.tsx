@@ -33,7 +33,8 @@ export interface InlineLink extends LinkTarget {
 
 interface Props {
   text: string;
-  formulas: Record<string, { latex: string }>;
+  /** bbox 为 null：公式没有原图位置（扫描页），渲染失败时显示 LaTeX 原文 */
+  formulas: Record<string, { latex: string; bbox?: unknown }>;
   fallbackUrl: (key: string) => string;
   links?: InlineLink[];
 }
@@ -119,9 +120,17 @@ export const InlineMathText = memo(function InlineMathText({ text, formulas, fal
   };
   const nodes: ReactNode[] = pieces.map(({ piece, rich: parsed }, i) => {
     if (piece.kind === "text") return rich(parsed, String(i), leaf);
-    const latex = formulas[piece.key]?.latex;
+    const formula = formulas[piece.key];
+    const latex = formula?.latex;
     const html = latex ? renderLatex(latex) : null;
     if (html) return <span key={i} className="math" dangerouslySetInnerHTML={{ __html: html }} />;
+    if (latex && formula?.bbox === null) {
+      return (
+        <code key={i} className="math-raw">
+          {latex}
+        </code>
+      );
+    }
     return <img key={i} className="math-fallback" src={fallbackUrl(piece.key)} alt={latex ?? piece.key} />;
   });
   return <>{nodes}</>;

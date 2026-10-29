@@ -129,7 +129,8 @@ def segment(
                 key = f"m{len(formulas) + 1}"
                 key_map[f.key] = key
                 formulas[key] = f.latex
-                refs[key] = FormulaRef(page=b.page, bbox=f.bbox)
+                if f.located:  # 扫描页的公式没有精确位置，KaTeX 渲染失败时不裁原图
+                    refs[key] = FormulaRef(page=b.page, bbox=f.bbox)
             piece = block_source(b, key_map)
             parts.append(SegmentPart(block_id=b.id, chars=len(piece)))
             text = _join(text, piece)

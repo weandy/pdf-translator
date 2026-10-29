@@ -57,6 +57,7 @@ class InlineFormula(BaseModel):
     key: str  # 占位符编号，如 "m1"
     latex: str
     bbox: Rect  # KaTeX 渲染失败时用于原图裁剪
+    located: bool = True  # 扫描页只有块级坐标，bbox 是整块，不能拿来裁剪
 
 
 class BlockStyle(BaseModel):

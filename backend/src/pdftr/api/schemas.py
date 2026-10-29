@@ -86,9 +86,11 @@ class PartOut(BaseModel):
 
 
 class FormulaOut(BaseModel):
+    """page、bbox 为空：没有精确位置（扫描页），KaTeX 渲染失败时显示 LaTeX 原文而不是裁剪图。"""
+
     latex: str
-    page: int
-    bbox: RectOut
+    page: int | None
+    bbox: RectOut | None
 
 
 class SegmentOut(BaseModel):
@@ -103,10 +105,12 @@ class SegmentOut(BaseModel):
 
     @classmethod
     def of(cls, s: Segment) -> "SegmentOut":
+        refs = s.formula_refs
         formulas = {
-            k: FormulaOut(latex=latex, page=s.formula_refs[k].page, bbox=RectOut(**s.formula_refs[k].bbox.model_dump()))
+            k: FormulaOut(latex=latex, page=refs[k].page, bbox=RectOut(**refs[k].bbox.model_dump()))
+            if k in refs
+            else FormulaOut(latex=latex, page=None, bbox=None)
             for k, latex in s.formulas.items()
-            if k in s.formula_refs
         }
         return cls(
             id=s.id, block_ids=s.block_ids, parts=[PartOut(**p.model_dump()) for p in s.parts], source=s.source,

@@ -476,13 +476,16 @@ export interface components {
             /** Minutes */
             minutes: number;
         };
-        /** FormulaOut */
+        /**
+         * FormulaOut
+         * @description page、bbox 为空：没有精确位置（扫描页），KaTeX 渲染失败时显示 LaTeX 原文而不是裁剪图。
+         */
         FormulaOut: {
             /** Latex */
             latex: string;
             /** Page */
-            page: number;
-            bbox: components["schemas"]["RectOut"];
+            page: number | null;
+            bbox: components["schemas"]["RectOut"] | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {

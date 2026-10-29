@@ -57,6 +57,9 @@ class PipelineDeps:
     llm_concurrency: int = 0  # 0 = 按服务商自动选择（translation.service.default_concurrency）
 
 
+# 会翻译的页：原生页，以及用解析服务识别结果的扫描页（乱码页跳过）
+TRANSLATED_KINDS = frozenset({PageKind.NATIVE, PageKind.SCANNED})
+
 # 各阶段开始时显示的说明；阶段内有更具体的进度时会覆盖
 STAGE_MESSAGES = {
     "parse": "正在准备上传",
@@ -219,16 +222,16 @@ class Pipeline:
         chars = await asyncio.to_thread(extract, pdf)
         doc, report = await asyncio.to_thread(fuse, job.id, layout, chars, used_cloud=True)
         out.write_text(doc.model_dump_json(), encoding="utf-8")
-        skipped = [p.index + 1 for p in doc.pages if p.kind is not PageKind.NATIVE]
-        note = f"第 {', '.join(map(str, skipped))} 页是扫描页或无法提取文字，当前版本暂不翻译" if skipped else ""
+        skipped = [p.index + 1 for p in doc.pages if p.kind not in TRANSLATED_KINDS]
+        note = f"第 {', '.join(map(str, skipped))} 页的文字无法提取（乱码），暂不翻译" if skipped else ""
         self._update(job, page_count=report.pages, message=note)
 
     async def _segment(self, job: Job, _: Secrets) -> None:
         if self.deps.store.segments(job.id):
             return  # 已切分过（重试时保留已有译文和用户修改）
         doc = load_document(self.deps, job.id)
-        native = {p.index for p in doc.pages if p.kind is PageKind.NATIVE}
-        pages = native if job.options.pages is None else native & set(job.options.pages)
+        usable = {p.index for p in doc.pages if p.kind in TRANSLATED_KINDS}
+        pages = usable if job.options.pages is None else usable & set(job.options.pages)
         segs = segment(doc, include_references=job.options.include_references,
                        include_figures=job.options.translate_figures, pages=pages)  # fmt: skip
         if not segs:
@@ -279,8 +282,9 @@ class Pipeline:
         doc = load_document(self.deps, job.id)
         ids = {bid for s in self.deps.store.segments(job.id) for bid in s.block_ids}
         blocks = [b for b in doc.blocks() if b.id in ids]
+        scanned = {p.index for p in doc.pages if p.kind is PageKind.SCANNED}
         await asyncio.to_thread(make_background, self.deps.artifacts.path(job.id, "original.pdf"), blocks,
-                                self.deps.artifacts.path(job.id, "background.pdf"))  # fmt: skip
+                                self.deps.artifacts.path(job.id, "background.pdf"), scanned)  # fmt: skip
 
 
 def segment_counts(store: JobStore, job_id: str) -> dict[str, int]:

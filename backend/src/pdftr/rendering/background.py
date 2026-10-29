@@ -14,6 +14,7 @@ from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import Block, BlockType
 
 SHRINK = 0.5  # 块框略收缩，避免误删相邻的公式字符（S5）
+COVER_PAD = 1.0  # 扫描页盖住原文的矩形向外扩一点：解析器的块框紧贴字形，字的边缘会露出来
 
 # PyMuPDF 运行时有这些常量，但类型声明里没有；取值见官方文档 Page.apply_redactions
 _IMAGE_NONE = getattr(pymupdf, "PDF_REDACT_IMAGE_NONE", 0)
@@ -29,11 +30,27 @@ def _label_band(r: Rect) -> Rect:
     return Rect(x0=r.x0 + SHRINK, y0=r.y0 + band, x1=r.x1 - SHRINK, y1=r.y1 - band)
 
 
-def make_background(pdf: Path, blocks: Iterable[Block], out: Path) -> int:
+def paper_color(page: pymupdf.Page, rect: pymupdf.Rect) -> tuple[float, float, float]:
+    """块里纸张的颜色：文字只是少数深色像素，取较亮的 60% 像素的中位数（纸张发黄、发灰也能跟上）。"""
+    pix = page.get_pixmap(clip=rect, dpi=36, colorspace=pymupdf.csRGB, alpha=False)
+    data, n = pix.samples, pix.n
+    pixels = sorted(
+        (data[i : i + 3] for i in range(0, len(data) - 2, n)), key=lambda p: p[0] * 299 + p[1] * 587 + p[2] * 114
+    )
+    if not pixels:
+        return (1.0, 1.0, 1.0)
+    bright = pixels[len(pixels) * 2 // 5 :]
+    r, g, b = bright[len(bright) // 2]
+    return (r / 255, g / 255, b / 255)
+
+
+def make_background(pdf: Path, blocks: Iterable[Block], out: Path, scanned: set[int] | None = None) -> int:
     """返回实际去字的块数。
 
     图里的文字只删文字、不碰任何线条（坐标轴、刻度、连线紧挨着标签），所以与正文分两轮去字。
+    scanned：扫描页（原文在图片里删不掉）：先删掉隐形 OCR 文字，再用纸张颜色的矩形盖住原文。
     """
+    scanned = scanned or set()
     by_page: dict[int, list[Rect]] = defaultdict(list)
     labels: dict[int, list[Rect]] = defaultdict(list)
     for b in blocks:
@@ -46,12 +63,19 @@ def make_background(pdf: Path, blocks: Iterable[Block], out: Path) -> int:
             if page_no >= len(doc):
                 continue
             page = doc[page_no]
+            covers = []
+            if page_no in scanned:  # 先在原图上取好纸色，再改动页面
+                for r in by_page[page_no]:
+                    box = pymupdf.Rect(r.x0 - COVER_PAD, r.y0 - COVER_PAD, r.x1 + COVER_PAD, r.y1 + COVER_PAD)
+                    covers.append((box & page.rect, paper_color(page, box & page.rect)))
             for rects, graphics in ((labels[page_no], _LINE_ART_NONE), (by_page[page_no], _LINE_ART_REMOVE_IF_TOUCHED)):
                 if not rects:
                     continue
                 for r in rects:
                     page.add_redact_annot(pymupdf.Rect(r.x0, r.y0, r.x1, r.y1))
                 page.apply_redactions(images=_IMAGE_NONE, graphics=graphics, text=_TEXT_REMOVE)
+            for box, color in covers:
+                page.draw_rect(box, color=None, fill=color, overlay=True)
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_suffix(".part")
         doc.save(tmp, garbage=3, deflate=True)
