@@ -211,3 +211,9 @@ class EditIn(BaseModel):
 class RetranslateIn(BaseModel):
     quality: Literal["default", "careful"] = "careful"
     user_terms: dict[str, str] | None = Field(default=None, max_length=5000)  # 浏览器里最新的用户术语库
+
+
+class RetranslateManyIn(BaseModel):
+    segment_ids: list[str] = Field(min_length=1, max_length=20)
+    quality: Literal["default", "careful"] = "default"
+    user_terms: dict[str, str] | None = Field(default=None, max_length=5000)

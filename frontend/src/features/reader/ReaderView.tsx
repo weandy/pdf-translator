@@ -40,6 +40,10 @@ interface Props {
   side?: "left" | "right";
   /** 每次变化时，若选中的段落不在视野里就滚过去（从修改记录打开段落时用） */
   revealKey?: number;
+  /** 滚到这一段并短暂高亮（术语面板逐段查看；n 变化时即使是同一段也再跳一次） */
+  spot?: { id: string; n: number } | null;
+  /** 淡淡标出的段落（术语面板里当前术语出现的段落） */
+  marked?: ReadonlySet<string>;
 }
 
 const PADDING = 48; // .pages 左右内边距之和
@@ -68,6 +72,8 @@ export function ReaderView({
   actions,
   side = "right",
   revealKey = 0,
+  spot = null,
+  marked,
 }: Props) {
   // 窄屏（手机）上默认只显示译文、适应宽度；用户切换后以用户的选择为准
   const [mode, setMode] = useState<ViewMode>(() => (window.innerWidth < NARROW ? "translated" : "both"));
@@ -159,6 +165,23 @@ export function ReaderView({
     const page = savedPage(jobId);
     if (page > 0 && page < doc.pages.length) setTimeout(() => goToRef.current(page, 0, false), 400);
   }, [jobId, doc.pages.length]);
+
+  // 从术语面板逐段查看：滚到那一段所在位置并短暂高亮（只在 spot 变化时跳；段落内容更新不触发）
+  const docRef = useRef(doc);
+  useEffect(() => {
+    docRef.current = doc;
+  }, [doc]);
+  useEffect(() => {
+    if (!spot) return;
+    const d = docRef.current;
+    const seg = d.segments.find((s) => s.id === spot.id);
+    const block = d.pages.flatMap((p) => p.blocks).find((b) => b.id === seg?.block_ids[0]);
+    if (!block) return;
+    goToRef.current(block.page, block.bbox.y0);
+    clearTimeout(flashTimer.current);
+    setFlash(spot.id);
+    flashTimer.current = setTimeout(() => setFlash(null), 2400);
+  }, [spot]);
 
   const [picked, setPicked] = useState<number | null>(null); // 刚在目录里点的一项（同一页有好几节时高亮它）
   const goOutline = (item: OutlineData) => {
@@ -266,6 +289,7 @@ export function ReaderView({
               texts={texts}
               hovered={hovered}
               flash={flash}
+              marked={marked}
               selected={selectedSegment}
               fontsVersion={fontsVersion}
               side={side}
@@ -291,6 +315,7 @@ interface RowProps {
   texts: Map<string, BlockText>;
   hovered: string | null;
   flash: string | null;
+  marked: ReadonlySet<string> | undefined;
   selected: string | null;
   fontsVersion: number;
   side: "left" | "right";
@@ -373,6 +398,7 @@ function PageRow({
   texts,
   hovered,
   flash,
+  marked,
   selected,
   fontsVersion,
   side,
@@ -386,7 +412,8 @@ function PageRow({
   const size = { width: page.width * scale, height: page.height * scale };
   const blocks = page.blocks.filter((b) => texts.has(b.id));
   const mark = (segId: string) =>
-    (segId === selected ? " selected" : segId === hovered ? " hovered" : "") + (segId === flash ? " flash" : "");
+    (segId === selected ? " selected" : segId === hovered ? " hovered" : "") +
+    (segId === flash ? " flash" : marked?.has(segId) ? " marked" : "");
 
   return (
     <div

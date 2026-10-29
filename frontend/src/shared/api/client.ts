@@ -18,6 +18,7 @@ export type Estimate = components["schemas"]["Estimate"];
 export type Revision = components["schemas"]["RevisionOut"];
 export type LlmCheck = components["schemas"]["LlmCheck"];
 export type ParsedGlossary = components["schemas"]["ParsedGlossary"];
+export type TermUse = components["schemas"]["TermUse"];
 export type Quality = "default" | "careful";
 
 export class ApiError extends Error {
@@ -91,6 +92,13 @@ export const api = {
       method: "POST",
       ...json({ quality, user_terms: userTerms }),
     }),
+  /** 一次重翻同一任务的多段（最多 20 段） */
+  retranslateMany: (jobId: string, ids: string[], userTerms?: Record<string, string>) =>
+    request<SegmentData[]>(`/api/jobs/${jobId}/retranslate`, {
+      method: "POST",
+      ...json({ segment_ids: ids, quality: "default", user_terms: userTerms }),
+    }),
+  jobTerms: (jobId: string) => request<TermUse[]>(`/api/jobs/${jobId}/terms`),
   parseGlossary: (file: File, ai: boolean) => {
     const form = new FormData();
     form.append("file", file);

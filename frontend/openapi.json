@@ -1000,6 +1000,210 @@
     }
    }
   },
+  "/api/jobs/{job_id}/terms": {
+   "get": {
+    "tags": [
+     "jobs"
+    ],
+    "summary": "Job Terms",
+    "description": "这篇论文用到的术语：来源与出现在哪几段。",
+    "operationId": "job_terms_api_jobs__job_id__terms_get",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/TermUse"
+         },
+         "title": "Response Job Terms Api Jobs  Job Id  Terms Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/jobs/{job_id}/retranslate": {
+   "post": {
+    "tags": [
+     "jobs"
+    ],
+    "summary": "Retranslate Many",
+    "description": "一次重翻多段（最多 20 段），如改了术语译法后重翻用到它的段落。",
+    "operationId": "retranslate_many_api_jobs__job_id__retranslate_post",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     },
+     {
+      "name": "x-llm-base-url",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Base-Url"
+      }
+     },
+     {
+      "name": "x-llm-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Key"
+      }
+     },
+     {
+      "name": "x-llm-model",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Model"
+      }
+     },
+     {
+      "name": "x-parser-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Parser-Key"
+      }
+     },
+     {
+      "name": "x-paddle-key",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Paddle-Key"
+      }
+     },
+     {
+      "name": "x-llm-protocol",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "enum": [
+          "openai",
+          "anthropic"
+         ],
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Llm-Protocol"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RetranslateManyIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/SegmentOut"
+         },
+         "title": "Response Retranslate Many Api Jobs  Job Id  Retranslate Post"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/jobs/{job_id}/revisions": {
    "get": {
     "tags": [
@@ -2379,6 +2583,48 @@
     "type": "object",
     "title": "RetranslateIn"
    },
+   "RetranslateManyIn": {
+    "properties": {
+     "segment_ids": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "maxItems": 20,
+      "minItems": 1,
+      "title": "Segment Ids"
+     },
+     "quality": {
+      "type": "string",
+      "enum": [
+       "default",
+       "careful"
+      ],
+      "title": "Quality",
+      "default": "default"
+     },
+     "user_terms": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "type": "string"
+        },
+        "type": "object",
+        "maxProperties": 5000
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "User Terms"
+     }
+    },
+    "type": "object",
+    "required": [
+     "segment_ids"
+    ],
+    "title": "RetranslateManyIn"
+   },
    "RevisionOut": {
     "properties": {
      "id": {
@@ -2580,6 +2826,43 @@
      "target"
     ],
     "title": "TermEntry"
+   },
+   "TermUse": {
+    "properties": {
+     "source": {
+      "type": "string",
+      "title": "Source"
+     },
+     "target": {
+      "type": "string",
+      "title": "Target"
+     },
+     "origin": {
+      "type": "string",
+      "enum": [
+       "user",
+       "paper",
+       "library"
+      ],
+      "title": "Origin"
+     },
+     "segment_ids": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Segment Ids"
+     }
+    },
+    "type": "object",
+    "required": [
+     "source",
+     "target",
+     "origin",
+     "segment_ids"
+    ],
+    "title": "TermUse",
+    "description": "这篇论文用到的一个术语。"
    },
    "ValidationError": {
     "properties": {

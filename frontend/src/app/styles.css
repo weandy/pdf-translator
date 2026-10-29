@@ -2123,3 +2123,89 @@ input[type="radio"] {
   width: 100%;
   justify-content: flex-start;
 }
+
+/* 本文术语面板；当前术语出现的段落淡淡标出 */
+.hit.marked,
+.tblock.marked {
+  background: rgb(118 190 220 / 0.18);
+}
+.terms-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: center;
+}
+.terms-filter input[type="search"] {
+  flex: 1;
+  min-width: 140px;
+}
+.choice-inline {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+.terms-list {
+  display: flex;
+  flex-direction: column;
+  margin: 8px 0 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+.terms-list > li {
+  border-bottom: 1px solid var(--rule);
+}
+.terms-list > li.open {
+  background: var(--desk);
+}
+.term-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  min-height: 0;
+  padding: 8px 6px;
+  border: none;
+  border-radius: 0;
+  background: none;
+  color: var(--ink);
+  text-align: left;
+}
+.term-item:hover {
+  background: var(--pencil);
+}
+.term-item small {
+  color: var(--ink-soft);
+}
+.term-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 8px 12px;
+}
+.term-detail .hint,
+.term-detail p {
+  margin: 0;
+}
+.term-nav {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 13px;
+}
+.term-fix {
+  display: flex;
+  gap: 6px;
+}
+.term-fix input {
+  flex: 1;
+  min-width: 0;
+}
+.term-redo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}

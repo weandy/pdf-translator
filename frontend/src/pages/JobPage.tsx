@@ -9,6 +9,7 @@ import { progressOf, withSegment } from "@/entities/document/model";
 import { STAGE_LABELS, useJob } from "@/entities/job/model";
 import { useSettings } from "@/entities/settings/model";
 import { DownloadMenu } from "@/features/export/DownloadMenu";
+import { TermsPanel } from "@/features/job-terms/TermsPanel";
 import { JobProgress } from "@/features/job-progress/JobProgress";
 import { ReaderView } from "@/features/reader/ReaderView";
 import { RevisionList } from "@/features/revisions/RevisionList";
@@ -25,6 +26,9 @@ export function JobPage() {
   const { translationSide } = useSettings();
   const [selected, setSelected] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [showTerms, setShowTerms] = useState(false);
+  const [spot, setSpot] = useState<{ id: string; n: number } | null>(null);
+  const [marked, setMarked] = useState<ReadonlySet<string>>(new Set());
   const [revealKey, setRevealKey] = useState(0);
   useEffect(() => {
     if (!showHistory) return;
@@ -59,6 +63,8 @@ export function JobPage() {
   const open = (segmentId: string) => {
     setSelected(segmentId);
     setShowHistory(false);
+    setShowTerms(false);
+    setMarked(new Set());
   };
   // 关闭编辑后把焦点还给原来的段落（键盘用户接着 Tab）
   const closeEditor = () => {
@@ -111,13 +117,33 @@ export function JobPage() {
           heading={heading}
           side={translationSide}
           revealKey={revealKey}
+          spot={spot}
+          marked={marked}
           actions={
             <>
               <button
                 type="button"
+                className={showTerms ? "quiet on" : "quiet"}
+                aria-pressed={showTerms}
+                onClick={() => {
+                  setShowTerms((v) => !v);
+                  setShowHistory(false);
+                  setSelected(null);
+                  setMarked(new Set());
+                }}
+                title="这篇用到的术语，检查译法是否一致"
+              >
+                术语
+              </button>
+              <button
+                type="button"
                 className={showHistory ? "quiet on" : "quiet"}
                 aria-pressed={showHistory}
-                onClick={() => setShowHistory((v) => !v)}
+                onClick={() => {
+                  setShowHistory((v) => !v);
+                  setShowTerms(false);
+                  setMarked(new Set());
+                }}
                 title="所有手动修改，可按步撤回"
               >
                 <span>
@@ -141,7 +167,17 @@ export function JobPage() {
             <RevisionList revisions={revisions} labels={labels} onRevert={onRevert} onOpen={reveal} />
           </aside>
         )}
-        {!showHistory && segment && (
+        {showTerms && (
+          <TermsPanel
+            jobId={id}
+            doc={doc}
+            onChange={onChange}
+            onSpot={(segmentId) => setSpot((s) => ({ id: segmentId, n: (s?.n ?? 0) + 1 }))}
+            onMark={(ids) => setMarked(new Set(ids))}
+            onClose={() => setShowTerms(false)}
+          />
+        )}
+        {!showHistory && !showTerms && segment && (
           <SegmentEditor
             key={`${segment.id}:${segment.target ?? ""}`}
             segment={segment}

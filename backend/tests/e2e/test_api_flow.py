@@ -576,3 +576,19 @@ def test_export_is_cached_resumable_and_refreshed_after_edits(client: TestClient
     with pymupdf.open(stream=client.get(url, params={"mode": "mono"}).content, filetype="pdf") as pdf:
         assert "导出缓存要更新" in "".join(str(p.get_text()) for p in pdf).replace("\n", "")
     assert len(list(exports.glob("mono-right-*.pdf"))) == 1  # 旧缓存删掉了
+
+
+def test_job_terms_and_batch_retranslate(client: TestClient):
+    terms = {"function": "映射", "normal paragraph": "normal paragraph"}
+    job = _wait(client, _upload(client, options={"cloud_consent": True, "user_terms": terms}).json()["id"])
+    uses = {u["source"]: u for u in client.get(f"/api/jobs/{job['id']}/terms").json()}
+    fn, normal = uses["function"], uses["normal paragraph"]
+    assert fn["origin"] == "user" and len(fn["segment_ids"]) == 1 and len(normal["segment_ids"]) == 1
+
+    ids = fn["segment_ids"] + normal["segment_ids"]
+    r = client.post(f"/api/jobs/{job['id']}/retranslate", json={"segment_ids": ids}, headers=HEADERS)
+    assert r.status_code == 200 and [s["id"] for s in r.json()] == ids
+    revs = client.get(f"/api/jobs/{job['id']}/revisions").json()
+    assert sorted(x["segment_id"] for x in revs if x["action"] == "retranslate") == sorted(ids)  # 每段可撤回
+    too_many = {"segment_ids": [ids[0]] * 21}
+    assert client.post(f"/api/jobs/{job['id']}/retranslate", json=too_many, headers=HEADERS).status_code == 422

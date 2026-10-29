@@ -12,6 +12,7 @@ import tempfile
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -30,7 +31,7 @@ from pdftr.domain.job import STAGES, Job, JobOptions, JobStatus
 from pdftr.domain.llm import ChatError, ChatOptions
 from pdftr.extraction.chars import page_count
 from pdftr.extraction.outline import pdf_outline
-from pdftr.glossary.matcher import combine
+from pdftr.glossary.matcher import TermMatcher, combine
 from pdftr.glossary.user_import import ParsedGlossary, parse_upload
 from pdftr.pipeline.memory import release_memory
 from pdftr.pipeline.runner import Pipeline, load_context, load_document
@@ -409,26 +410,80 @@ async def retranslate_segment(
     pipeline: Pipeline, segment_id: str, quality: Quality, secrets: Secrets, user_terms: dict[str, str] | None = None
 ) -> Segment:
     """user_terms：浏览器里最新的用户术语库（用户纠正术语后重翻这一段时用）；不传则用建任务时的。"""
-    _require_secrets(secrets, parser=None)
     seg = _segment(pipeline, segment_id)
-    terms = user_terms if user_terms is not None else get_job(pipeline, seg.job_id).options.user_terms
-    before = seg.model_copy()
-    seg.status = SegmentStatus.PENDING
+    (out,) = await retranslate_segments(pipeline, seg.job_id, [segment_id], quality, secrets, user_terms)
+    return out
+
+
+MAX_RETRANSLATE = 20  # 一次重翻的段数上限：请求要在网关超时（约 100 秒）前返回
+
+
+async def retranslate_segments(
+    pipeline: Pipeline,
+    job_id: str,
+    segment_ids: list[str],
+    quality: Quality,
+    secrets: Secrets,
+    user_terms: dict[str, str] | None = None,
+) -> list[Segment]:
+    """一次重翻同一任务的多段（改了术语译法后重翻用到它的段落），与整篇翻译一样分批发给模型。
+    每段照常记入修改记录、可以撤回，费用计入任务。"""
+    _require_secrets(secrets, parser=None)
+    if not 1 <= len(segment_ids) <= MAX_RETRANSLATE:
+        raise UserError(f"一次最多重翻 {MAX_RETRANSLATE} 段")
+    job = get_job(pipeline, job_id)
+    segs = [_segment(pipeline, sid) for sid in dict.fromkeys(segment_ids)]
+    if any(s.job_id != job_id for s in segs):
+        raise NotFound("段落不属于这个任务")
+    terms = user_terms if user_terms is not None else job.options.user_terms
+    befores = {s.id: s.model_copy() for s in segs}
+    for s in segs:
+        s.status = SegmentStatus.PENDING
     deps = pipeline.deps
-    chat = deps.chat_factory(secrets)
-    matcher = deps.term_matcher()
-    (out,), report = await translate(
-        [seg], chat=chat, cache=deps.cache, ctx=load_context(deps, seg.job_id, terms),
-        lookup_terms=combine(terms, matcher),
+    outs, report = await translate(
+        segs, chat=deps.chat_factory(secrets), cache=deps.cache, ctx=load_context(deps, job_id, terms),
+        lookup_terms=combine(terms, deps.term_matcher()),
         opts=TranslateOptions(quality=quality, use_cache=False),
     )  # fmt: skip
-    deps.store.save_segments([out])
-    _record(pipeline, before, out, "careful" if quality == "careful" else "retranslate")
+    deps.store.save_segments(outs)
+    for out in outs:
+        _record(pipeline, befores[out.id], out, "careful" if quality == "careful" else "retranslate")
     if report.cost_cny is not None:  # 重翻、精修的费用也计入任务花费
-        job = get_job(pipeline, seg.job_id)
+        job = get_job(pipeline, job_id)
         job.cost_cny = (job.cost_cny or 0) + report.cost_cny
         deps.store.save_job(job)
-    return out
+    return outs
+
+
+class TermUse(BaseModel):
+    """这篇论文用到的一个术语。"""
+
+    source: str
+    target: str
+    origin: Literal["user", "paper", "library"]  # 我的术语库 / 本文自动抽取 / 公共词库
+    segment_ids: list[str]  # 原文里出现它的段落
+
+
+def job_terms(pipeline: Pipeline, job_id: str) -> list[TermUse]:
+    """这篇论文用到了哪些术语、各在哪几段（出现得多的在前）。来源与译法按建任务时的用户术语库计算；
+    译文有没有用上推荐译法由前端检查（要按浏览器里最新的术语库和当前译文算）。"""
+    job = get_job(pipeline, job_id)
+    deps = pipeline.deps
+    user = job.options.user_terms or {}
+    paper = load_context(deps, job_id, user).terms
+    lookup_paper = TermMatcher(paper, min_length=2).match if paper else None
+    lookup_rest = combine(user, deps.term_matcher())
+    mine = {k.lower() for k in user}
+    uses: dict[str, TermUse] = {}
+    for seg in deps.store.segments(job_id):
+        hits = (lookup_rest(seg.source) if lookup_rest else {}) | (lookup_paper(seg.source) if lookup_paper else {})
+        for source, target in hits.items():
+            k = source.lower()
+            if k not in uses:
+                origin = "user" if k in mine else "paper" if source in paper else "library"
+                uses[k] = TermUse(source=source, target=target, origin=origin, segment_ids=[])
+            uses[k].segment_ids.append(seg.id)
+    return sorted(uses.values(), key=lambda u: (-len(u.segment_ids), u.source.lower()))
 
 
 def formula_crop(pipeline: Pipeline, segment_id: str, key: str) -> bytes:

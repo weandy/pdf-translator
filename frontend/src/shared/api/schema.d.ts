@@ -235,6 +235,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/{job_id}/terms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Job Terms
+         * @description 这篇论文用到的术语：来源与出现在哪几段。
+         */
+        get: operations["job_terms_api_jobs__job_id__terms_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/retranslate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retranslate Many
+         * @description 一次重翻多段（最多 20 段），如改了术语译法后重翻用到它的段落。
+         */
+        post: operations["retranslate_many_api_jobs__job_id__retranslate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/{job_id}/revisions": {
         parameters: {
             query?: never;
@@ -720,6 +760,21 @@ export interface components {
                 [key: string]: string;
             } | null;
         };
+        /** RetranslateManyIn */
+        RetranslateManyIn: {
+            /** Segment Ids */
+            segment_ids: string[];
+            /**
+             * Quality
+             * @default default
+             * @enum {string}
+             */
+            quality: "default" | "careful";
+            /** User Terms */
+            user_terms?: {
+                [key: string]: string;
+            } | null;
+        };
         /** RevisionOut */
         RevisionOut: {
             /** Id */
@@ -793,6 +848,23 @@ export interface components {
              * @default
              */
             note: string;
+        };
+        /**
+         * TermUse
+         * @description 这篇论文用到的一个术语。
+         */
+        TermUse: {
+            /** Source */
+            source: string;
+            /** Target */
+            target: string;
+            /**
+             * Origin
+             * @enum {string}
+             */
+            origin: "user" | "paper" | "library";
+            /** Segment Ids */
+            segment_ids: string[];
         };
         /** ValidationError */
         ValidationError: {
@@ -1247,6 +1319,79 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    job_terms_api_jobs__job_id__terms_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TermUse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retranslate_many_api_jobs__job_id__retranslate_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-llm-base-url"?: string | null;
+                "x-llm-key"?: string | null;
+                "x-llm-model"?: string | null;
+                "x-parser-key"?: string | null;
+                "x-paddle-key"?: string | null;
+                "x-llm-protocol"?: ("openai" | "anthropic") | null;
+            };
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetranslateManyIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SegmentOut"][];
                 };
             };
             /** @description Validation Error */

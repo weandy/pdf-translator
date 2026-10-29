@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import ValidationError
 
 from pdftr.api.deps import pipeline, secrets
-from pdftr.api.schemas import DocumentOut, JobOut, RevisionOut
+from pdftr.api.schemas import DocumentOut, JobOut, RetranslateManyIn, RevisionOut, SegmentOut
 from pdftr.domain.job import JobOptions, JobStatus
 from pdftr.pipeline import usecases
 from pdftr.pipeline.runner import Pipeline
@@ -120,6 +120,21 @@ async def export_job(
     disposition = f"attachment; filename=\"translated.pdf\"; filename*=UTF-8''{quote(filename)}"
     # 文件响应支持 HTTP Range：浏览器下载中断后可以续传
     return FileResponse(path, media_type="application/pdf", headers={"Content-Disposition": disposition})
+
+
+@router.get("/{job_id}/terms", response_model=list[usecases.TermUse])
+def job_terms(job_id: str, p: PipelineDep) -> list[usecases.TermUse]:
+    """这篇论文用到的术语：来源与出现在哪几段。"""
+    return usecases.job_terms(p, job_id)
+
+
+@router.post("/{job_id}/retranslate", response_model=list[SegmentOut])
+async def retranslate_many(
+    job_id: str, body: RetranslateManyIn, p: PipelineDep, sec: Annotated[Secrets, Depends(secrets)]
+) -> list[SegmentOut]:
+    """一次重翻多段（最多 20 段），如改了术语译法后重翻用到它的段落。"""
+    segs = await usecases.retranslate_segments(p, job_id, body.segment_ids, body.quality, sec, body.user_terms)
+    return [SegmentOut.of(s) for s in segs]
 
 
 @router.get("/{job_id}/revisions", response_model=list[RevisionOut])
