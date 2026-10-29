@@ -4,13 +4,14 @@ import { Link, useNavigate } from "react-router";
 
 import { deleteJob, MY_JOBS_QUERY, STAGE_LABELS, useMyJobs } from "@/entities/job/model";
 import { UploadPanel } from "@/features/upload/UploadPanel";
-import { exportUrl } from "@/shared/api/client";
+import { api, exportUrl } from "@/shared/api/client";
 
 const STATUS: Record<string, string> = {
   queued: "排队中",
   running: "进行中",
   done: "已完成",
   failed: "失败",
+  cancelled: "已取消",
 };
 
 export function HomePage({ openSettings }: { openSettings: () => void }) {
@@ -19,6 +20,17 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
   const { data: jobs } = useMyJobs();
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  const cancel = async (id: string, filename: string) => {
+    if (!window.confirm(`取消“${filename}”？已完成的步骤会保留，之后可以重新开始。`)) return;
+    setError(null);
+    try {
+      await api.cancelJob(id);
+      await queryClient.invalidateQueries({ queryKey: MY_JOBS_QUERY });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   const remove = async (id: string, filename: string) => {
     if (!window.confirm(`删除“${filename}”的原文与译文？删除后无法恢复。`)) return;
@@ -98,6 +110,11 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
                     <a className="button quiet" href={exportUrl(j.id, "mono")} download>
                       下载
                     </a>
+                  )}
+                  {(j.status === "running" || j.status === "queued") && (
+                    <button type="button" className="quiet" onClick={() => void cancel(j.id, j.filename)}>
+                      取消
+                    </button>
                   )}
                   {j.status !== "running" && j.status !== "queued" && (
                     <button type="button" className="quiet danger" onClick={() => void remove(j.id, j.filename)}>

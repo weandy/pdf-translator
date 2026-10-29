@@ -71,7 +71,7 @@ async def job_events(job_id: str, request: Request, p: PipelineDep) -> Streaming
             current = job
             while True:
                 yield f"data: {JobOut.of(current).model_dump_json()}\n\n"
-                if current.status in (JobStatus.DONE, JobStatus.FAILED):
+                if current.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
                     return
                 while True:
                     if await request.is_disconnected():
@@ -124,6 +124,12 @@ async def export_job(
 def list_revisions(job_id: str, p: PipelineDep) -> list[RevisionOut]:
     """手动修改记录（保存修改、重翻、精修、撤回），按时间先后。"""
     return [RevisionOut.of(r) for r in usecases.revisions(p, job_id)]
+
+
+@router.post("/{job_id}/cancel", response_model=JobOut, status_code=202)
+async def cancel_job(job_id: str, p: PipelineDep) -> JobOut:
+    """取消排队中或进行中的任务（异步生效：状态随后变为 cancelled）。"""
+    return JobOut.of(usecases.cancel_job(p, job_id))
 
 
 @router.post("/{job_id}/retry", response_model=JobOut, status_code=202)

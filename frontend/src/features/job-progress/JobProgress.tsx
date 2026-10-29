@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 
-import { STAGE_LABELS, STAGE_ORDER } from "@/entities/job/model";
+import { deleteJob, STAGE_LABELS, STAGE_ORDER } from "@/entities/job/model";
 import { api, type Job } from "@/shared/api/client";
 import { formatDuration, useNow } from "@/shared/time/elapsed";
 
@@ -14,8 +14,11 @@ interface Props {
 const HAS_FRACTION = new Set(["parse", "translate"]);
 
 export function JobProgress({ job, onRetried }: Props) {
+  const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const live = job.status === "running" || job.status === "queued";
+  const stopped = job.status === "failed" || job.status === "cancelled";
   const now = useNow(live);
   const current = STAGE_ORDER.indexOf(job.stage);
   const since = (iso: string | null | undefined) => (iso ? formatDuration(now - Date.parse(iso)) : null);
@@ -25,6 +28,29 @@ export function JobProgress({ job, onRetried }: Props) {
     try {
       await api.retryJob(job.id);
       onRetried();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const cancel = async () => {
+    if (!window.confirm("取消这个任务？已完成的步骤会保留，之后可以从中断处重新开始。")) return;
+    setError(null);
+    setCancelling(true);
+    try {
+      await api.cancelJob(job.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!window.confirm(`删除“${job.filename}”的原文与译文？删除后无法恢复。`)) return;
+    try {
+      await deleteJob(job.id);
+      void navigate("/");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -40,6 +66,7 @@ export function JobProgress({ job, onRetried }: Props) {
         {job.status === "queued" && "排队中，前面的任务完成后开始。"}
         {job.status === "running" && `已用时 ${since(job.created_at) ?? ""}，共 ${job.page_count} 页`}
         {job.status === "failed" && "任务没有完成。已完成的步骤会保留，重试时从中断处继续，不会重复收费。"}
+        {job.status === "cancelled" && "已取消。已完成的步骤会保留，重新开始时从中断处继续，已翻过的段落不会重复收费。"}
       </p>
 
       <ol className="timeline">
@@ -50,7 +77,9 @@ export function JobProgress({ job, onRetried }: Props) {
               : i === current
                 ? job.status === "failed"
                   ? "failed"
-                  : "active"
+                  : job.status === "cancelled"
+                    ? "cancelled"
+                    : "active"
                 : "";
           const fraction = HAS_FRACTION.has(stage) && job.progress > 0 ? job.progress : null;
           return (
@@ -78,19 +107,32 @@ export function JobProgress({ job, onRetried }: Props) {
                   )}
                 </div>
               )}
-              {state === "failed" && (
+              {(state === "failed" || state === "cancelled") && (
                 <div className="stage-detail failure">
-                  <p className="error">{job.error || "这一步失败了"}</p>
-                  <button type="button" className="primary" onClick={() => void retry()}>
-                    从中断处重试
-                  </button>
-                  {error && <p className="error">{error}</p>}
+                  {state === "failed" ? <p className="error">{job.error || "这一步失败了"}</p> : <p>在这一步取消了</p>}
+                  <div className="row-actions">
+                    <button type="button" className="primary" onClick={() => void retry()}>
+                      {state === "failed" ? "从中断处重试" : "重新开始"}
+                    </button>
+                    <button type="button" className="quiet danger" onClick={() => void remove()}>
+                      删除
+                    </button>
+                  </div>
                 </div>
               )}
             </li>
           );
         })}
       </ol>
+      {live && (
+        <div className="progress-actions">
+          <button type="button" className="quiet danger" disabled={cancelling} onClick={() => void cancel()}>
+            {cancelling ? "正在取消…" : "取消翻译"}
+          </button>
+        </div>
+      )}
+      {stopped && error && <p className="error">{error}</p>}
+      {live && error && <p className="error">{error}</p>}
     </section>
   );
 }

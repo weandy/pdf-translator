@@ -633,13 +633,20 @@ input[type="radio"] {
   background: var(--red-pen);
   color: #fff;
 }
+.timeline li.cancelled::before {
+  content: "–";
+  border-color: var(--ink-soft);
+  background: var(--ink-soft);
+  color: #fff;
+}
 .stage-name {
   align-self: center;
   color: var(--ink-soft);
 }
 .timeline li.done .stage-name,
 .timeline li.active .stage-name,
-.timeline li.failed .stage-name {
+.timeline li.failed .stage-name,
+.timeline li.cancelled .stage-name {
   color: var(--ink);
 }
 .timeline li.active .stage-name {
@@ -1409,4 +1416,15 @@ input[type="radio"] {
 .math-raw {
   font-family: var(--sans);
   font-size: 0.85em;
+}
+
+/* 取消任务 */
+.progress-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+.stage-detail .row-actions {
+  display: flex;
+  gap: 8px;
 }

@@ -129,6 +129,7 @@ class Pipeline:
         self._slots = {"parse": parse, "fuse": local, "segment": local, "glossary": llm, "translate": llm,
                        "render": local}  # fmt: skip
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._cancelling: set[str] = set()  # 用户要求取消的任务（与服务停止时的取消区分开）
 
     # ---- 调度 ----
     def submit(self, job: Job, secrets: Secrets) -> None:
@@ -139,6 +140,15 @@ class Pipeline:
 
     def is_running(self, job_id: str) -> bool:
         return job_id in self._tasks
+
+    def cancel(self, job_id: str) -> bool:
+        """取消排队中或进行中的任务；返回是否有任务可取消。已完成的阶段与译文缓存保留，重试时从中断处继续。"""
+        task = self._tasks.get(job_id)
+        if task is None or task.done():
+            return False
+        self._cancelling.add(job_id)
+        task.cancel()
+        return True
 
     def active_count(self) -> int:
         """排队中与执行中的任务数。"""
@@ -190,12 +200,17 @@ class Pipeline:
                                      stage_started_at=datetime.now(UTC))  # fmt: skip
                         await getattr(self, f"_{stage}")(job, secrets)
             self._update(job, status=JobStatus.DONE, stage="done", progress=1.0)
+        except asyncio.CancelledError:
+            if job_id not in self._cancelling:
+                raise  # 服务停止：交给启动时的中断恢复处理
+            self._update(job, status=JobStatus.CANCELLED, error="", message="已取消")
         except (ParseError, ChatError, StageError) as e:
             self._update(job, status=JobStatus.FAILED, error=str(e))
         except Exception:
             log.exception("任务 %s 在阶段 %s 失败", job_id, job.stage)
             self._update(job, status=JobStatus.FAILED, error="内部错误，请查看服务日志")
         finally:
+            self._cancelling.discard(job_id)
             self.deps.secrets.drop(job_id)
             release_memory()
 

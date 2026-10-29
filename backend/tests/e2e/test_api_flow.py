@@ -429,3 +429,51 @@ def test_batch_parses_in_parallel_and_translates_one_by_one(client: TestClient):
     assert peak["parse"] >= 2 and peak["translate"] == 1  # 解析同时进行，翻译一篇接一篇
     assert any(m.startswith("等待翻译，前面还有") for m in messages)
     assert all(j["message"].startswith("已翻译") for j in jobs)  # 排队说明不会留成最终消息
+
+
+def test_cancel_running_and_queued_jobs_then_resume(client: TestClient):
+    pipeline = client.app.state.container.pipeline  # type: ignore[attr-defined]
+    original = pipeline._parse
+
+    async def slow(job, secrets):
+        await asyncio.sleep(0.6)
+        return await original(job, secrets)
+
+    pipeline._parse = slow
+    pipeline._slots["parse"] = type(pipeline._slots["parse"])(1, lambda n: f"排队等待解析，排在第 {n} 位")
+    running, queued, behind = (_upload(client).json()["id"] for _ in range(3))
+    time.sleep(0.2)
+    assert client.get(f"/api/jobs/{queued}").json()["message"] == "排队等待解析，排在第 1 位"
+    assert client.post(f"/api/jobs/{queued}/cancel").status_code == 202
+    assert client.post(f"/api/jobs/{running}/cancel").status_code == 202
+    time.sleep(0.2)
+    for job_id in (running, queued):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        assert job["status"] == "cancelled" and job["message"] == "已取消"
+    assert _wait(client, behind)["status"] == "done"  # 队伍前进，后面的任务照常完成
+    assert client.post(f"/api/jobs/{behind}/cancel").status_code == 400  # 已完成的不能取消
+
+    # 已取消的任务可以从中断处重新开始，也可以删除
+    pipeline._parse = original
+    assert client.post(f"/api/jobs/{running}/retry", headers=HEADERS).status_code == 202
+    assert _wait(client, running)["status"] == "done"
+    assert client.delete(f"/api/jobs/{queued}").status_code == 204
+
+
+def test_shutdown_cancellation_is_not_reported_as_user_cancel(client: TestClient):
+    pipeline = client.app.state.container.pipeline  # type: ignore[attr-defined]
+    original = pipeline._parse
+
+    async def slow(job, secrets):
+        await asyncio.sleep(1)
+        return await original(job, secrets)
+
+    pipeline._parse = slow
+    job_id = _upload(client).json()["id"]
+    time.sleep(0.2)
+    task = pipeline._tasks[job_id]
+    task.get_loop().call_soon_threadsafe(task.cancel)  # 服务停止时的取消：不经过 Pipeline.cancel
+    time.sleep(0.3)
+    # 不标成“已取消”：保持进行中，下次启动时由中断恢复标记为失败、可重试
+    assert client.get(f"/api/jobs/{job_id}").json()["status"] == "running"
+    assert pipeline.cancel("0000000000000000") is False  # 没有这个任务

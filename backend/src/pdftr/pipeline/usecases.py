@@ -146,6 +146,14 @@ def export_job(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "
     return f"{Path(job.filename).stem}-{suffix}.pdf", data
 
 
+def cancel_job(pipeline: Pipeline, job_id: str) -> Job:
+    """取消排队中或进行中的任务。"""
+    job = get_job(pipeline, job_id)
+    if job.status not in (JobStatus.QUEUED, JobStatus.RUNNING) or not pipeline.cancel(job_id):
+        raise UserError("任务不在进行中，无法取消")
+    return job
+
+
 def retry_job(pipeline: Pipeline, job_id: str, secrets: Secrets) -> Job:
     job = get_job(pipeline, job_id)
     if pipeline.is_running(job_id):

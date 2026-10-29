@@ -14,6 +14,7 @@ class JobStatus(StrEnum):
     RUNNING = "running"
     DONE = "done"
     FAILED = "failed"
+    CANCELLED = "cancelled"  # 用户取消：保留在“我的任务”里，可以从中断处重新开始或删除
 
 
 # 流水线阶段，按执行顺序排列（docs/03-mvp-design.md §3.4）

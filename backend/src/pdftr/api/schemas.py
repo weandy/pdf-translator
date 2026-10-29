@@ -35,7 +35,7 @@ class ConfigOut(BaseModel):
 class JobOut(BaseModel):
     id: str
     filename: str
-    status: Literal["queued", "running", "done", "failed"]
+    status: Literal["queued", "running", "done", "failed", "cancelled"]
     stage: str
     progress: float
     message: str

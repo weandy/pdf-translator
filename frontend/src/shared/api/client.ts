@@ -80,6 +80,7 @@ export const api = {
     return request<Job>("/api/jobs", { method: "POST", body: form });
   },
   retryJob: (id: string) => request<Job>(`/api/jobs/${id}/retry`, { method: "POST" }),
+  cancelJob: (id: string) => request<Job>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   document: (id: string) => request<DocumentData>(`/api/jobs/${id}/document`),
   editSegment: (id: string, target: string) =>
     request<SegmentData>(`/api/segments/${id}`, { method: "PATCH", ...json({ target }) }),
@@ -116,7 +117,7 @@ export function subscribeJob(id: string, onJob: (job: Job) => void, onError?: ()
   es.onmessage = (e) => {
     const job = JSON.parse(e.data as string) as Job;
     onJob(job);
-    if (job.status === "done" || job.status === "failed") es.close();
+    if (job.status === "done" || job.status === "failed" || job.status === "cancelled") es.close();
   };
   es.onerror = () => {
     es.close();
