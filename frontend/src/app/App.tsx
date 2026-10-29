@@ -3,8 +3,8 @@ import { lazy, Suspense, useState } from "react";
 import { createBrowserRouter, Link, Outlet, RouterProvider, useOutletContext } from "react-router";
 
 import { authHeaders } from "@/entities/settings/model";
-import { GlossaryPanel } from "@/features/glossary/GlossaryPanel";
 import { SettingsPanel } from "@/features/settings/SettingsPanel";
+import { GlossaryPage } from "@/pages/GlossaryPage";
 import { GuidePage } from "@/pages/GuidePage";
 import { HomePage } from "@/pages/HomePage";
 import { setAuthHeaders } from "@/shared/api/client";
@@ -25,7 +25,6 @@ interface LayoutContext {
 
 function Layout() {
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [glossaryOpen, setGlossaryOpen] = useState(false);
   return (
     <>
       <header className="topbar">
@@ -45,16 +44,15 @@ function Layout() {
         <Link to="/guide" className="topbar-link">
           <span className="wide-only">使用</span>指南
         </Link>
-        <button type="button" className="quiet" onClick={() => setGlossaryOpen(true)}>
+        <Link to="/glossary" className="topbar-link">
           术语库
-        </button>
+        </Link>
         <button type="button" className="quiet" onClick={() => setSettingsOpen(true)}>
           设置
         </button>
       </header>
       <Outlet context={{ openSettings: () => setSettingsOpen(true) } satisfies LayoutContext} />
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
-      {glossaryOpen && <GlossaryPanel onClose={() => setGlossaryOpen(false)} />}
     </>
   );
 }
@@ -70,6 +68,7 @@ const router = createBrowserRouter([
     children: [
       { path: "/", element: <Home /> },
       { path: "/guide", element: <GuidePage /> },
+      { path: "/glossary", element: <GlossaryPage /> },
       {
         path: "/jobs/:id",
         element: (
