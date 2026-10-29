@@ -1,6 +1,7 @@
 /**
  * pdf.js 封装：加载文档（同一地址只加载一次）、渲染单页到 canvas、统计本地文件页数。
- * useWasm=false：WebAssembly 解码需要额外部署 wasm 文件并放宽 CSP，pdf.js 会退回 JS 实现。
+ * useWasm=false：WebAssembly 解码需要放宽 CSP，改用纯 JS 解码器。扫描件常用的 CCITT 传真、JBIG2、JPEG 2000 图片
+ * 的解码器按 wasmUrl 加载（构建时原名放在 /pdfjs/，见 vite.config.ts），不给这个地址扫描页会画成空白。
  * 用 legacy 构建：默认构建直接调用 Promise.try、Map.getOrInsertComputed 等 2025 年后才有的 API，
  * 稍旧的 Chrome 上整页画不出来（原文页空白、译文页没有图片），legacy 构建自带补丁。
  */
@@ -12,11 +13,12 @@ import { useEffect, useRef, useState } from "react";
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
 const docs = new Map<string, Promise<PDFDocumentProxy>>();
+const DECODERS = "/pdfjs/";
 
 export function loadPdf(url: string): Promise<PDFDocumentProxy> {
   let p = docs.get(url);
   if (!p) {
-    p = pdfjs.getDocument({ url, useWasm: false }).promise;
+    p = pdfjs.getDocument({ url, useWasm: false, wasmUrl: DECODERS }).promise;
     p.catch(() => docs.delete(url));
     docs.set(url, p);
   }
