@@ -1,7 +1,10 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { findTerm, termMap, upsertTerms, useTerms } from "@/entities/glossary/model";
-import { api, type Quality, type SegmentData } from "@/shared/api/client";
+import { api, formulaUrl, type Quality, type SegmentData } from "@/shared/api/client";
+import { InlineMathText, renderLatex } from "@/shared/math/inline";
+import { checkPlaceholders, placeholdersOk } from "@/shared/text/placeholders";
+import { spaceCjkLatin } from "@/shared/text/typeset";
 
 interface Props {
   segment: SegmentData;
@@ -23,6 +26,23 @@ export function SegmentEditor({ segment, onChange, onClose, history }: Props) {
   const [draft, setDraft] = useState(segment.target ?? "");
   const [busy, setBusy] = useState<"save" | Quality | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const box = useRef<HTMLTextAreaElement>(null);
+  const formulaKeys = Object.keys(segment.formulas).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+  const check = checkPlaceholders(segment.source, draft);
+  const formulasOk = placeholdersOk(check);
+  // 在光标处插入公式占位符（用户不必手打 <m2/>）
+  const insert = (key: string) => {
+    const el = box.current;
+    const at = el ? el.selectionStart : draft.length;
+    const end = el ? el.selectionEnd : draft.length;
+    const tag = `<${key}/>`;
+    setDraft(draft.slice(0, at) + tag + draft.slice(end));
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(at + tag.length, at + tag.length);
+    });
+  };
+  const formulaName = (key: string) => `公式 ${key.slice(1)}`;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     document.addEventListener("keydown", onKey);
@@ -97,9 +117,58 @@ export function SegmentEditor({ segment, onChange, onClose, history }: Props) {
           onKeyUp={(e) => pickSelection(e.currentTarget)}
         />
         <h3>译文</h3>
-        <textarea value={draft} onChange={(e) => setDraft(e.target.value)} aria-label="译文" />
+        <textarea ref={box} value={draft} onChange={(e) => setDraft(e.target.value)} aria-label="译文" />
       </div>
-      <p className="hint">公式显示为 &lt;m1/&gt; 这样的占位符，修改时请保留。</p>
+      {formulaKeys.length > 0 && (
+        <div className="formula-legend" aria-label="本段公式">
+          <span className="hint">编辑框里的 &lt;m1/&gt; 等是公式，每个保留一次；点下面的公式插入到光标处：</span>
+          <div className="chips">
+            {formulaKeys.map((k) => {
+              const html = renderLatex(segment.formulas[k]?.latex ?? "");
+              return (
+                <button key={k} type="button" className="formula-chip" onClick={() => insert(k)} title={`插入 <${k}/>`}>
+                  <span className="chip-name">&lt;{k}/&gt;</span>
+                  {html ? (
+                    <span dangerouslySetInnerHTML={{ __html: html }} />
+                  ) : (
+                    <code>{segment.formulas[k]?.latex}</code>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {!formulasOk && (
+        <div className="error formula-problems" role="alert">
+          {check.missing.length > 0 && (
+            <p>
+              少了 {check.missing.map(formulaName).join("、")}，保存后这些公式会消失。
+              {check.missing.map((k) => (
+                <button key={k} type="button" className="link" onClick={() => insert(k)}>
+                  插入 {formulaName(k)}
+                </button>
+              ))}
+            </p>
+          )}
+          {check.repeated.length > 0 && (
+            <p>{check.repeated.map(formulaName).join("、")} 出现了不止一次，请删掉多余的。</p>
+          )}
+          {check.unknown.length > 0 && <p>{check.unknown.map((k) => `<${k}/>`).join("、")} 在原文里不存在，请删掉。</p>}
+        </div>
+      )}
+      {formulaKeys.length > 0 && draft.trim() && (
+        <div className="edit-preview" aria-label="预览">
+          <span className="hint">预览</span>
+          <p>
+            <InlineMathText
+              text={spaceCjkLatin(draft)}
+              formulas={segment.formulas}
+              fallbackUrl={(k) => formulaUrl(segment.id, k)}
+            />
+          </p>
+        </div>
+      )}
       {error && <p className="error">{error}</p>}
       <div className="actions">
         <button type="button" disabled={busy !== null} onClick={() => void run("default")}>
@@ -117,7 +186,8 @@ export function SegmentEditor({ segment, onChange, onClose, history }: Props) {
         <button
           type="button"
           className="primary"
-          disabled={busy !== null || !draft.trim() || draft === segment.target}
+          disabled={busy !== null || !draft.trim() || draft === segment.target || !formulasOk}
+          title={formulasOk ? undefined : "公式不完整，先按提示修好"}
           onClick={() => void run("save")}
         >
           {busy === "save" ? "保存中…" : "保存修改"}

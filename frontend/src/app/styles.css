@@ -1702,3 +1702,59 @@ input[type="radio"] {
   outline: 2px solid var(--pen);
   outline-offset: 1px;
 }
+
+/* 公式编辑：本段公式清单、问题提示、预览 */
+.formula-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.formula-legend .hint {
+  margin: 0;
+}
+.formula-legend .chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.formula-chip {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  min-height: 30px;
+  padding: 2px 8px;
+  font-size: 14px;
+}
+.formula-chip .chip-name {
+  color: var(--ink-soft);
+  font-family: var(--sans);
+  font-size: 12px;
+}
+.formula-problems p {
+  margin: 0;
+  font-size: 13px;
+}
+.formula-problems .link {
+  margin-left: 8px;
+}
+.formula-legend,
+.formula-problems,
+.edit-preview {
+  flex: none; /* 编辑面板是纵向弹性布局，带滚动的预览框会被压扁 */
+}
+.edit-preview {
+  max-height: 160px;
+  overflow: auto;
+  padding: 6px 10px;
+  border: 1px dashed var(--rule);
+  border-radius: 6px;
+  background: var(--paper);
+}
+.edit-preview p {
+  margin: 4px 0 0;
+  font-family: var(--serif);
+  line-height: 1.7;
+}
+.edit-preview .zh {
+  font-family: "Pdftr Song", "Noto Serif CJK SC", "Source Han Serif SC", serif;
+}

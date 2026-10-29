@@ -153,8 +153,8 @@ def test_full_flow(client: TestClient):
 
     # 编辑、重翻、公式裁剪图
     sid = chain["id"]
-    edited = client.patch(f"/api/segments/{sid}", json={"target": "用户修改的译文"}).json()
-    assert edited["status"] == "edited" and edited["target"] == "用户修改的译文"
+    edited = client.patch(f"/api/segments/{sid}", json={"target": "用户修改的译文 <m1/>"}).json()  # 公式要保留
+    assert edited["status"] == "edited" and edited["target"] == "用户修改的译文 <m1/>"
     again = client.post(f"/api/segments/{sid}/retranslate", json={"quality": "careful"}, headers=HEADERS).json()
     assert again["target"].startswith("精:") and again["quality"] == "careful"
     png = client.get(f"/api/segments/{sid}/formulas/m1.png")
@@ -288,27 +288,32 @@ def test_paddle_parser_requires_its_own_token(client: TestClient):
     assert r.status_code == 202 and r.json()["options"]["parser"] == "paddleocr-vl"
 
 
+def keep(seg: dict, text: str) -> str:
+    """手动修改的译文要保留原段落的每个公式占位符。"""
+    return text + "".join(f" <{k}/>" for k in seg["formulas"])
+
+
 def test_revisions_record_manual_changes_and_revert_per_step(client: TestClient):
     job = _wait(client, _upload(client).json()["id"])
     segs = client.get(f"/api/jobs/{job['id']}/document").json()["segments"]
     a, b = segs[0], segs[1]
-    client.patch(f"/api/segments/{a['id']}", json={"target": "第一次修改"})
-    client.patch(f"/api/segments/{b['id']}", json={"target": "另一段的修改"})
+    client.patch(f"/api/segments/{a['id']}", json={"target": keep(a, "第一次修改")})
+    client.patch(f"/api/segments/{b['id']}", json={"target": keep(b, "另一段的修改")})
     client.post(f"/api/segments/{a['id']}/retranslate", json={"quality": "careful"}, headers=HEADERS)
-    client.patch(f"/api/segments/{a['id']}", json={"target": "第二次修改"})
+    client.patch(f"/api/segments/{a['id']}", json={"target": keep(a, "第二次修改")})
     revs = client.get(f"/api/jobs/{job['id']}/revisions").json()
     assert [r["action"] for r in revs] == ["edit", "edit", "careful", "edit"]
-    assert revs[0]["before"] == a["target"] and revs[0]["after"] == "第一次修改"
+    assert revs[0]["before"] == a["target"] and revs[0]["after"] == keep(a, "第一次修改")
 
     # 撤回 a 的第一步：a 回到机器译文，a 之后的两步一并作废；b 不受影响
     seg = client.post(f"/api/segments/revisions/{revs[0]['id']}/revert").json()
     assert seg["target"] == a["target"] and seg["status"] == "done"
     revs = client.get(f"/api/jobs/{job['id']}/revisions").json()
     undo = revs[-1]
-    assert undo["action"] == "revert" and undo["reverts"] == revs[0]["id"] and undo["before"] == "第二次修改"
+    assert undo["action"] == "revert" and undo["reverts"] == revs[0]["id"] and undo["before"] == keep(a, "第二次修改")
     assert [r["reverted_by"] for r in revs[:4]] == [undo["id"], None, undo["id"], undo["id"]]
     doc = client.get(f"/api/jobs/{job['id']}/document").json()
-    assert {s["id"]: s["target"] for s in doc["segments"]}[b["id"]] == "另一段的修改"
+    assert {s["id"]: s["target"] for s in doc["segments"]}[b["id"]] == keep(b, "另一段的修改")
 
     # 已撤回的步骤不能再撤回；撤回 b 的那一步后 b 也回到机器译文
     assert client.post(f"/api/segments/revisions/{revs[0]['id']}/revert").status_code == 400
@@ -554,3 +559,14 @@ def test_block_crops_for_reading_view(client: TestClient):
     text = next(b for b in blocks if b["type"] == "text")
     assert client.get(f"/api/jobs/{job['id']}/blocks/{text['id']}.png").status_code == 404  # 正文不裁图
     assert "latex" in figure
+
+
+def test_manual_edit_must_keep_every_formula(client: TestClient):
+    job = _wait(client, _upload(client).json()["id"])
+    seg = next(s for s in client.get(f"/api/jobs/{job['id']}/document").json()["segments"] if s["formulas"])
+    lost = client.patch(f"/api/segments/{seg['id']}", json={"target": "公式被删掉了"})
+    assert lost.status_code == 400 and "少了公式 1" in lost.json()["detail"]
+    twice = client.patch(f"/api/segments/{seg['id']}", json={"target": "<m1/> 重复 <m1/>"})
+    assert twice.status_code == 400 and "出现了 2 次" in twice.json()["detail"]
+    ok = client.patch(f"/api/segments/{seg['id']}", json={"target": "设 <m1/> 为函数"})
+    assert ok.status_code == 200 and ok.json()["status"] == "edited"

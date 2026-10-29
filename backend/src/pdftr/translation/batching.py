@@ -51,3 +51,16 @@ def parse_numbered(text: str) -> dict[int, str]:
 
 def placeholders_match(source: str, target: str) -> bool:
     return Counter(_PLACEHOLDER.findall(source)) == Counter(_PLACEHOLDER.findall(target))
+
+
+def placeholder_problems(source: str, target: str) -> list[str]:
+    """译文与原文的公式占位符不一致时，逐条说明（面向用户）；一致时返回空列表。"""
+    want, got = Counter(_PLACEHOLDER.findall(source)), Counter(_PLACEHOLDER.findall(target))
+    problems = []
+    for tag in sorted(set(want) | set(got), key=lambda t: int(re.sub(r"\D", "", t) or 0)):
+        n = tag[2:-2]  # <m2/> → 2
+        if got[tag] < want[tag]:
+            problems.append(f"少了公式 {n}（{tag}）")
+        elif got[tag] > want[tag]:
+            problems.append(f"公式 {n}（{tag}）出现了 {got[tag]} 次" if want[tag] else f"多了不存在的公式占位 {tag}")
+    return problems

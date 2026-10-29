@@ -45,3 +45,13 @@ def test_cost_and_peak():
     assert is_deepseek_peak(datetime(2026, 10, 28, 10, 0, tzinfo=BJ))  # 周三上午
     assert not is_deepseek_peak(datetime(2026, 10, 28, 12, 30, tzinfo=BJ))  # 午休
     assert not is_deepseek_peak(datetime(2026, 10, 31, 10, 0, tzinfo=BJ))  # 周六
+
+
+def test_placeholder_problems_explain_what_is_wrong():
+    from pdftr.translation.batching import placeholder_problems
+
+    src = "Let <m1/> and <m2/> be given."
+    assert placeholder_problems(src, "设 <m1/> 与 <m2/> 已知。") == []
+    assert placeholder_problems(src, "设 <m1/> 已知。") == ["少了公式 2（<m2/>）"]
+    assert placeholder_problems(src, "设 <m1/><m1/> 与 <m2/>。") == ["公式 1（<m1/>）出现了 2 次"]
+    assert placeholder_problems(src, "设 <m1/> 与 <m2/>、<m3/>。") == ["多了不存在的公式占位 <m3/>"]
