@@ -44,7 +44,7 @@ export function ReadingView({ doc, jobId, selected, onSelect }: Props) {
       {list.map((it) => {
         if (it.kind === "page") {
           return (
-            <p key={`p${it.index}`} className="flow-page" aria-hidden="true">
+            <p key={`p${it.index}`} className="flow-page" aria-hidden="true" data-page={it.index}>
               第 {it.index + 1} 页
             </p>
           );

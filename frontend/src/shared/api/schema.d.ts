@@ -499,6 +499,11 @@ export interface components {
              * @default []
              */
             links: components["schemas"]["LinkOut"][];
+            /**
+             * Outline
+             * @default []
+             */
+            outline: components["schemas"]["OutlineOut"][];
         };
         /** EditIn */
         EditIn: {
@@ -659,6 +664,21 @@ export interface components {
         ModelsOut: {
             /** Models */
             models: string[];
+        };
+        /** OutlineOut */
+        OutlineOut: {
+            /** Title */
+            title: string;
+            /** Translated */
+            translated: string;
+            /** Level */
+            level: number;
+            /** Page */
+            page: number;
+            /** Top */
+            top: number;
+            /** Segment Id */
+            segment_id: string | null;
         };
         /** PageOut */
         PageOut: {

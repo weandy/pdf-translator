@@ -1470,7 +1470,11 @@ input[type="radio"] {
   }
   .toolbar .segmented button {
     min-height: 26px;
-    padding: 0 8px;
+    padding: 0 6px;
+  }
+  .toolbar > button,
+  .toolbar .download-menu > button {
+    padding: 2px 6px;
   }
   .toolbar .back {
     display: none;
@@ -1558,6 +1562,9 @@ input[type="radio"] {
   display: none;
 }
 @media (max-width: 380px) {
+  .toolbar .help-button {
+    display: none; /* 极窄屏放不下；提示条第一次打开时仍会自动显示 */
+  }
   .toolbar {
     gap: 6px 6px;
   }
@@ -1757,4 +1764,95 @@ input[type="radio"] {
 }
 .edit-preview .zh {
   font-family: "Pdftr Song", "Noto Serif CJK SC", "Source Han Serif SC", serif;
+}
+
+/* 目录侧栏、页码跳转 */
+.reader-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.reader-body > .pages {
+  flex: 1;
+  min-width: 0;
+}
+.outline {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 260px;
+  overflow: auto;
+  border-right: 1px solid var(--rule);
+  background: var(--paper);
+  font-size: 13px;
+}
+.outline-head {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px 6px;
+}
+.outline ol {
+  margin: 0;
+  padding: 0 6px 16px;
+  list-style: none;
+}
+.outline-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0 6px;
+  width: 100%;
+  min-height: 0;
+  padding: 5px 6px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+}
+.outline-item:hover,
+.outline-item.on {
+  background: var(--pencil);
+}
+.outline-item small {
+  grid-column: 1;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+.outline-item .outline-page {
+  grid-row: 1;
+  grid-column: 2;
+}
+.page-jump {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  color: var(--ink-soft);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.page-jump input {
+  width: 3.2em;
+  padding: 2px 4px;
+  text-align: center;
+}
+@media (max-width: 640px) {
+  .page-jump {
+    display: none;
+  }
+  .outline {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 30;
+    width: min(82vw, 320px);
+    box-shadow: 8px 0 24px rgb(0 0 0 / 0.18);
+  }
+}
+@media (max-width: 640px) {
+  .wide-only {
+    display: none;
+  }
 }

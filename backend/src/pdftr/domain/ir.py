@@ -178,3 +178,14 @@ class Revision(BaseModel):
     reverts: int | None = None  # action=revert 时，撤回的是哪一步
     reverted_by: int | None = None  # 这一步已被哪一次撤回作废
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class OutlineItem(BaseModel):
+    """目录项（以原文为准）：PDF 自带书签，没有书签时用识别出的标题。"""
+
+    title: str  # 原文标题
+    level: int  # 1 起
+    page: int  # 0 起
+    top: float = 0.0  # 离页面顶部的距离（PDF 点）
+    translated: str = ""  # 这个标题的译文（找得到时）
+    segment_id: str | None = None  # 对应的标题段落（阅读视图里滚到它）

@@ -1814,6 +1814,14 @@
       "type": "array",
       "title": "Links",
       "default": []
+     },
+     "outline": {
+      "items": {
+       "$ref": "#/components/schemas/OutlineOut"
+      },
+      "type": "array",
+      "title": "Outline",
+      "default": []
      }
     },
     "type": "object",
@@ -2239,6 +2247,51 @@
      "models"
     ],
     "title": "ModelsOut"
+   },
+   "OutlineOut": {
+    "properties": {
+     "title": {
+      "type": "string",
+      "title": "Title"
+     },
+     "translated": {
+      "type": "string",
+      "title": "Translated"
+     },
+     "level": {
+      "type": "integer",
+      "title": "Level"
+     },
+     "page": {
+      "type": "integer",
+      "title": "Page"
+     },
+     "top": {
+      "type": "number",
+      "title": "Top"
+     },
+     "segment_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Segment Id"
+     }
+    },
+    "type": "object",
+    "required": [
+     "title",
+     "translated",
+     "level",
+     "page",
+     "top",
+     "segment_id"
+    ],
+    "title": "OutlineOut"
    },
    "PageOut": {
     "properties": {

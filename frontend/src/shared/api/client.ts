@@ -12,6 +12,7 @@ export type PageData = components["schemas"]["PageOut"];
 export type BlockData = components["schemas"]["BlockOut"];
 export type SegmentData = components["schemas"]["SegmentOut"];
 export type LinkData = components["schemas"]["LinkOut"];
+export type OutlineData = components["schemas"]["OutlineOut"];
 export type ServerConfig = components["schemas"]["ConfigOut"];
 export type Estimate = components["schemas"]["Estimate"];
 export type Revision = components["schemas"]["RevisionOut"];

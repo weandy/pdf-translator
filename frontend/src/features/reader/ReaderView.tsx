@@ -8,7 +8,15 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import "./fonts.css";
 
 import { blockTexts, layoutBox, roleOf, type BlockText } from "@/entities/document/model";
-import { fileUrl, formulaUrl, type DocumentData, type LinkData, type PageData } from "@/shared/api/client";
+import {
+  fileUrl,
+  formulaUrl,
+  type DocumentData,
+  type LinkData,
+  type OutlineData,
+  type PageData,
+} from "@/shared/api/client";
+import { readJSON, writeJSON } from "@/shared/storage/local";
 import { fitElement } from "@/shared/fit/fit";
 import { InlineMathText, type InlineLink } from "@/shared/math/inline";
 import { countCompact } from "@/shared/text/links";
@@ -16,6 +24,7 @@ import { splitCaptionNo } from "@/shared/text/script";
 import { dropFakeScripts, keyActivate, shortLabel, spaceCjkLatin, wantsIndent } from "@/shared/text/typeset";
 import { PdfCanvas, usePdf } from "@/shared/pdf/pdf";
 
+import { OutlinePanel } from "./OutlinePanel";
 import { ReaderTips, tipsSeen } from "./ReaderTips";
 import { ReadingView } from "./ReadingView";
 
@@ -38,6 +47,19 @@ interface Props {
 const PADDING = 48; // .pages 左右内边距之和
 const SPINE = 2; // 对照模式两页之间的装订线
 const NARROW = 760; // 视口窄于这个宽度时默认只显示译文
+const POSITIONS = "pdftr.pos.v1"; // 每篇文档上次读到的页（浏览器本地）
+
+function savedPage(jobId: string): number {
+  return readJSON<Record<string, number>>(POSITIONS, {})[jobId] ?? 0;
+}
+
+function savePage(jobId: string, page: number): void {
+  const all = readJSON<Record<string, number>>(POSITIONS, {});
+  all[jobId] = page;
+  const keys = Object.keys(all);
+  if (keys.length > 100) for (const k of keys.slice(0, keys.length - 100)) delete all[k]; // 只记最近 100 篇
+  writeJSON(POSITIONS, all);
+}
 
 export function ReaderView({
   doc,
@@ -55,7 +77,13 @@ export function ReaderView({
   const [tips, setTips] = useState(() => !tipsSeen()); // 第一次打开时显示操作提示
   const [width, setWidth] = useState(1200);
   const [hovered, setHovered] = useState<string | null>(null);
+  const [showOutline, setShowOutline] = useState(() => window.innerWidth >= 1280 && doc.outline.length > 0);
+  const [current, setCurrent] = useState(0); // 当前页（0 起）
+  const [pageDraft, setPageDraft] = useState<string | null>(null); // 正在输入的页码
   const scroller = useRef<HTMLDivElement>(null);
+  const frame = useRef(0);
+  const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const restored = useRef(false);
 
   // 阅读视图不用 PDF：手机上省流量、省内存
   const original = usePdf(mode === "both" || mode === "original" ? fileUrl(jobId, "original.pdf") : null);
@@ -89,16 +117,64 @@ export function ReaderView({
   const columns = mode === "both" ? 2 : 1;
   const fitZoom = Math.max(0.3, (width - PADDING - (columns - 1) * SPINE) / columns / maxPageWidth);
   const scale = zoom ?? fitZoom;
-  const jump = useCallback(
-    (page: number, top: number) => {
+  // 跳到某页的某个位置；阅读视图没有整页，跳到那个段落或那一页的分隔处
+  const goTo = useCallback(
+    (page: number, top = 0, segmentId?: string | null, smooth = true) => {
       const el = scroller.current;
-      const row = el?.querySelector<HTMLElement>(`.page-row[data-page="${page}"]`);
-      if (!el || !row) return;
-      const offset = row.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
-      el.scrollTo({ top: Math.max(offset + top * scale - 24, 0), behavior: "smooth" });
+      if (!el) return;
+      const behavior = smooth ? "smooth" : "auto";
+      const offsetOf = (t: Element) => t.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
+      if (mode === "reading") {
+        const target =
+          (segmentId && el.querySelector(`[data-seg="${segmentId}"]`)) ||
+          el.querySelector(`.flow-page[data-page="${page}"]`);
+        if (target) el.scrollTo({ top: Math.max(offsetOf(target) - 12, 0), behavior });
+        return;
+      }
+      const row = el.querySelector(`.page-row[data-page="${page}"]`);
+      if (row) el.scrollTo({ top: Math.max(offsetOf(row) + top * scale - 24, 0), behavior });
     },
-    [scale],
+    [scale, mode],
   );
+  const jump = useCallback((page: number, top: number) => goTo(page, top), [goTo]);
+
+  // 滚动时算出当前页（工具栏页码、目录高亮），并记下来，下次打开回到这里
+  const onScroll = () => {
+    if (frame.current) return;
+    frame.current = requestAnimationFrame(() => {
+      frame.current = 0;
+      const el = scroller.current;
+      if (!el) return;
+      const limit = el.getBoundingClientRect().top + 80;
+      let page = 0;
+      for (const m of el.querySelectorAll<HTMLElement>(mode === "reading" ? ".flow-page" : ".page-row")) {
+        if (m.getBoundingClientRect().top > limit) break;
+        page = Number(m.dataset.page ?? 0);
+      }
+      setCurrent(page);
+      clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => savePage(jobId, page), 500);
+    });
+  };
+
+  // 打开时回到上次读到的页：等缩放比例稳定后再跳（期间 goTo 会随缩放变化，用引用拿最新的）
+  const goToRef = useRef(goTo);
+  useEffect(() => {
+    goToRef.current = goTo;
+  }, [goTo]);
+  useEffect(() => {
+    if (restored.current) return;
+    restored.current = true;
+    const page = savedPage(jobId);
+    if (page > 0 && page < doc.pages.length) setTimeout(() => goToRef.current(page, 0, null, false), 400);
+  }, [jobId, doc.pages.length]);
+
+  const [picked, setPicked] = useState<number | null>(null); // 刚在目录里点的一项（同一页有好几节时高亮它）
+  const goOutline = (item: OutlineData) => {
+    setPicked(doc.outline.indexOf(item));
+    goTo(item.page, item.top, item.segment_id);
+    if (window.innerWidth < NARROW) setShowOutline(false); // 手机上点完收起
+  };
 
   return (
     <div className="reader">
@@ -140,45 +216,86 @@ export function ReaderView({
             +
           </button>
         </div>
+        <label className="page-jump">
+          第
+          <input
+            className="num"
+            inputMode="numeric"
+            aria-label="跳到第几页"
+            value={pageDraft ?? String(current + 1)}
+            onFocus={(e) => e.currentTarget.select()}
+            onChange={(e) => setPageDraft(e.target.value.replace(/\D/g, ""))}
+            onBlur={() => setPageDraft(null)}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter") return;
+              const n = Number(pageDraft);
+              if (n >= 1 && n <= doc.pages.length) goTo(n - 1);
+              setPageDraft(null);
+              e.currentTarget.blur();
+            }}
+          />
+          / {doc.pages.length} 页
+        </label>
+        {doc.outline.length > 0 && (
+          <button
+            type="button"
+            className={showOutline ? "quiet on" : "quiet"}
+            aria-pressed={showOutline}
+            onClick={() => setShowOutline((v) => !v)}
+          >
+            目录
+          </button>
+        )}
         <button
           type="button"
-          className={tips ? "quiet on" : "quiet"}
+          className={tips ? "quiet on help-button" : "quiet help-button"}
           aria-pressed={tips}
           onClick={() => setTips((v) => !v)}
         >
-          使用说明
+          <span className="wide-only">使用</span>说明
         </button>
         {actions}
       </div>
       {tips && <ReaderTips onClose={() => setTips(false)} />}
-      <div className="pages" ref={scroller}>
-        {(original.error || background.error) && (
-          <p className="error">PDF 加载失败：{original.error ?? background.error}</p>
+      <div className="reader-body">
+        {showOutline && (
+          <OutlinePanel
+            items={doc.outline}
+            current={current}
+            picked={picked !== null && doc.outline[picked]?.page === current ? picked : null}
+            onGo={goOutline}
+            onClose={() => setShowOutline(false)}
+          />
         )}
-        {mode === "reading" ? (
-          <ReadingView doc={doc} jobId={jobId} selected={selectedSegment} onSelect={onSelectSegment} />
-        ) : (
-          doc.pages.map((page) => (
-            <PageRow
-              key={page.index}
-              page={page}
-              scale={scale}
-              mode={mode}
-              original={original.doc}
-              background={background.doc}
-              texts={texts}
-              hovered={hovered}
-              selected={selectedSegment}
-              fontsVersion={fontsVersion}
-              side={side}
-              onHover={setHovered}
-              onSelect={onSelectSegment}
-              pageLinks={byPage.get(page.index)}
-              blockLinks={byBlock}
-              onJump={jump}
-            />
-          ))
-        )}
+        <div className="pages" ref={scroller} onScroll={onScroll}>
+          {(original.error || background.error) && (
+            <p className="error">PDF 加载失败：{original.error ?? background.error}</p>
+          )}
+          {mode === "reading" ? (
+            <ReadingView doc={doc} jobId={jobId} selected={selectedSegment} onSelect={onSelectSegment} />
+          ) : (
+            doc.pages.map((page) => (
+              <PageRow
+                key={page.index}
+                page={page}
+                scale={scale}
+                mode={mode}
+                original={original.doc}
+                background={background.doc}
+                texts={texts}
+                hovered={hovered}
+                selected={selectedSegment}
+                fontsVersion={fontsVersion}
+                side={side}
+                onHover={setHovered}
+                onSelect={onSelectSegment}
+                pageLinks={byPage.get(page.index)}
+                blockLinks={byBlock}
+                onJump={jump}
+              />
+            ))
+          )}
+        </div>
       </div>
     </div>
   );

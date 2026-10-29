@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from pdftr.domain.ir import Document, Revision, Segment
+from pdftr.domain.ir import Document, OutlineItem, Revision, Segment
 from pdftr.domain.job import Job, JobOptions
 from pdftr.rendering.links import PdfLink
 
@@ -138,15 +138,32 @@ class LinkOut(BaseModel):
                    dest_top=link.dest_top, block_id=link.block_id, text=link.text, nth=link.nth)  # fmt: skip
 
 
+class OutlineOut(BaseModel):
+    title: str  # 原文标题
+    translated: str
+    level: int
+    page: int
+    top: float
+    segment_id: str | None
+
+
 class DocumentOut(BaseModel):
     job: JobOut
     title: str
     pages: list[PageOut]
     segments: list[SegmentOut]
     links: list[LinkOut] = []
+    outline: list[OutlineOut] = []
 
     @classmethod
-    def of(cls, job: Job, doc: Document, segments: list[Segment], links: list[PdfLink] | None = None) -> "DocumentOut":
+    def of(
+        cls,
+        job: Job,
+        doc: Document,
+        segments: list[Segment],
+        links: list[PdfLink] | None = None,
+        outline: list[OutlineItem] | None = None,
+    ) -> "DocumentOut":
         pages = [
             PageOut(
                 index=p.index, width=p.width, height=p.height, kind=p.kind.value,
@@ -161,7 +178,8 @@ class DocumentOut(BaseModel):
             for p in doc.pages
         ]  # fmt: skip
         return cls(job=JobOut.of(job), title=doc.meta.title, pages=pages, segments=[SegmentOut.of(s) for s in segments],
-                   links=[LinkOut.of(x) for x in links or []])  # fmt: skip
+                   links=[LinkOut.of(x) for x in links or []],
+                   outline=[OutlineOut(**x.model_dump()) for x in outline or []])  # fmt: skip
 
 
 class ModelsOut(BaseModel):

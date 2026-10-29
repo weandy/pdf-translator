@@ -120,7 +120,7 @@ export function JobPage() {
                 onClick={() => setShowHistory((v) => !v)}
                 title="所有手动修改，可按步撤回"
               >
-                修改记录{changes > 0 && <span className="num"> {changes}</span>}
+                <span className="wide-only">修改</span>记录{changes > 0 && <span className="num"> {changes}</span>}
               </button>
               <DownloadMenu jobId={id} />
             </>

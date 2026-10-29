@@ -6,6 +6,7 @@
 import hashlib
 import json
 import logging
+import re
 import shutil
 import tempfile
 import time
@@ -15,10 +16,20 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from pdftr.domain.ids import new_job_id
-from pdftr.domain.ir import BlockType, Document, Quality, Revision, RevisionAction, Segment, SegmentStatus
+from pdftr.domain.ir import (
+    BlockType,
+    Document,
+    OutlineItem,
+    Quality,
+    Revision,
+    RevisionAction,
+    Segment,
+    SegmentStatus,
+)
 from pdftr.domain.job import STAGES, Job, JobOptions, JobStatus
 from pdftr.domain.llm import ChatError, ChatOptions
 from pdftr.extraction.chars import page_count
+from pdftr.extraction.outline import pdf_outline
 from pdftr.glossary.matcher import combine
 from pdftr.glossary.user_import import ParsedGlossary, parse_upload
 from pdftr.pipeline.memory import release_memory
@@ -209,6 +220,48 @@ class DocumentView(BaseModel):
     document: Document
     segments: list[Segment]
     links: list[PdfLink] = []
+    outline: list[OutlineItem] = []
+
+
+_NUMBERED = re.compile(r"^\s*([A-Z]|\d+)((?:\.\d+)*)\.?\s+\S")  # “3.1 Encoder”“A.2 Proofs”
+_LETTERS = re.compile(r"[^0-9a-z]+")
+
+
+def _norm(text: str) -> str:
+    return _LETTERS.sub("", text.lower())
+
+
+def build_outline(pdf: Path, doc: Document, segments: list[Segment]) -> list[OutlineItem]:
+    """目录以原文为准：优先用 PDF 书签；没有书签时用识别出的标题，按编号（“3.1” → 二级）定层级。
+    每项尽量配上对应标题段落的译文。"""
+    first = {s.block_ids[0]: s for s in segments}
+    heads = []
+    for block in doc.blocks():
+        seg = first.get(block.id)
+        text = " ".join(s.text for s in block.spans if s.kind == "text").strip()
+        if block.type is BlockType.TITLE and text and _norm(text) != _norm(doc.meta.title):
+            heads.append((block, seg, text))
+
+    def translated(seg: Segment | None) -> str:
+        if seg is None or not seg.target or seg.status is SegmentStatus.FAILED:
+            return ""
+        return re.sub(r"<m\d+/>", "…", seg.target).strip()
+
+    items = pdf_outline(pdf)
+    if items:
+        for item in items:  # 书签标题常不带编号：在同页附近的标题里找文字包含它的
+            key = _norm(item.title)
+            match = next((h for h in heads if key and key in _norm(h[2]) and abs(h[0].page - item.page) <= 1), None)
+            if match:
+                item.translated, item.segment_id = translated(match[1]), match[1].id if match[1] else None
+        return items
+    out = []
+    for block, seg, text in heads:
+        m = _NUMBERED.match(text)
+        level = 1 + m.group(2).count(".") if m else 1  # “3” 一级，“3.1” 二级，“3.1.2” 三级
+        out.append(OutlineItem(title=text, level=min(level, 4), page=block.page, top=block.bbox.y0,
+                               translated=translated(seg), segment_id=seg.id if seg else None))  # fmt: skip
+    return out
 
 
 def _reader_text(seg: Segment) -> str:
@@ -234,7 +287,8 @@ def document_view(pipeline: Pipeline, job_id: str) -> DocumentView:
     links: list[PdfLink] = []
     if job.status is JobStatus.DONE:
         links = place_links(_raw_links(pipeline, job_id, doc, segments), doc, segments, _reader_text)
-    return DocumentView(job=job, document=doc, segments=segments, links=links)
+    outline = build_outline(pipeline.deps.artifacts.path(job_id, "original.pdf"), doc, segments)
+    return DocumentView(job=job, document=doc, segments=segments, links=links, outline=outline)
 
 
 def _segment(pipeline: Pipeline, segment_id: str) -> Segment:
