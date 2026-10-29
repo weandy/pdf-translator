@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from pdftr.domain.ir import Document, Revision, Segment
 from pdftr.domain.job import Job, JobOptions
+from pdftr.rendering.links import PdfLink
 
 
 class HealthOut(BaseModel):
@@ -113,14 +114,33 @@ class SegmentOut(BaseModel):
         )  # fmt: skip
 
 
+class LinkOut(BaseModel):
+    """一个链接。block_id 为空：在译文块外，原文页与译文页上都在 rect 处；否则在这一块译文里第 nth 处 text 上。"""
+
+    page: int
+    rect: RectOut
+    uri: str
+    dest_page: int | None
+    dest_top: float  # 目标位置离页面顶部的距离（PDF 点）
+    block_id: str | None
+    text: str
+    nth: int
+
+    @classmethod
+    def of(cls, link: PdfLink) -> "LinkOut":
+        return cls(page=link.page, rect=RectOut(**link.rect.model_dump()), uri=link.uri, dest_page=link.dest_page,
+                   dest_top=link.dest_top, block_id=link.block_id, text=link.text, nth=link.nth)  # fmt: skip
+
+
 class DocumentOut(BaseModel):
     job: JobOut
     title: str
     pages: list[PageOut]
     segments: list[SegmentOut]
+    links: list[LinkOut] = []
 
     @classmethod
-    def of(cls, job: Job, doc: Document, segments: list[Segment]) -> "DocumentOut":
+    def of(cls, job: Job, doc: Document, segments: list[Segment], links: list[PdfLink] | None = None) -> "DocumentOut":
         pages = [
             PageOut(
                 index=p.index, width=p.width, height=p.height, kind=p.kind.value,
@@ -133,7 +153,8 @@ class DocumentOut(BaseModel):
             )
             for p in doc.pages
         ]  # fmt: skip
-        return cls(job=JobOut.of(job), title=doc.meta.title, pages=pages, segments=[SegmentOut.of(s) for s in segments])
+        return cls(job=JobOut.of(job), title=doc.meta.title, pages=pages, segments=[SegmentOut.of(s) for s in segments],
+                   links=[LinkOut.of(x) for x in links or []])  # fmt: skip
 
 
 class ModelsOut(BaseModel):

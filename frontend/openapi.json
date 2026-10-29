@@ -1702,6 +1702,14 @@
       },
       "type": "array",
       "title": "Segments"
+     },
+     "links": {
+      "items": {
+       "$ref": "#/components/schemas/LinkOut"
+      },
+      "type": "array",
+      "title": "Links",
+      "default": []
      }
     },
     "type": "object",
@@ -1987,6 +1995,68 @@
      "stage_started_at"
     ],
     "title": "JobOut"
+   },
+   "LinkOut": {
+    "properties": {
+     "page": {
+      "type": "integer",
+      "title": "Page"
+     },
+     "rect": {
+      "$ref": "#/components/schemas/RectOut"
+     },
+     "uri": {
+      "type": "string",
+      "title": "Uri"
+     },
+     "dest_page": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Dest Page"
+     },
+     "dest_top": {
+      "type": "number",
+      "title": "Dest Top"
+     },
+     "block_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Block Id"
+     },
+     "text": {
+      "type": "string",
+      "title": "Text"
+     },
+     "nth": {
+      "type": "integer",
+      "title": "Nth"
+     }
+    },
+    "type": "object",
+    "required": [
+     "page",
+     "rect",
+     "uri",
+     "dest_page",
+     "dest_top",
+     "block_id",
+     "text",
+     "nth"
+    ],
+    "title": "LinkOut",
+    "description": "一个链接。block_id 为空：在译文块外，原文页与译文页上都在 rect 处；否则在这一块译文里第 nth 处 text 上。"
    },
    "LlmCheck": {
     "properties": {

@@ -452,6 +452,11 @@ export interface components {
             pages: components["schemas"]["PageOut"][];
             /** Segments */
             segments: components["schemas"]["SegmentOut"][];
+            /**
+             * Links
+             * @default []
+             */
+            links: components["schemas"]["LinkOut"][];
         };
         /** EditIn */
         EditIn: {
@@ -562,6 +567,27 @@ export interface components {
             created_at: string;
             /** Stage Started At */
             stage_started_at: string | null;
+        };
+        /**
+         * LinkOut
+         * @description 一个链接。block_id 为空：在译文块外，原文页与译文页上都在 rect 处；否则在这一块译文里第 nth 处 text 上。
+         */
+        LinkOut: {
+            /** Page */
+            page: number;
+            rect: components["schemas"]["RectOut"];
+            /** Uri */
+            uri: string;
+            /** Dest Page */
+            dest_page: number | null;
+            /** Dest Top */
+            dest_top: number;
+            /** Block Id */
+            block_id: string | null;
+            /** Text */
+            text: string;
+            /** Nth */
+            nth: number;
         };
         /** LlmCheck */
         LlmCheck: {

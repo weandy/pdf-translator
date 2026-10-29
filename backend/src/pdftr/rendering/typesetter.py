@@ -81,6 +81,23 @@ class Token:
 
 
 @dataclass
+class Placed:
+    """画在页面上的一段文字：起点（基线）与字体，用来算其中某几个字的位置。"""
+
+    text: str
+    x: float
+    baseline: float
+    font: pymupdf.Font
+    size: float
+
+    def span(self, start: int, end: int) -> pymupdf.Rect:
+        """第 start 到 end 个字（不含 end）占的矩形。"""
+        x0 = self.x + self.font.text_length(self.text[:start], fontsize=self.size)  # pyright: ignore[reportArgumentType]
+        x1 = self.x + self.font.text_length(self.text[:end], fontsize=self.size)  # pyright: ignore[reportArgumentType]
+        return pymupdf.Rect(x0, self.baseline - self.size * 0.9, x1, self.baseline + self.size * 0.25)
+
+
+@dataclass
 class Line:
     tokens: list[Token]
     glue: list[float]  # 每个 token 之前的固定间距（中西文间距），与 tokens 等长
@@ -260,8 +277,12 @@ class Typesetter:
         indent: bool,
         image_bytes: Callable[[str], bytes | None],
         scale: float = 1.0,
+        placed: list[Placed] | None = None,
     ) -> None:
-        """把排好的行写到页面上。scale < 1 时整体缩小（放不下时缩小字号）。"""
+        """把排好的行写到页面上。scale < 1 时整体缩小（放不下时缩小字号）。
+
+        placed 不为 None 时，按书写顺序记下每段文字画在页面上的位置（给译文里的链接定位用）。
+        """
         x0, y0 = origin
         for n, (line, base) in enumerate(zip(lines, baselines, strict=True)):
             lead = 2 * size if indent and n == 0 else 0.0
@@ -286,6 +307,8 @@ class Typesetter:
                     for run in tok.runs:
                         point = pymupdf.Point(x0 + rx * scale, y0 + (base - run.rise) * scale)
                         writer.append(point, run.text, font=run.font, fontsize=run.size * scale)  # pyright: ignore[reportArgumentType]
+                        if placed is not None:
+                            placed.append(Placed(run.text, point.x, point.y, run.font, run.size * scale))
                         rx += run.width
                 x += tok.width
 

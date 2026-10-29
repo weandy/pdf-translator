@@ -91,7 +91,7 @@ async def job_events(job_id: str, request: Request, p: PipelineDep) -> Streaming
 @router.get("/{job_id}/document", response_model=DocumentOut)
 def get_document(job_id: str, p: PipelineDep) -> DocumentOut:
     view = usecases.document_view(p, job_id)
-    return DocumentOut.of(view.job, view.document, view.segments)
+    return DocumentOut.of(view.job, view.document, view.segments, view.links)
 
 
 @router.get("/{job_id}/files/{name}")

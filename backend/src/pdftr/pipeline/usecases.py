@@ -3,6 +3,7 @@
 接口层（api）只做 HTTP 与这些函数之间的转换，不含业务规则。
 """
 
+import json
 import logging
 import shutil
 import tempfile
@@ -23,7 +24,8 @@ from pdftr.pipeline.memory import release_memory
 from pdftr.pipeline.runner import Pipeline, load_context, load_document
 from pdftr.pipeline.secrets import Secrets
 from pdftr.rendering.background import crop_png
-from pdftr.rendering.export import ExportMode, Side, export_pdf
+from pdftr.rendering.export import ExportMode, Side, export_pdf, page_links, place_links
+from pdftr.rendering.links import PdfLink
 from pdftr.translation.cost import PRICES, is_deepseek_peak
 from pdftr.translation.service import TranslateOptions, translate
 
@@ -134,8 +136,10 @@ def export_job(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "
     if job.status is not JobStatus.DONE:
         raise UserError("任务完成后才能下载")
     deps = pipeline.deps
+    doc, segments = load_document(deps, job_id), deps.store.segments(job_id)
     data = export_pdf(deps.artifacts.path(job_id, "original.pdf"), deps.artifacts.path(job_id, "background.pdf"),
-                      load_document(deps, job_id), deps.store.segments(job_id), mode, deps.font_dir, side)  # fmt: skip
+                      doc, segments, mode, deps.font_dir, side,
+                      _raw_links(pipeline, job_id, doc, segments))  # fmt: skip
     release_memory()
     suffix = "译文" if mode == "mono" else "双语对照"
     return f"{Path(job.filename).stem}-{suffix}.pdf", data
@@ -160,14 +164,33 @@ class DocumentView(BaseModel):
     job: Job
     document: Document
     segments: list[Segment]
+    links: list[PdfLink] = []
+
+
+def _reader_text(seg: Segment) -> str:
+    """阅读器里一段显示的文字：没有译文或没通过校验时显示原文（与前端 entities/document 一致）。"""
+    return seg.target if seg.target and seg.status is not SegmentStatus.FAILED else seg.source
+
+
+def _raw_links(pipeline: Pipeline, job_id: str, doc: Document, segments: list[Segment]) -> list[PdfLink]:
+    """原文链接只取决于原文与分段，第一次读出后存成 links.json，之后打开、导出都不用再读 PDF。"""
+    cache = pipeline.deps.artifacts.path(job_id, "links.json")
+    if cache.exists():
+        return [PdfLink.model_validate(x) for x in json.loads(cache.read_text(encoding="utf-8"))]
+    links = page_links(pipeline.deps.artifacts.path(job_id, "original.pdf"), doc, segments)
+    cache.write_text(json.dumps([x.model_dump(mode="json") for x in links], ensure_ascii=False), encoding="utf-8")
+    return links
 
 
 def document_view(pipeline: Pipeline, job_id: str) -> DocumentView:
     job = get_job(pipeline, job_id)
     if STAGES.index("segment") > (STAGES.index(job.stage) if job.stage in STAGES else len(STAGES)):
         raise UserError("文档尚未解析完成")
-    return DocumentView(job=job, document=load_document(pipeline.deps, job_id),
-                        segments=pipeline.deps.store.segments(job_id))  # fmt: skip
+    doc, segments = load_document(pipeline.deps, job_id), pipeline.deps.store.segments(job_id)
+    links: list[PdfLink] = []
+    if job.status is JobStatus.DONE:
+        links = place_links(_raw_links(pipeline, job_id, doc, segments), doc, segments, _reader_text)
+    return DocumentView(job=job, document=doc, segments=segments, links=links)
 
 
 def _segment(pipeline: Pipeline, segment_id: str) -> Segment:
