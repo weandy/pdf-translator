@@ -7,7 +7,7 @@
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -53,9 +53,14 @@ class PipelineDeps:
     term_matcher: MatcherLoader
     max_concurrent_jobs: int = 4  # 同时上传、解析的任务数（主要在等云端，不占本机资源）
     max_concurrent_translations: int = 1  # 同时翻译的任务数：一篇接一篇，每篇内部并发请求翻译服务
+    parse_retry_delays: tuple[float, ...] = (15, 45)  # 解析遇到网络类错误时自动重试的等待秒数
     font_dir: Path | None = None  # 导出 PDF 用的字体目录
     llm_concurrency: int = 0  # 0 = 按服务商自动选择（translation.service.default_concurrency）
 
+
+# 阶段的中文名（错误说明里用，与前端 STAGE_LABELS 一致）
+STAGE_NAMES = {"parse": "版面解析", "fuse": "对齐文字", "segment": "切分段落", "glossary": "抽取术语",
+               "translate": "翻译", "render": "生成背景页"}  # fmt: skip
 
 # 会翻译的页：原生页，以及用解析服务识别结果的扫描页（乱码页跳过）
 TRANSLATED_KINDS = frozenset({PageKind.NATIVE, PageKind.SCANNED})
@@ -208,7 +213,9 @@ class Pipeline:
             self._update(job, status=JobStatus.FAILED, error=str(e))
         except Exception:
             log.exception("任务 %s 在阶段 %s 失败", job_id, job.stage)
-            self._update(job, status=JobStatus.FAILED, error="内部错误，请查看服务日志")
+            stage = STAGE_NAMES.get(job.stage, job.stage)
+            hint = "可以点“重试”从中断处继续；多次失败请反馈给部署者"
+            self._update(job, status=JobStatus.FAILED, error=f"处理时出现意外错误（{stage}）。{hint}")
         finally:
             self._cancelling.discard(job_id)
             self.deps.secrets.drop(job_id)
@@ -225,8 +232,22 @@ class Pipeline:
             self._update(job, message=message, progress=job.progress if fraction is None else fraction)
 
         pdf = self.deps.artifacts.path(job.id, "original.pdf")
-        result = await parser.parse(pdf, raw_dir=raw_dir, on_progress=progress)
+        result = await self._parse_with_retry(job, lambda: parser.parse(pdf, raw_dir=raw_dir, on_progress=progress))
         out.write_text(result.model_dump_json(), encoding="utf-8")
+
+    async def _parse_with_retry(self, job: Job, attempt_parse: Callable[[], Awaitable[LayoutResult]]) -> LayoutResult:
+        """网络类错误（超时、连不上、上传停滞、服务端 5xx）过一会儿常常就好：自动重试，仍失败才交给用户。"""
+        delays = self.deps.parse_retry_delays
+        for attempt, delay in enumerate(delays, start=1):
+            try:
+                return await attempt_parse()
+            except ParseError as e:
+                if not e.retryable:
+                    raise
+                log.warning("任务 %s 解析失败（%s），%.0f 秒后第 %d 次重试", job.id, e, delay, attempt)
+                self._update(job, message=f"网络不稳定，{delay:.0f} 秒后自动重试（第 {attempt}/{len(delays)} 次）：{e}")
+                await asyncio.sleep(delay)
+        return await attempt_parse()
 
     async def _fuse(self, job: Job, _: Secrets) -> None:
         out = self.deps.artifacts.path(job.id, "ir.json")

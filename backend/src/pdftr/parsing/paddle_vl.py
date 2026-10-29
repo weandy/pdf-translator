@@ -132,9 +132,9 @@ class PaddleVLParser:
         try:
             jsonl = await self._run(pdf.read_bytes(), pdf.name, progress)
         except httpx2.TimeoutException as e:
-            raise ParseError("连接 PaddleOCR 云端超时，请检查服务器能否访问 aistudio-app.com") from e
+            raise ParseError("连接 PaddleOCR 云端超时，请检查服务器能否访问 aistudio-app.com", retryable=True) from e
         except httpx2.TransportError as e:
-            raise ParseError("无法连接 PaddleOCR 云端，请检查服务器网络") from e
+            raise ParseError("无法连接 PaddleOCR 云端，请检查服务器网络", retryable=True) from e
         if raw_dir is not None:
             raw_dir.mkdir(parents=True, exist_ok=True)
             (raw_dir / "paddleocr.jsonl").write_text(jsonl, encoding="utf-8")
@@ -200,7 +200,8 @@ class PaddleVLParser:
                 task.cancel()
                 if delay is None:
                     raise ParseError(
-                        f"上传到 PaddleOCR 云端失败：网络连续 {self._stall_timeout:.0f} 秒没有进展，请稍后重试"
+                        f"上传到 PaddleOCR 云端失败：网络连续 {self._stall_timeout:.0f} 秒没有进展，请稍后重试",
+                        retryable=True,
                     ) from e
                 log.warning("上传到 PaddleOCR 卡住或出错（%s），%.0f 秒后重传", type(e).__name__, delay)
                 await asyncio.sleep(delay)
@@ -238,7 +239,7 @@ def _check(r: httpx2.Response, action: str, parse: bool = True) -> Any:
     if r.status_code == 429:
         raise ParseError("PaddleOCR 今日免费额度已用完或请求过于频繁，请稍后再试，或改用 MinerU")
     if r.status_code >= 400:
-        raise ParseError(f"PaddleOCR {action}失败：HTTP {r.status_code}")
+        raise ParseError(f"PaddleOCR {action}失败：HTTP {r.status_code}", retryable=r.status_code >= 500)
     if not parse or "json" not in r.headers.get("content-type", ""):
         return {}
     return r.json()

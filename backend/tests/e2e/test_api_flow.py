@@ -477,3 +477,45 @@ def test_shutdown_cancellation_is_not_reported_as_user_cancel(client: TestClient
     # 不标成“已取消”：保持进行中，下次启动时由中断恢复标记为失败、可重试
     assert client.get(f"/api/jobs/{job_id}").json()["status"] == "running"
     assert pipeline.cancel("0000000000000000") is False  # 没有这个任务
+
+
+def test_parse_retries_network_errors_but_not_bad_tokens(tmp_path: Path):
+    from pdftr.parsing.port import ParseError
+
+    calls = {"n": 0}
+    messages: list[str] = []
+
+    class Flaky(FakeParser):
+        def __init__(self, retryable: bool) -> None:
+            self.retryable = retryable
+
+        async def parse(self, pdf, pages=None, raw_dir=None, on_progress=None):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise ParseError("连接 MinerU 云端超时", retryable=self.retryable)
+            return await super().parse(pdf, pages, raw_dir, on_progress)
+
+    for retryable, status, expected_calls in ((True, "done", 3), (False, "failed", 1)):
+        calls["n"] = 0
+        settings = Settings(data_dir=tmp_path / str(retryable), glossary_sources="", font_dir=tmp_path / "fonts")
+        container = build_container(settings, {
+            "parser_factory": lambda s, n, r=retryable: Flaky(r), "chat_factory": lambda s: FakeChat(),
+            "parse_retry_delays": (0.01, 0.01),
+        })  # fmt: skip
+        publish = container.pipeline.deps.events.publish
+        container.pipeline.deps.events.publish = lambda job, p=publish: (messages.append(job.message), p(job))[1]
+        with TestClient(create_app(container)) as c:
+            job = _wait(c, _upload(c).json()["id"])
+        assert job["status"] == status and calls["n"] == expected_calls
+    assert any(m.startswith("网络不稳定，0 秒后自动重试（第 1/2 次）") for m in messages)
+
+
+def test_unexpected_errors_name_the_stage(client: TestClient):
+    pipeline = client.app.state.container.pipeline  # type: ignore[attr-defined]
+
+    async def boom(job, secrets):
+        raise RuntimeError("bug")
+
+    pipeline._glossary = boom
+    job = _wait(client, _upload(client).json()["id"])
+    assert job["status"] == "failed" and "意外错误（抽取术语）" in job["error"] and "重试" in job["error"]

@@ -66,9 +66,11 @@ class MinerUCloudParser:
         try:
             return await self._parse(pdf, pages, raw_dir, on_progress or _ignore)
         except httpx2.TimeoutException as e:
-            raise ParseError("连接 MinerU 云端超时，请检查服务器能否访问 mineru.net") from e
+            raise ParseError("连接 MinerU 云端超时，请检查服务器能否访问 mineru.net", retryable=True) from e
         except httpx2.TransportError as e:
-            raise ParseError("无法连接 MinerU 云端，请检查服务器网络（Docker 部署时确认容器能访问外网）") from e
+            raise ParseError(
+                "无法连接 MinerU 云端，请检查服务器网络（Docker 部署时确认容器能访问外网）", retryable=True
+            ) from e
 
     async def _parse(
         self, pdf: Path, pages: list[int] | None, raw_dir: Path | None, on_progress: ParseProgress
@@ -200,7 +202,8 @@ class MinerUCloudParser:
                 if delay is None:
                     raise ParseError(
                         f"上传到 MinerU 云端失败：网络连续 {self._stall_timeout:.0f} 秒没有进展，"
-                        "请稍后重试；服务器到国内线路较差时可配置 PDFTR_MINERU_PROXY"
+                        "请稍后重试；服务器到国内线路较差时可配置 PDFTR_MINERU_PROXY",
+                        retryable=True,
                     ) from e
                 log.warning("上传到 MinerU 卡住或出错（%s），%.0f 秒后重传", type(e).__name__, delay)
                 await asyncio.sleep(delay)
@@ -251,7 +254,7 @@ def _check(r: httpx2.Response, action: str) -> dict:
     if r.status_code == 429:
         raise ParseError("MinerU 请求过于频繁或额度不足，请稍后再试")
     if r.status_code >= 400:
-        raise ParseError(f"MinerU {action}失败：HTTP {r.status_code}")
+        raise ParseError(f"MinerU {action}失败：HTTP {r.status_code}", retryable=r.status_code >= 500)
     if not r.headers.get("content-type", "").startswith("application/json"):
         return {}
     body = r.json()

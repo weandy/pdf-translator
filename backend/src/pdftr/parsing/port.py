@@ -11,7 +11,15 @@ from pdftr.domain.layout import LayoutResult
 
 
 class ParseError(RuntimeError):
-    """解析服务调用失败（网络、鉴权、额度、服务端错误等），消息面向用户。"""
+    """解析服务调用失败（网络、鉴权、额度、服务端错误等），消息面向用户。
+
+    retryable：网络超时、连接失败、上传停滞、服务端 5xx 这类过一会儿可能就好的错误，流水线会自动重试；
+    Token 无效、额度用完、文件被拒等重试也没用的为 False。
+    """
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class ParseProgress(Protocol):
