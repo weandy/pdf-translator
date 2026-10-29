@@ -105,8 +105,8 @@ def _in_brackets(text: str, pos: int) -> bool:
 
 def _candidates(link: PdfLink, text: str) -> tuple[str, list[int]]:
     """（要加链接的文字, 它在 text 里可能的位置）。"""
-    if link.uri:  # 网址换行时链接文字被截断，或带着句末标点：依次试链接文字、完整网址、去掉协议的网址
-        for core in (compact(link.anchor).rstrip(".,;)）"), link.uri, re.sub(r"^https?://", "", link.uri)):
+    if link.uri:  # 先找完整网址（链接文字可能被换行截断、带着脚注编号或句末标点），再找去掉协议的网址、链接文字
+        for core in (link.uri, re.sub(r"^https?://", "", link.uri), compact(link.anchor).rstrip(".,;)）")):
             if core and (spots := _occurrences(text, core)):
                 return core, spots
         return "", []

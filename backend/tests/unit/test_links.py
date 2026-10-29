@@ -53,8 +53,8 @@ def test_falls_back_to_sibling_blocks_of_the_same_paragraph():
 def test_urls_cut_by_line_breaks_match_the_full_address():
     link = _link("http://mscoco.org/dataset/#de", kind="", uri="http://mscoco.org/dataset/#detections-challenge2015")
     pieces = {"b1": "见 http://mscoco.org/dataset/#detections-challenge2015。"}
-    assert locate([link], pieces)[0].text == "http://mscoco.org/dataset/#de"
+    assert locate([link], pieces)[0].text == "http://mscoco.org/dataset/#detections-challenge2015"
+    footnote = _link("1http://image-net.org/", kind="", uri="http://image-net.org/")  # 原文字带着脚注编号
+    assert locate([footnote], {"b1": "1http://image-net.org/ 与"})[0].text == "http://image-net.org/"
     trailing = _link("google-research/bert.", kind="", uri="https://github.com/google-research/bert")
-    assert (
-        locate([trailing], {"b1": "代码见 https://github.com/google-research/bert。"})[0].text == "google-research/bert"
-    )
+    assert locate([trailing], {"b1": "代码见 https://github.com/google-research/bert。"})[0].text == trailing.uri

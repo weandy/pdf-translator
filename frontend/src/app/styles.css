@@ -1357,3 +1357,22 @@ input[type="radio"] {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+/* 链接：原文页与译文块外按原位置铺热区；译文里的引用、网址用笔色标出 */
+.pdf-link {
+  position: absolute;
+  z-index: 2;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.pdf-link:hover,
+.pdf-link:focus-visible {
+  background: var(--pencil);
+}
+.tblock .ref-link {
+  color: var(--pen);
+  text-decoration: none;
+}
+.tblock .ref-link:hover {
+  text-decoration: underline;
+}

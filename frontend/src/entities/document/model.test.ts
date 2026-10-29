@@ -16,6 +16,7 @@ const seg = (over: Partial<SegmentData>): SegmentData => ({
 const doc = (segments: SegmentData[]): DocumentData => ({
   job: {} as DocumentData["job"],
   title: "T",
+  links: [],
   pages: [
     { index: 0, width: 600, height: 800, kind: "native", blocks: [block("p0-b0", 0), block("p0-b1", 0)] },
     { index: 1, width: 600, height: 800, kind: "native", blocks: [block("p1-b0", 1)] },

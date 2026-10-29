@@ -3,14 +3,15 @@
  * 译文页 = 去字背景页（pdf.js 渲染）+ 叠加层（按 pt 坐标排版，整体 transform 缩放，拟合结果与缩放无关）。
  */
 import type { PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import "./fonts.css";
 
 import { blockTexts, layoutBox, roleOf, type BlockText } from "@/entities/document/model";
-import { fileUrl, formulaUrl, type DocumentData, type PageData } from "@/shared/api/client";
+import { fileUrl, formulaUrl, type DocumentData, type LinkData, type PageData } from "@/shared/api/client";
 import { fitElement } from "@/shared/fit/fit";
-import { InlineMathText } from "@/shared/math/inline";
+import { InlineMathText, type InlineLink } from "@/shared/math/inline";
+import { countCompact } from "@/shared/text/links";
 import { splitCaptionNo } from "@/shared/text/script";
 import { dropFakeScripts, spaceCjkLatin, wantsIndent } from "@/shared/text/typeset";
 import { PdfCanvas, usePdf } from "@/shared/pdf/pdf";
@@ -53,6 +54,8 @@ export function ReaderView({
   const original = usePdf(mode !== "translated" ? fileUrl(jobId, "original.pdf") : null);
   const background = usePdf(mode !== "original" ? fileUrl(jobId, "background.pdf") : null);
   const texts = useMemo(() => blockTexts(doc), [doc]);
+  // 链接：原文页上全部按原位置；译文页上，译文块外的按原位置，块内的落在译文文字上
+  const { byPage, byBlock } = useMemo(() => groupLinks(doc.links), [doc.links]);
   const fontsVersion = useFontsVersion();
 
   // 从别处（如修改记录）打开的段落不在视野里时，滚到它所在的页；在阅读器里点选的本来就在视野里，不滚动
@@ -79,6 +82,16 @@ export function ReaderView({
   const columns = mode === "both" ? 2 : 1;
   const fitZoom = Math.max(0.3, (width - PADDING - (columns - 1) * SPINE) / columns / maxPageWidth);
   const scale = zoom ?? fitZoom;
+  const jump = useCallback(
+    (page: number, top: number) => {
+      const el = scroller.current;
+      const row = el?.querySelector<HTMLElement>(`.page-row[data-page="${page}"]`);
+      if (!el || !row) return;
+      const offset = row.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
+      el.scrollTo({ top: Math.max(offset + top * scale - 24, 0), behavior: "smooth" });
+    },
+    [scale],
+  );
 
   return (
     <div className="reader">
@@ -140,6 +153,9 @@ export function ReaderView({
             side={side}
             onHover={setHovered}
             onSelect={onSelectSegment}
+            pageLinks={byPage.get(page.index)}
+            blockLinks={byBlock}
+            onJump={jump}
           />
         ))}
       </div>
@@ -160,6 +176,58 @@ interface RowProps {
   side: "left" | "right";
   onHover: (id: string | null) => void;
   onSelect: (id: string) => void;
+  pageLinks: LinkData[] | undefined;
+  blockLinks: Map<string, LinkData[]>;
+  onJump: (page: number, top: number) => void;
+}
+
+function groupLinks(links: LinkData[]) {
+  const byPage = new Map<number, LinkData[]>();
+  const byBlock = new Map<string, LinkData[]>();
+  for (const l of links) {
+    byPage.set(l.page, [...(byPage.get(l.page) ?? []), l]);
+    if (l.block_id && l.text) byBlock.set(l.block_id, [...(byBlock.get(l.block_id) ?? []), l]);
+  }
+  return { byPage, byBlock };
+}
+
+/** 按原位置铺在页面上的链接热区（canvas 上的链接点不了）。 */
+function LinkLayer({
+  links,
+  scale,
+  onJump,
+}: {
+  links: LinkData[];
+  scale: number;
+  onJump: (p: number, t: number) => void;
+}) {
+  return (
+    <>
+      {links.map((l, i) => (
+        <a
+          key={i}
+          className="pdf-link"
+          href={l.uri || "#"}
+          target={l.uri ? "_blank" : undefined}
+          rel="noreferrer"
+          title={l.uri || (l.dest_page !== null ? `跳到第 ${l.dest_page + 1} 页` : undefined)}
+          style={{
+            left: l.rect.x0 * scale,
+            top: l.rect.y0 * scale,
+            width: (l.rect.x1 - l.rect.x0) * scale,
+            height: (l.rect.y1 - l.rect.y0) * scale,
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!l.uri) {
+              e.preventDefault();
+              if (l.dest_page !== null) onJump(l.dest_page, l.dest_top);
+            }
+          }}
+        />
+      ))}
+    </>
+  );
 }
 
 /** 只在接近可视区时渲染 canvas，大文档也不卡。 */
@@ -189,6 +257,9 @@ function PageRow({
   side,
   onHover,
   onSelect,
+  pageLinks,
+  blockLinks,
+  onJump,
 }: RowProps) {
   const [ref, near] = useNearViewport<HTMLDivElement>();
   const size = { width: page.width * scale, height: page.height * scale };
@@ -223,6 +294,7 @@ function PageRow({
               />
             );
           })}
+          {near && pageLinks && <LinkLayer links={pageLinks} scale={scale} onJump={onJump} />}
         </div>
       )}
       {mode !== "original" && (
@@ -241,10 +313,15 @@ function PageRow({
                     fontsVersion={fontsVersion}
                     onHover={onHover}
                     onSelect={onSelect}
+                    links={blockLinks.get(b.id)}
+                    onJump={onJump}
                   />
                 ) : null;
               })}
             </div>
+          )}
+          {near && pageLinks && (
+            <LinkLayer links={pageLinks.filter((l) => !l.block_id)} scale={scale} onJump={onJump} />
           )}
         </div>
       )}
@@ -272,6 +349,8 @@ function OverlayBlock({
   fontsVersion,
   onHover,
   onSelect,
+  links,
+  onJump,
 }: {
   item: BlockText;
   className: string;
@@ -279,6 +358,8 @@ function OverlayBlock({
   fontsVersion: number;
   onHover: (id: string | null) => void;
   onSelect: (id: string) => void;
+  links: LinkData[] | undefined;
+  onJump: (page: number, top: number) => void;
 }) {
   const { block, segment, text, translated, first } = item;
   const box = useRef<HTMLDivElement>(null);
@@ -290,6 +371,17 @@ function OverlayBlock({
   const shown = dropFakeScripts(translated ? spaceCjkLatin(text) : text);
   const indent = translated && wantsIndent(block, segment, first);
   const [captionNo, rest] = role === "caption" && first ? splitCaptionNo(shown) : ["", shown];
+  // 图注编号单独渲染，链接的“第几处”要扣掉编号里的出现次数
+  const inline = useMemo<InlineLink[]>(
+    () =>
+      (links ?? []).map((l) => ({
+        text: l.text,
+        nth: l.nth - countCompact(captionNo, l.text),
+        href: l.uri || undefined,
+        onActivate: l.dest_page !== null ? () => onJump(l.dest_page ?? 0, l.dest_top) : undefined,
+      })),
+    [links, captionNo, onJump],
+  );
 
   // 内容（含 KaTeX）渲染后拟合字号。直接按显示尺寸排版（1pt = scale 像素），不用 transform 缩放：
   // 先排小字再放大，或先排大字再缩小，浏览器都会把字宽对齐到像素，英文字母之间出现空隙。
@@ -321,7 +413,12 @@ function OverlayBlock({
             <InlineMathText text={captionNo} formulas={{}} fallbackUrl={() => ""} />
           </span>
         )}
-        <InlineMathText text={rest} formulas={segment.formulas} fallbackUrl={(k) => formulaUrl(segment.id, k)} />
+        <InlineMathText
+          text={rest}
+          formulas={segment.formulas}
+          fallbackUrl={(k) => formulaUrl(segment.id, k)}
+          links={inline}
+        />
       </div>
     </div>
   );
