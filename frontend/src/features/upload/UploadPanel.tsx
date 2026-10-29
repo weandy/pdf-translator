@@ -385,6 +385,9 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
         <li>选择英文论文 PDF（可以一次选多个）</li>
         <li>等版面解析和翻译，一般 1–4 分钟，可以先离开</li>
         <li>对照阅读，点段落修改，下载中文版或双语 PDF</li>
+        <li className="how-to-more">
+          <Link to="/guide">完整使用指南</Link>
+        </li>
       </ol>
       <div className="upload-actions" ref={actions}>
         <button

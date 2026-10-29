@@ -5,6 +5,7 @@ import { createBrowserRouter, Link, Outlet, RouterProvider, useOutletContext } f
 import { authHeaders } from "@/entities/settings/model";
 import { GlossaryPanel } from "@/features/glossary/GlossaryPanel";
 import { SettingsPanel } from "@/features/settings/SettingsPanel";
+import { GuidePage } from "@/pages/GuidePage";
 import { HomePage } from "@/pages/HomePage";
 import { setAuthHeaders } from "@/shared/api/client";
 
@@ -41,6 +42,9 @@ function Layout() {
         <a className="topbar-source" href="https://github.com/weandy/pdf-translator" target="_blank" rel="noreferrer">
           源代码
         </a>
+        <Link to="/guide" className="topbar-link">
+          <span className="wide-only">使用</span>指南
+        </Link>
         <button type="button" className="quiet" onClick={() => setGlossaryOpen(true)}>
           术语库
         </button>
@@ -65,6 +69,7 @@ const router = createBrowserRouter([
     element: <Layout />,
     children: [
       { path: "/", element: <Home /> },
+      { path: "/guide", element: <GuidePage /> },
       {
         path: "/jobs/:id",
         element: (

@@ -1498,9 +1498,6 @@ input[type="radio"] {
 }
 
 @media (max-width: 380px) {
-  .toolbar .help-button {
-    display: none; /* 极窄屏放不下；提示条第一次打开时仍会自动显示 */
-  }
   .toolbar {
     gap: 6px 6px;
   }
@@ -1592,36 +1589,6 @@ input[type="radio"] {
   font-size: 13px;
 }
 
-/* 操作提示 */
-.reader-tips {
-  display: flex;
-  gap: 16px;
-  align-items: flex-start;
-  padding: 10px 20px;
-  border-bottom: 1px solid var(--rule);
-  background: var(--paper);
-  font-size: 14px;
-  line-height: 1.7;
-}
-.reader-tips ul {
-  flex: 1;
-  margin: 0;
-  padding-left: 1.2em;
-}
-.reader-tips .swatch {
-  display: inline-block;
-  width: 14px;
-  height: 10px;
-  margin: 0 4px 0 8px;
-  vertical-align: -1px;
-}
-.reader-tips .swatch.untranslated {
-  outline: 1px dashed var(--red-pen);
-  background: #eee;
-}
-.reader-tips .swatch.overflow {
-  outline: 1px dotted #c98a00;
-}
 .how-to {
   display: flex;
   flex-wrap: wrap;
@@ -1630,13 +1597,6 @@ input[type="radio"] {
   padding-left: 1.2em;
   color: var(--ink-soft);
   font-size: 13px;
-}
-@media (max-width: 640px) {
-  .reader-tips {
-    flex-direction: column;
-    padding: 8px 12px;
-    font-size: 13px;
-  }
 }
 
 /* 键盘操作：段落可用 Tab 聚焦 */
@@ -1789,5 +1749,150 @@ input[type="radio"] {
 @media (max-width: 640px) {
   .wide-only {
     display: none;
+  }
+}
+
+/* 使用指南 */
+.topbar a.topbar-link {
+  color: var(--ink);
+  font-size: 15px;
+}
+.guide {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 48px;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+}
+.guide-nav {
+  position: sticky;
+  top: calc(var(--topbar-h) + 24px);
+  align-self: start;
+  font-size: 14px;
+}
+.guide-nav ol {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.guide-nav a {
+  display: block;
+  padding: 4px 10px;
+  border-left: 2px solid var(--rule);
+  color: var(--ink-soft);
+  text-decoration: none;
+}
+.guide-nav a:hover {
+  border-left-color: var(--pen);
+  color: var(--ink);
+}
+.guide-body {
+  max-width: 42em;
+  padding: 32px 40px 40px;
+  background: var(--paper);
+  box-shadow: var(--sheet-shadow);
+  line-height: 1.8;
+}
+.guide-body h1 {
+  margin: 0 0 8px;
+  font-family: var(--serif);
+  font-size: 32px;
+}
+.guide-body .lead {
+  margin: 0 0 8px;
+  color: var(--ink-soft);
+}
+.guide-body section {
+  scroll-margin-top: calc(var(--topbar-h) + 16px);
+  padding-top: 8px;
+  border-top: 1px solid var(--rule);
+  margin-top: 24px;
+}
+.guide-body h2 {
+  margin: 8px 0;
+  font-family: var(--serif);
+  font-size: 21px;
+}
+.guide-body ul,
+.guide-body ol {
+  padding-left: 1.3em;
+}
+.guide-body li {
+  margin: 4px 0;
+}
+.guide-body code {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--desk);
+  font-size: 0.92em;
+}
+.guide-body dt {
+  margin-top: 12px;
+  font-weight: 600;
+}
+.guide-body dd {
+  margin: 2px 0 0;
+  color: var(--ink-soft);
+}
+.guide-body .swatch {
+  display: inline-block;
+  width: 16px;
+  height: 11px;
+  margin-right: 6px;
+  vertical-align: -1px;
+}
+.guide-body .swatch.untranslated {
+  outline: 1px dashed var(--red-pen);
+  background: #eee;
+}
+.guide-body .swatch.overflow {
+  outline: 1px dotted #c98a00;
+}
+.guide-back {
+  margin: 32px 0 0;
+}
+.how-to-more {
+  list-style: none;
+}
+@media (max-width: 760px) {
+  .guide {
+    display: block;
+    padding: 16px 12px 48px;
+  }
+  .guide-nav {
+    position: static;
+    margin-bottom: 12px;
+  }
+  .guide-nav > strong {
+    display: none;
+  }
+  .guide-nav ol {
+    display: flex;
+    gap: 6px;
+    margin: 0;
+    overflow-x: auto;
+  }
+  .guide-nav a {
+    padding: 2px 10px;
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    background: var(--paper);
+    white-space: nowrap;
+  }
+  .guide-body {
+    padding: 20px 16px 28px;
+  }
+  .guide-body h1 {
+    font-size: 26px;
+  }
+}
+@media (max-width: 640px) {
+  .toolbar .zoom-label {
+    display: none; /* 窄屏只留放大缩小，省出位置 */
+  }
+  .toolbar .zoom button {
+    min-width: 28px;
+    padding: 0 4px;
   }
 }

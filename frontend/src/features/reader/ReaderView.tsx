@@ -25,7 +25,6 @@ import { dropFakeScripts, keyActivate, shortLabel, spaceCjkLatin, wantsIndent } 
 import { PdfCanvas, usePdf } from "@/shared/pdf/pdf";
 
 import { OutlinePanel } from "./OutlinePanel";
-import { ReaderTips, tipsSeen } from "./ReaderTips";
 
 export type ViewMode = "both" | "translated" | "original";
 
@@ -73,7 +72,6 @@ export function ReaderView({
   // 窄屏（手机）上默认只显示译文、适应宽度；用户切换后以用户的选择为准
   const [mode, setMode] = useState<ViewMode>(() => (window.innerWidth < NARROW ? "translated" : "both"));
   const [zoom, setZoom] = useState<number | null>(null); // null = 自适应宽度
-  const [tips, setTips] = useState(() => !tipsSeen()); // 第一次打开时显示操作提示
   const [width, setWidth] = useState(1200);
   const [hovered, setHovered] = useState<string | null>(null);
   const [showOutline, setShowOutline] = useState(() => window.innerWidth >= 1280 && doc.outline.length > 0);
@@ -236,19 +234,8 @@ export function ReaderView({
             目录
           </button>
         )}
-        <button
-          type="button"
-          className={tips ? "quiet on help-button" : "quiet help-button"}
-          aria-pressed={tips}
-          onClick={() => setTips((v) => !v)}
-        >
-          <span>
-            <span className="wide-only">使用</span>说明
-          </span>
-        </button>
         {actions}
       </div>
-      {tips && <ReaderTips onClose={() => setTips(false)} />}
       <div className="reader-body">
         {showOutline && (
           <OutlinePanel
@@ -264,25 +251,25 @@ export function ReaderView({
             <p className="error">PDF 加载失败：{original.error ?? background.error}</p>
           )}
           {doc.pages.map((page) => (
-              <PageRow
-                key={page.index}
-                page={page}
-                scale={scale}
-                mode={mode}
-                original={original.doc}
-                background={background.doc}
-                texts={texts}
-                hovered={hovered}
-                selected={selectedSegment}
-                fontsVersion={fontsVersion}
-                side={side}
-                onHover={setHovered}
-                onSelect={onSelectSegment}
-                pageLinks={byPage.get(page.index)}
-                blockLinks={byBlock}
-                onJump={jump}
-              />
-            ))}
+            <PageRow
+              key={page.index}
+              page={page}
+              scale={scale}
+              mode={mode}
+              original={original.doc}
+              background={background.doc}
+              texts={texts}
+              hovered={hovered}
+              selected={selectedSegment}
+              fontsVersion={fontsVersion}
+              side={side}
+              onHover={setHovered}
+              onSelect={onSelectSegment}
+              pageLinks={byPage.get(page.index)}
+              blockLinks={byBlock}
+              onJump={jump}
+            />
+          ))}
         </div>
       </div>
     </div>
