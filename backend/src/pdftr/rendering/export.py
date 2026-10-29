@@ -235,6 +235,12 @@ def export_pdf(
         placed = _typeset_all(src, translated, doc, segments, font_dir)
         translated.subset_fonts()  # 中文字体只保留用到的字形
         if mode == "mono":
+            # 去字时有些 PDF 里译文块内的旧链接没被删掉，停在原位置、下面已是别的译文：先删掉，再按译文位置补上
+            stale = {(x.page, round(x.rect.x0), round(x.rect.y0)) for x in raw if x.block_id is not None}
+            for page in translated:
+                for old in page.get_links():
+                    if (page.number, round(old["from"].x0), round(old["from"].y0)) in stale:
+                        page.delete_link(old)
             for link in links:  # 译文块外的链接在背景页里本来就在，只补块内的
                 if link.block_id is not None:
                     for rect in _translated_rects(link, placed):

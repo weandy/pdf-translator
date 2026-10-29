@@ -25,6 +25,7 @@ from pdftr.pipeline.runner import Pipeline, load_context, load_document
 from pdftr.pipeline.secrets import Secrets
 from pdftr.rendering.background import crop_png
 from pdftr.rendering.export import ExportMode, Side, export_pdf, page_links, place_links
+from pdftr.rendering.links import VERSION as LINKS_VERSION
 from pdftr.rendering.links import PdfLink
 from pdftr.translation.cost import PRICES, is_deepseek_peak
 from pdftr.translation.service import TranslateOptions, translate
@@ -173,8 +174,8 @@ def _reader_text(seg: Segment) -> str:
 
 
 def _raw_links(pipeline: Pipeline, job_id: str, doc: Document, segments: list[Segment]) -> list[PdfLink]:
-    """原文链接只取决于原文与分段，第一次读出后存成 links.json，之后打开、导出都不用再读 PDF。"""
-    cache = pipeline.deps.artifacts.path(job_id, "links.json")
+    """原文链接只取决于原文与分段，第一次读出后缓存下来，之后打开、导出都不用再读 PDF。"""
+    cache = pipeline.deps.artifacts.path(job_id, f"links.v{LINKS_VERSION}.json")
     if cache.exists():
         return [PdfLink.model_validate(x) for x in json.loads(cache.read_text(encoding="utf-8"))]
     links = page_links(pipeline.deps.artifacts.path(job_id, "original.pdf"), doc, segments)

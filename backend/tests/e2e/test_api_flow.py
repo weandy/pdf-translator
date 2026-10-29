@@ -386,7 +386,9 @@ def test_links_survive_translation(client: TestClient):
     mono = client.get(f"/api/jobs/{job['id']}/export", params={"mode": "mono"})
     with pymupdf.open(stream=mono.content, filetype="pdf") as pdf:
         got = pdf[0].get_links()
-        jump = next(x for x in got if x["kind"] == pymupdf.LINK_GOTO)
+        jumps = [x for x in got if x["kind"] == pymupdf.LINK_GOTO]
+        assert len(jumps) == 1  # 原位置的旧链接不残留
+        jump = jumps[0]
         assert "function" in pdf[0].get_textbox(jump["from"]) and jump["page"] == 1
         assert any(x.get("uri") == "https://example.org/" for x in got)
     dual = client.get(f"/api/jobs/{job['id']}/export", params={"mode": "dual"})

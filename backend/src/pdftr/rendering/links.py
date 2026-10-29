@@ -17,12 +17,15 @@ from pydantic import BaseModel
 from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import Document
 
+VERSION = 2  # 提取规则变了就加一，让缓存的原文链接（links.v{VERSION}.json）重新提取
 _PLACEHOLDER = re.compile(r"<m\d+/>|</?(?:sup|sub|b|i)>")
 _SPACE = re.compile(r"\s+")
 _EDGE = " \t\n[]()（）【】,，;；:：."
 _NUMBER = re.compile(r"\d+(?:[.\-–]\d+)*[a-z]?")
 _LABELS = "图表节式算法附录定理引理推论定义章例"  # 中文译文里图表、章节编号前面的字
 SKIP_DESTS = ("Hfootnote", "footnote", "page")  # 脚注、页码跳转：编号很短，译文里容易配错，不加
+_CITE_DEST = re.compile(r"^(?:cite|cit|bib|ref)", re.I)  # LaTeX 的 cite.xxx，出版社排版的 CIT0032、bib12 等
+WHOLE_BLOCK = 0.6  # 链接框占块面积超过这个比例，视为整块都是链接（封面上的按钮、标题链接）
 
 
 class PdfLink(BaseModel):
@@ -36,6 +39,7 @@ class PdfLink(BaseModel):
     anchor: str = ""  # 原文里链接覆盖的文字
     kind: str = ""  # 命名跳转的类型（cite、figure、section…），没有时为空
     block_id: str | None = None  # 落在哪个译文块里；None 表示在译文块外，原位置不变
+    whole: bool = False  # 链接覆盖了整块：译文里找不到对应文字时，给整块译文加链接
     text: str = ""  # 译文里对应的紧凑文字；找不到时为空，译文里不加这个链接
     nth: int = 0  # 是这一块紧凑译文里第几处 text（从 0 起）
 
@@ -56,6 +60,7 @@ def extract_links(pdf: Path, doc: Document, translated: Iterable[str]) -> list[P
             for raw in page.get_links():
                 r = raw["from"]
                 kind = (raw.get("nameddest") or "").split(".")[0]
+                kind = "cite" if _CITE_DEST.match(kind) else kind
                 link = PdfLink(page=page_no, rect=Rect(x0=r.x0, y0=r.y0, x1=r.x1, y1=r.y1),
                                anchor=page.get_textbox(r).strip(), kind=kind)  # fmt: skip
                 if raw["kind"] == pymupdf.LINK_URI:
@@ -70,6 +75,9 @@ def extract_links(pdf: Path, doc: Document, translated: Iterable[str]) -> list[P
                 owner = next((b for b in blocks if b.page == page_no and b.bbox.x0 <= cx <= b.bbox.x1
                               and b.bbox.y0 <= cy <= b.bbox.y1), None)  # fmt: skip
                 link.block_id = owner.id if owner else None
+                if owner is not None:
+                    area = max(owner.bbox.width * owner.bbox.height, 1e-6)
+                    link.whole = (r.width * r.height) / area >= WHOLE_BLOCK
                 out.append(link)
     return out
 
@@ -83,8 +91,8 @@ def _occurrences(text: str, needle: str) -> list[int]:
 
 
 def _numbers(text: str, number: str) -> list[int]:
-    """text 里作为完整编号出现的 number（前后不紧挨数字、小数点）。"""
-    pat = re.compile(rf"(?<![\d.]){re.escape(number)}(?!\d|\.\d)")
+    """text 里作为完整编号出现的 number：前后不紧挨数字，也不是小数的一部分（“et al.2026”里的句点不算）。"""
+    pat = re.compile(rf"(?<!\d)(?<!\d\.){re.escape(number)}(?!\d|\.\d)")
     return [m.start() for m in pat.finditer(text)]
 
 
@@ -106,7 +114,7 @@ def _in_brackets(text: str, pos: int) -> bool:
 def _candidates(link: PdfLink, text: str) -> tuple[str, list[int]]:
     """（要加链接的文字, 它在 text 里可能的位置）。"""
     if link.uri:  # 先找完整网址（链接文字可能被换行截断、带着脚注编号或句末标点），再找去掉协议的网址、链接文字
-        for core in (link.uri, re.sub(r"^https?://", "", link.uri), compact(link.anchor).rstrip(".,;)）")):
+        for core in (link.uri, re.sub(r"^(?:https?://|mailto:)", "", link.uri), compact(link.anchor).rstrip(".,;)）")):
             if core and (spots := _occurrences(text, core)):
                 return core, spots
         return "", []
@@ -144,6 +152,8 @@ def locate(
     def take(link: PdfLink, block_id: str) -> bool:
         text = compact(pieces.get(block_id, ""))
         needle, spots = _candidates(link, text)
+        if not spots and link.whole and block_id == link.block_id and text:  # 整块链接（如译成中文的按钮）
+            needle, spots = text, [0]
         taken = used.setdefault(block_id, set())
         free = [p for p in spots if not any(a < p + len(needle) and p < b for a, b in taken)]
         if not needle or not free:

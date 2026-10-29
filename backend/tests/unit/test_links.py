@@ -58,3 +58,13 @@ def test_urls_cut_by_line_breaks_match_the_full_address():
     assert locate([footnote], {"b1": "1http://image-net.org/ 与"})[0].text == "http://image-net.org/"
     trailing = _link("google-research/bert.", kind="", uri="https://github.com/google-research/bert")
     assert locate([trailing], {"b1": "代码见 https://github.com/google-research/bert。"})[0].text == trailing.uri
+
+
+def test_publisher_citation_dests_mailto_and_whole_block_links():
+    # 出版社排版：引用跳转名是 CIT0057 一类（extract_links 归为 cite），年份在圆括号里
+    got = locate([_link("2026)", kind="cite")], {"b1": "（Yao et al. 2026）。在 2026 年"})
+    assert _found(got) == [("2026", 0)]
+    mail = _link("a@b.cn\nc of", kind="", uri="mailto:a@b.cn")
+    assert locate([mail], {"b1": "作者：A a@b.cn 某大学"})[0].text == "a@b.cn"
+    button = _link("View related articles", kind="", uri="https://x.org/r").model_copy(update={"whole": True})
+    assert locate([button], {"b1": "查看相关文章"})[0].text == "查看相关文章"
