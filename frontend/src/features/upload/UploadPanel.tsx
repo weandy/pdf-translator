@@ -381,6 +381,11 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
       </label>
 
       {error && <p className="error">{error}</p>}
+      <ol className="how-to" aria-label="使用步骤">
+        <li>选择英文论文 PDF（可以一次选多个）</li>
+        <li>等版面解析和翻译，一般 1–4 分钟，可以先离开</li>
+        <li>对照阅读，点段落修改，下载中文版或双语 PDF</li>
+      </ol>
       <div className="upload-actions" ref={actions}>
         <button
           type="button"

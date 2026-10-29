@@ -26,6 +26,12 @@ export function JobPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [revealKey, setRevealKey] = useState(0);
+  useEffect(() => {
+    if (!showHistory) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setShowHistory(false);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [showHistory]);
   const ready = job?.status === "done";
   const { data: doc, error: docError } = useQuery({
     queryKey: ["document", id],
@@ -53,6 +59,12 @@ export function JobPage() {
   const open = (segmentId: string) => {
     setSelected(segmentId);
     setShowHistory(false);
+  };
+  // 关闭编辑后把焦点还给原来的段落（键盘用户接着 Tab）
+  const closeEditor = () => {
+    const id = selected;
+    setSelected(null);
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-seg="${id}"]`)?.focus());
   };
   const reveal = (segmentId: string) => {
     open(segmentId);
@@ -132,7 +144,7 @@ export function JobPage() {
             key={`${segment.id}:${segment.target ?? ""}`}
             segment={segment}
             onChange={onChange}
-            onClose={() => setSelected(null)}
+            onClose={closeEditor}
             history={
               <RevisionList revisions={revisions.filter((r) => r.segment_id === segment.id)} onRevert={onRevert} />
             }

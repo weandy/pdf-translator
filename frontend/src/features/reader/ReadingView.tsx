@@ -7,7 +7,7 @@ import { useMemo } from "react";
 import { roleOf } from "@/entities/document/model";
 import { blockImageUrl, formulaUrl, type BlockData, type DocumentData, type SegmentData } from "@/shared/api/client";
 import { InlineMathText, renderLatex } from "@/shared/math/inline";
-import { dropFakeScripts, spaceCjkLatin } from "@/shared/text/typeset";
+import { dropFakeScripts, keyActivate, shortLabel, spaceCjkLatin } from "@/shared/text/typeset";
 
 type Item =
   | { kind: "page"; index: number }
@@ -73,6 +73,11 @@ export function ReadingView({ doc, jobId, selected, onSelect }: Props) {
             key={segment.id}
             className={`flow-${role}${translated ? "" : " untranslated"}${segment.id === selected ? " selected" : ""}`}
             onClick={() => onSelect(segment.id)}
+            tabIndex={0}
+            role="button"
+            aria-label={`段落：${shortLabel(segment.source)}`}
+            data-seg={segment.id}
+            onKeyDown={keyActivate(() => onSelect(segment.id))}
           >
             <InlineMathText
               text={dropFakeScripts(text)}

@@ -13,9 +13,10 @@ import { fitElement } from "@/shared/fit/fit";
 import { InlineMathText, type InlineLink } from "@/shared/math/inline";
 import { countCompact } from "@/shared/text/links";
 import { splitCaptionNo } from "@/shared/text/script";
-import { dropFakeScripts, spaceCjkLatin, wantsIndent } from "@/shared/text/typeset";
+import { dropFakeScripts, keyActivate, shortLabel, spaceCjkLatin, wantsIndent } from "@/shared/text/typeset";
 import { PdfCanvas, usePdf } from "@/shared/pdf/pdf";
 
+import { ReaderTips, tipsSeen } from "./ReaderTips";
 import { ReadingView } from "./ReadingView";
 
 export type ViewMode = "both" | "translated" | "original" | "reading";
@@ -51,6 +52,7 @@ export function ReaderView({
   // 窄屏（手机）上整页缩到屏幕宽，正文只剩 4–5 像素，默认用阅读视图；用户切换后以用户的选择为准
   const [mode, setMode] = useState<ViewMode>(() => (window.innerWidth < NARROW ? "reading" : "both"));
   const [zoom, setZoom] = useState<number | null>(null); // null = 自适应宽度
+  const [tips, setTips] = useState(() => !tipsSeen()); // 第一次打开时显示操作提示
   const [width, setWidth] = useState(1200);
   const [hovered, setHovered] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -138,8 +140,17 @@ export function ReaderView({
             +
           </button>
         </div>
+        <button
+          type="button"
+          className={tips ? "quiet on" : "quiet"}
+          aria-pressed={tips}
+          onClick={() => setTips((v) => !v)}
+        >
+          使用说明
+        </button>
         {actions}
       </div>
+      {tips && <ReaderTips onClose={() => setTips(false)} />}
       <div className="pages" ref={scroller}>
         {(original.error || background.error) && (
           <p className="error">PDF 加载失败：{original.error ?? background.error}</p>
@@ -416,6 +427,13 @@ function OverlayBlock({
       onMouseEnter={() => onHover(segment.id)}
       onMouseLeave={() => onHover(null)}
       onClick={() => onSelect(segment.id)}
+      tabIndex={first ? 0 : -1}
+      role="button"
+      aria-label={`段落：${shortLabel(segment.source)}`}
+      data-seg={first ? segment.id : undefined}
+      onKeyDown={keyActivate(() => onSelect(segment.id))}
+      onFocus={() => onHover(segment.id)}
+      onBlur={() => onHover(null)}
     >
       <div ref={inner} className={indent ? "indent" : undefined}>
         {captionNo && (

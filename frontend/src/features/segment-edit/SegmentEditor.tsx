@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { findTerm, termMap, upsertTerms, useTerms } from "@/entities/glossary/model";
 import { api, type Quality, type SegmentData } from "@/shared/api/client";
@@ -23,6 +23,11 @@ export function SegmentEditor({ segment, onChange, onClose, history }: Props) {
   const [draft, setDraft] = useState(segment.target ?? "");
   const [busy, setBusy] = useState<"save" | Quality | null>(null);
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
   const terms = useTerms();
   const [term, setTerm] = useState({ source: "", target: "", note: "" });
   const [termSaved, setTermSaved] = useState<string | null>(null);

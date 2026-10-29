@@ -1648,3 +1648,57 @@ input[type="radio"] {
   color: var(--ink-soft);
   font-size: 13px;
 }
+
+/* 操作提示 */
+.reader-tips {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+  font-size: 14px;
+  line-height: 1.7;
+}
+.reader-tips ul {
+  flex: 1;
+  margin: 0;
+  padding-left: 1.2em;
+}
+.reader-tips .swatch {
+  display: inline-block;
+  width: 14px;
+  height: 10px;
+  margin: 0 4px 0 8px;
+  vertical-align: -1px;
+}
+.reader-tips .swatch.untranslated {
+  outline: 1px dashed var(--red-pen);
+  background: #eee;
+}
+.reader-tips .swatch.overflow {
+  outline: 1px dotted #c98a00;
+}
+.how-to {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin: 0;
+  padding-left: 1.2em;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+@media (max-width: 640px) {
+  .reader-tips {
+    flex-direction: column;
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+}
+
+/* 键盘操作：段落可用 Tab 聚焦 */
+.tblock:focus-visible,
+.flow [role="button"]:focus-visible {
+  outline: 2px solid var(--pen);
+  outline-offset: 1px;
+}

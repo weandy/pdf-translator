@@ -10,6 +10,25 @@ const HAN_LATIN = new RegExp(`(${HAN})(${LATIN}|<m\\d+/>)`, "g");
 const LATIN_HAN = new RegExp(`(${LATIN}|%|<m\\d+/>)(${HAN})`, "g");
 const LIST_ITEM = /^\s*(?:[•·▪◦‣\-–—*]|\(?\d+\)|\d+[.)、]|\[\d+\]|[a-z][.)]\s)/;
 
+/** 键盘可操作的段落：Tab 聚焦，回车或空格打开（与点击相同）。 */
+export function keyActivate(run: () => void) {
+  return (e: { key: string; preventDefault: () => void }) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      run();
+    }
+  };
+}
+
+/** 读屏与悬停提示用的段落简称：去掉公式占位与格式标签，取开头。 */
+export function shortLabel(text: string, n = 40): string {
+  const plain = text
+    .replace(/<m\d+\/>/g, "…")
+    .replace(/<\/?(?:sup|sub|b|i)>/g, "")
+    .trim();
+  return plain.length > n ? `${plain.slice(0, n)}…` : plain;
+}
+
 /** 解析器偶尔把整行文字标成上下标（如列表项的第一行被包在 <sub> 里），真正的上下标都很短。 */
 const FAKE_SCRIPT = /<(sup|sub)>([^<]{13,})<\/\1>/g;
 
