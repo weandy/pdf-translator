@@ -2,22 +2,24 @@
  * 任务页：进行中显示进度，完成后显示阅读器；阅读器、下载与段落编辑在这里组合（功能模块之间互不依赖）。
  */
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 
 import { progressOf, withSegment } from "@/entities/document/model";
-import { useJob } from "@/entities/job/model";
+import { STAGE_LABELS, useJob } from "@/entities/job/model";
 import { useSettings } from "@/entities/settings/model";
 import { DownloadMenu } from "@/features/export/DownloadMenu";
 import { JobProgress } from "@/features/job-progress/JobProgress";
 import { ReaderView } from "@/features/reader/ReaderView";
 import { RevisionList } from "@/features/revisions/RevisionList";
 import { SegmentEditor } from "@/features/segment-edit/SegmentEditor";
-import { api, type DocumentData, type Revision, type SegmentData } from "@/shared/api/client";
+import { api, type DocumentData, type Job, type Revision, type SegmentData } from "@/shared/api/client";
+import { APP_TITLE, notify, useVisible } from "@/shared/attention/attention";
 
 export function JobPage() {
   const { id = "" } = useParams();
   const { job, error, refresh } = useJob(id);
+  useJobTitle(job);
   const qc = useQueryClient();
   const { translationSide } = useSettings();
   const [selected, setSelected] = useState<string | null>(null);
@@ -131,6 +133,43 @@ export function JobPage() {
         )}
       </div>
     </main>
+  );
+}
+
+/**
+ * 标签标题：进行中显示阶段与进度；页面在后台时完成或失败，标题显示 ✓ / ✗ 并发桌面通知（用户同意过时），
+ * 回到这个标签后恢复为文件名。
+ */
+function useJobTitle(job: Job | null): void {
+  const visible = useVisible();
+  const last = useRef<string | null>(null);
+  const unseen = useRef(false);
+  useEffect(() => {
+    if (!job) return;
+    const live = job.status === "queued" || job.status === "running";
+    const wasLive = last.current === "queued" || last.current === "running";
+    last.current = job.status;
+    if (wasLive && !live) {
+      unseen.current = !visible;
+      if (job.status === "done") notify("翻译完成", job.filename);
+      if (job.status === "failed") notify("翻译失败", job.filename);
+    }
+    if (visible) unseen.current = false;
+    const pct = job.stage === "parse" || job.stage === "translate" ? ` ${Math.round(job.progress * 100)}%` : "";
+    document.title =
+      job.status === "queued"
+        ? `排队中 · ${job.filename}`
+        : job.status === "running"
+          ? `${STAGE_LABELS[job.stage] ?? "处理中"}${pct} · ${job.filename}`
+          : unseen.current
+            ? `${job.status === "done" ? "✓ 已完成" : job.status === "failed" ? "✗ 失败" : "已取消"} · ${job.filename}`
+            : job.filename;
+  }, [job, visible]);
+  useEffect(
+    () => () => {
+      document.title = APP_TITLE;
+    },
+    [],
   );
 }
 

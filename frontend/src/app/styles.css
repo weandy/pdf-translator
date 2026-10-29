@@ -1431,3 +1431,7 @@ input[type="radio"] {
 .page-range small {
   font-size: 12px;
 }
+.progress-actions {
+  gap: 12px;
+  align-items: center;
+}

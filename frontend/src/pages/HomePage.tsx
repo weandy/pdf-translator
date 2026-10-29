@@ -1,10 +1,11 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { deleteJob, MY_JOBS_QUERY, STAGE_LABELS, useMyJobs } from "@/entities/job/model";
 import { UploadPanel } from "@/features/upload/UploadPanel";
 import { api, exportUrl } from "@/shared/api/client";
+import { APP_TITLE, notify } from "@/shared/attention/attention";
 
 const STATUS: Record<string, string> = {
   queued: "排队中",
@@ -20,6 +21,14 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
   const { data: jobs } = useMyJobs();
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const active = jobs?.filter((j) => j.status === "queued" || j.status === "running").length ?? 0;
+  const wasActive = useRef(0);
+  useEffect(() => {
+    // 有任务在进行时标题显示数量；批量任务全部结束、页面在后台时发桌面通知（用户同意过时）
+    if (wasActive.current > 0 && active === 0) notify("翻译全部结束", "在“我的任务”里查看结果");
+    wasActive.current = active;
+    document.title = active > 0 ? `(进行中 ${active}) ${APP_TITLE}` : APP_TITLE;
+  }, [active]);
 
   const cancel = async (id: string, filename: string) => {
     if (!window.confirm(`取消“${filename}”？已完成的步骤会保留，之后可以重新开始。`)) return;

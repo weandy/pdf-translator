@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router";
 
 import { deleteJob, STAGE_LABELS, STAGE_ORDER } from "@/entities/job/model";
 import { api, type Job } from "@/shared/api/client";
+import { askNotify, notifyState, type NotifyState } from "@/shared/attention/attention";
 import { formatDuration, useNow } from "@/shared/time/elapsed";
 
 interface Props {
@@ -17,6 +18,7 @@ export function JobProgress({ job, onRetried }: Props) {
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [notifying, setNotifying] = useState<NotifyState>(notifyState);
   const live = job.status === "running" || job.status === "queued";
   const stopped = job.status === "failed" || job.status === "cancelled";
   const now = useNow(live);
@@ -126,6 +128,15 @@ export function JobProgress({ job, onRetried }: Props) {
       </ol>
       {live && (
         <div className="progress-actions">
+          {notifying === "granted" ? (
+            <span className="hint">完成时会发桌面通知（页面在后台时）</span>
+          ) : notifying === "denied" ? (
+            <span className="hint">浏览器拒绝了通知，可在地址栏的网站设置里打开</span>
+          ) : notifying === "default" ? (
+            <button type="button" className="quiet" onClick={() => void askNotify().then(setNotifying)}>
+              完成时通知我
+            </button>
+          ) : null}
           <button type="button" className="quiet danger" disabled={cancelling} onClick={() => void cancel()}>
             {cancelling ? "正在取消…" : "取消翻译"}
           </button>
