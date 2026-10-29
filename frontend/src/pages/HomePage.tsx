@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 
+import { clearHistory, removeHistory, useHistory } from "@/entities/history/model";
 import { deleteJob, MY_JOBS_QUERY, STAGE_LABELS, useMyJobs } from "@/entities/job/model";
 import { UploadPanel } from "@/features/upload/UploadPanel";
 import { api, exportUrl } from "@/shared/api/client";
@@ -22,6 +23,9 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
   const { data: jobs } = useMyJobs();
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const history = useHistory();
+  // 本机历史里服务器上已经没有的翻译（到期删除或手动删除）
+  const past = jobs ? history.filter((h) => !jobs.some((j) => j.id === h.id)) : [];
   const active = jobs?.filter((j) => j.status === "queued" || j.status === "running").length ?? 0;
   const wasActive = useRef(0);
   useEffect(() => {
@@ -136,6 +140,40 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
                       删除
                     </button>
                   )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {past.length > 0 && (
+        <section className="jobs history" aria-labelledby="history-title">
+          <div className="jobs-head">
+            <h2 id="history-title">历史记录</h2>
+            <span className="hint">只存在这个浏览器里；这些翻译在服务器上已删除（到期或手动删除）</span>
+            <span className="spacer" />
+            <button
+              type="button"
+              className="quiet"
+              onClick={() => window.confirm("清除这个浏览器里的全部翻译历史？") && clearHistory()}
+            >
+              全部清除
+            </button>
+          </div>
+          <ul className="job-list">
+            {past.map((h) => (
+              <li key={h.id} className="job-item">
+                <span className="name" title={h.filename}>
+                  {h.filename}
+                </span>
+                <span className="status">已删除</span>
+                <span className="facts-cell num">
+                  {h.pages} 页，{new Date(h.createdAt).toLocaleDateString("zh-CN")}
+                </span>
+                <span className="row-actions">
+                  <button type="button" className="quiet" onClick={() => removeHistory(h.id)}>
+                    移除
+                  </button>
                 </span>
               </li>
             ))}

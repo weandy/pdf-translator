@@ -1,11 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState, type DragEvent } from "react";
+import { Link } from "react-router";
 
+import { addHistory, findByHash, type HistoryEntry } from "@/entities/history/model";
 import { rememberJob } from "@/entities/job/model";
 import { termMap } from "@/entities/glossary/model";
 import { useSettings } from "@/entities/settings/model";
 import { parsePageRange } from "@/features/upload/pages";
 import { api, type Job } from "@/shared/api/client";
+import { fingerprint } from "@/shared/file/fingerprint";
 
 interface Props {
   onCreated: (job: Job) => void; // 只上传一个文件时：进入这个任务
@@ -21,7 +24,14 @@ interface Item {
   pages: number | null;
   error: string | null;
   state: "ready" | "uploading" | "done";
+  hash: string | null; // 文件指纹，只在本机用
+  // 本机历史里翻译过同一文件：alive 表示服务器上的译文还在（24 小时内）
+  seen: { entry: HistoryEntry; alive: boolean } | null;
+  confirmed: boolean; // 翻译过的文件，用户点了“仍要重新翻译”
 }
+
+const when = (iso: string) =>
+  new Date(iso).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
 /** 对开页里的版面示意：标题、正文、公式。左页英文、右页中文（中文行用蓝铅笔色）。 */
 function SketchPage({ lang }: { lang: "en" | "zh" }) {
@@ -57,6 +67,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
   const [error, setError] = useState<string | null>(null);
 
   const usable = items.filter((it) => !it.error);
+  const undecided = usable.filter((it) => it.seen && !it.confirmed); // 翻译过、还没确认要不要重翻
   const counted = usable.every((it) => it.pages !== null);
   const file = items.length === 1 ? items[0] : null;
   // 只选一个文件时可以只翻部分页（版面仍解析全文，翻译与费用按所选页数）
@@ -89,7 +100,17 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
           ? `超过 ${config.max_upload_mb} MB`
           : null;
     setRangeText("");
-    setItems(chosen.map((f) => ({ file: f, pages: null, error: check(f), state: "ready" })));
+    setItems(
+      chosen.map((f) => ({
+        file: f,
+        pages: null,
+        error: check(f),
+        state: "ready",
+        hash: null,
+        seen: null,
+        confirmed: false,
+      })),
+    );
     const { countPages } = await import("@/shared/pdf/pdf"); // pdf.js 较大，选了文件才加载
     await Promise.all(
       chosen
@@ -102,6 +123,16 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
           } catch {
             update(f, { error: "无法打开，请确认是有效的 PDF" });
           }
+          // 与本机历史比对（指纹不发给服务器）；翻译过的问一下服务器上那次的任务还在不在
+          const hash = await fingerprint(f);
+          const prior = hash ? findByHash(hash)[0] : undefined;
+          const alive = prior
+            ? await api.job(prior.id).then(
+                () => true,
+                () => false,
+              )
+            : false;
+          update(f, { hash, seen: prior ? { entry: prior, alive } : null });
         }),
     );
   };
@@ -132,6 +163,10 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
         try {
           const job = await api.createJob(it.file, options);
           rememberJob(job.id);
+          if (it.hash) {
+            addHistory({ id: job.id, hash: it.hash, filename: job.filename, pages: job.page_count,
+                         createdAt: job.created_at }); // prettier-ignore
+          }
           created.push(job);
           update(it.file, { state: "done" });
         } catch (e) {
@@ -233,7 +268,15 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
                       : it.pages === null
                         ? "读取中…"
                         : `${it.pages} 页`)}
+                {it.seen && !it.error && it.state === "ready" && (
+                  <small className="seen-tag"> · {when(it.seen.entry.createdAt)} 翻译过</small>
+                )}
               </span>
+              {it.seen && !it.confirmed && it.state === "ready" && !it.error && !busy && (
+                <button type="button" className="quiet" onClick={() => update(it.file, { confirmed: true })}>
+                  仍要翻译
+                </button>
+              )}
               {it.state === "ready" && !busy && (
                 <button
                   type="button"
@@ -249,6 +292,35 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
         </ul>
       )}
       {items.length > 1 && <p className="hint">几篇同时解析，翻译一篇接一篇进行；完成后在下方“我的任务”里打开。</p>}
+      {items.length > 1 && undecided.length > 0 && (
+        <p className="seen-notice">
+          有 {undecided.length} 篇你在这个浏览器里翻译过，请先对每篇选择“仍要翻译”或“移除”。
+        </p>
+      )}
+      {file?.seen && !file.confirmed && !file.error && (
+        <div className="seen-notice" role="status">
+          <p>
+            这篇你在 {when(file.seen.entry.createdAt)} 翻译过（{file.seen.entry.filename}）。
+            {file.seen.alive
+              ? "服务器上的译文还在，可以直接打开。"
+              : "服务器上的译文已过期删除，可以先在下载目录里找找当时下载的 PDF（文件名一般以“-译文”或“-双语对照”结尾）。"}
+          </p>
+          <div className="row-actions">
+            {file.seen.alive && (
+              <Link className="button primary" to={`/jobs/${file.seen.entry.id}`}>
+                打开上次的译文
+              </Link>
+            )}
+            <button
+              type="button"
+              className={file.seen.alive ? "quiet" : ""}
+              onClick={() => update(file.file, { confirmed: true })}
+            >
+              仍要重新翻译
+            </button>
+          </div>
+        </div>
+      )}
       {file && file.pages !== null && !file.error && (
         <label className="field page-range">
           <span>页码范围（可选）</span>
@@ -305,7 +377,13 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
           type="button"
           className="primary"
           disabled={
-            !usable.length || !counted || !consent || busy || Boolean(rangeError) || Boolean(missingKey || missingToken)
+            !usable.length ||
+            !counted ||
+            !consent ||
+            busy ||
+            undecided.length > 0 ||
+            Boolean(rangeError) ||
+            Boolean(missingKey || missingToken)
           }
           onClick={() => void submit()}
         >

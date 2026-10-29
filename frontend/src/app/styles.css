@@ -1570,3 +1570,26 @@ input[type="radio"] {
 .job-message.expiring {
   color: var(--red-pen);
 }
+
+/* 重复上传提醒（只与本机历史比对） */
+.seen-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 14px;
+  border-left: 3px solid var(--pen);
+  background: var(--paper);
+  font-size: 14px;
+}
+.seen-notice p {
+  margin: 0;
+}
+.seen-notice .row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.seen-tag {
+  color: var(--pen);
+}
