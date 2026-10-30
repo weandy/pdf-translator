@@ -12,25 +12,108 @@ import { useEffect, useRef, useState } from "react";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
-const docs = new Map<string, Promise<PDFDocumentProxy>>();
 const DECODERS = "/pdfjs/";
+// 一个任务最多同时使用原文和译文两份 PDF；保留当前任务和最近 3 个任务。
+export const MAX_CACHED_PDFS = 8;
+
+interface PdfEntry {
+  url: string;
+  task: ReturnType<typeof pdfjs.getDocument>;
+  promise: Promise<PDFDocumentProxy>;
+  doc: PDFDocumentProxy | null;
+  refs: number;
+  lastUsed: number;
+}
+
+const entries = new Map<string, PdfEntry>();
+
+function touch(entry: PdfEntry): void {
+  entry.lastUsed = Date.now();
+}
+
+function createEntry(url: string): PdfEntry {
+  const task = pdfjs.getDocument({
+    url,
+    useWasm: false,
+    wasmUrl: DECODERS,
+    disableAutoFetch: true,
+    disableStream: true,
+    rangeChunkSize: 256 * 1024,
+  });
+  const entry: PdfEntry = {
+    url,
+    task,
+    promise: task.promise,
+    doc: null,
+    refs: 0,
+    lastUsed: Date.now(),
+  };
+  entry.promise.then(
+    (doc) => {
+      entry.doc = doc;
+      touch(entry);
+      evict();
+    },
+    () => {
+      if (entries.get(url) === entry) entries.delete(url);
+    },
+  );
+  entries.set(url, entry);
+  return entry;
+}
+
+function entryFor(url: string): PdfEntry {
+  const existing = entries.get(url);
+  if (existing) {
+    touch(existing);
+    return existing;
+  }
+  return createEntry(url);
+}
+
+function destroy(entry: PdfEntry): void {
+  if (entry.doc) {
+    const closable = entry.doc as PDFDocumentProxy & { destroy?: () => Promise<void> };
+    if (typeof closable.destroy === "function") void closable.destroy().catch(() => undefined);
+    else void entry.task.destroy().catch(() => undefined);
+  } else {
+    void entry.task.destroy().catch(() => undefined);
+  }
+}
+
+function evict(): void {
+  if (entries.size <= MAX_CACHED_PDFS) return;
+  const candidates = [...entries.values()]
+    .filter((entry) => entry.refs === 0)
+    .sort((a, b) => a.lastUsed - b.lastUsed);
+  while (entries.size > MAX_CACHED_PDFS) {
+    const entry = candidates.shift();
+    if (!entry) return; // 当前阅读中的文档全部保留
+    if (entries.get(entry.url) !== entry || entry.refs > 0) continue;
+    entries.delete(entry.url);
+    destroy(entry);
+  }
+}
+
+function acquire(url: string): { promise: Promise<PDFDocumentProxy>; release: () => void } {
+  const entry = entryFor(url);
+  entry.refs += 1;
+  touch(entry);
+  let released = false;
+  return {
+    promise: entry.promise,
+    release: () => {
+      if (released) return;
+      released = true;
+      entry.refs = Math.max(0, entry.refs - 1);
+      touch(entry);
+      evict();
+    },
+  };
+}
 
 export function loadPdf(url: string): Promise<PDFDocumentProxy> {
-  let p = docs.get(url);
-  if (!p) {
-    // 分段加载：只按需下载看到的页所需的数据（服务器支持 HTTP Range），不在后台把整份 PDF 下完
-    p = pdfjs.getDocument({
-      url,
-      useWasm: false,
-      wasmUrl: DECODERS,
-      disableAutoFetch: true,
-      disableStream: true,
-      rangeChunkSize: 256 * 1024,
-    }).promise;
-    p.catch(() => docs.delete(url));
-    docs.set(url, p);
-  }
-  return p;
+  return entryFor(url).promise;
 }
 
 export async function countPages(file: File): Promise<number> {
@@ -48,12 +131,14 @@ export function usePdf(url: string | null): { doc: PDFDocumentProxy | null; erro
   useEffect(() => {
     if (!url) return;
     let alive = true;
-    loadPdf(url).then(
+    const handle = acquire(url);
+    handle.promise.then(
       (doc) => alive && setState({ doc, error: null }),
       (e: unknown) => alive && setState({ doc: null, error: String(e) }),
     );
     return () => {
       alive = false;
+      handle.release();
     };
   }, [url]);
   return state;
