@@ -12,7 +12,7 @@ import { fingerprint } from "@/shared/file/fingerprint";
 
 interface Props {
   onCreated: (job: Job) => void; // 只上传一个文件时：进入这个任务
-  onBatchCreated: (count: number) => void; // 一次上传多个文件时：留在首页看列表
+  onBatchCreated: (jobs: Job[]) => void; // 一次上传多个文件时：留在首页看批次
   onNeedSettings: () => void;
 }
 
@@ -187,7 +187,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
     setBusy(false);
     if (items.length === 1 && created[0]) onCreated(created[0]);
     else if (created.length) {
-      onBatchCreated(created.length);
+      onBatchCreated(created);
       setItems((list) => list.filter((it) => it.state !== "done")); // 留下没传成功的，方便重试
     }
   };

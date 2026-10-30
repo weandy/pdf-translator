@@ -533,6 +533,65 @@ input[type="radio"] {
   gap: 4px;
   justify-content: flex-end;
 }
+.batch-list-home {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.batch-card {
+  padding: 14px 16px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  box-shadow: var(--sheet-shadow);
+}
+.batch-card-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+.batch-card-head > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.batch-card-head strong {
+  overflow: hidden;
+  font-family: var(--serif);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.batch-progress {
+  height: 4px;
+  margin: 12px 0 8px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--desk-deep);
+}
+.batch-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--pen);
+  transition: width 0.3s ease;
+}
+.batch-items {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.batch-items li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding-top: 4px;
+  border-top: 1px solid var(--rule);
+}
 .status {
   display: inline-flex;
   align-items: center;
@@ -1365,6 +1424,10 @@ input[type="radio"] {
   }
   .job-item .row-actions:empty {
     display: none;
+  }
+  .batch-card-head {
+    align-items: stretch;
+    flex-direction: column;
   }
   .workspace {
     flex-direction: column;

@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router";
 
 import { clearHistory, removeHistory, useHistory } from "@/entities/history/model";
 import { deleteJob, MY_JOBS_QUERY, STAGE_LABELS, useMyJobs } from "@/entities/job/model";
+import { readBatches, rememberBatch, removeBatch, type BatchEntry } from "@/entities/batch/model";
 import { UploadPanel } from "@/features/upload/UploadPanel";
 import { api, exportUrl } from "@/shared/api/client";
 import { APP_TITLE, notify } from "@/shared/attention/attention";
@@ -24,6 +25,7 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const history = useHistory();
+  const [batches, setBatches] = useState<BatchEntry[]>(readBatches);
   // 本机历史里服务器上已经没有的翻译（到期删除或手动删除）
   const past = jobs ? history.filter((h) => !jobs.some((j) => j.id === h.id)) : [];
   const active = jobs?.filter((j) => j.status === "queued" || j.status === "running").length ?? 0;
@@ -88,8 +90,13 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
         </div>
         <UploadPanel
           onCreated={(job) => void navigate(`/jobs/${job.id}`)}
-          onBatchCreated={(count) => {
-            setNotice(`已加入 ${count} 篇，进度见下方“我的任务”。`);
+          onBatchCreated={(created) => {
+            rememberBatch(
+              created.map((job) => job.id),
+              created.length > 0 ? `${created[0]?.filename ?? "论文"} 等 ${created.length} 篇` : undefined,
+            );
+            setBatches(readBatches());
+            setNotice(`已加入 ${created.length} 篇，进度见下方“我的批次”。`);
             void queryClient.invalidateQueries({ queryKey: MY_JOBS_QUERY });
           }}
           onNeedSettings={openSettings}
@@ -143,6 +150,68 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
                 </span>
               </li>
             ))}
+          </ul>
+        </section>
+      )}
+      {batches.length > 0 && (
+        <section className="jobs batches" aria-labelledby="batches-title">
+          <div className="jobs-head">
+            <h2 id="batches-title">我的批次</h2>
+            <span className="hint">多文件上传会集中显示在这里</span>
+          </div>
+          <ul className="batch-list-home">
+            {batches.map((batch) => {
+              const byId = new Map((jobs ?? []).map((job) => [job.id, job]));
+              const entries = batch.jobIds.map((id) => byId.get(id));
+              const finished = entries.filter((job) => job && ["done", "failed", "cancelled"].includes(job.status)).length;
+              const done = entries.filter((job) => job?.status === "done").length;
+              const percent = batch.jobIds.length ? Math.round((finished / batch.jobIds.length) * 100) : 0;
+              return (
+                <li key={batch.id} className="batch-card">
+                  <div className="batch-card-head">
+                    <div>
+                      <strong>{batch.name}</strong>
+                      <span className="hint">
+                        {done}/{batch.jobIds.length} 篇完成 · {finished === batch.jobIds.length ? "已结束" : `已处理 ${percent}%`}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="quiet danger"
+                      onClick={() => {
+                        if (!window.confirm("只移除这个批次分组，不删除其中的任务？")) return;
+                        removeBatch(batch.id);
+                        setBatches(readBatches());
+                      }}
+                    >
+                      移除批次
+                    </button>
+                  </div>
+                  <div className="batch-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+                    <span style={{ width: `${percent}%` }} />
+                  </div>
+                  <ul className="batch-items">
+                    {batch.jobIds.map((id) => {
+                      const job = byId.get(id);
+                      return (
+                        <li key={id}>
+                          {job ? (
+                            <Link to={`/jobs/${id}`} className="name" title={job.filename}>
+                              {job.filename}
+                            </Link>
+                          ) : (
+                            <span className="name muted">任务已过期或已删除</span>
+                          )}
+                          <span className={`status ${job?.status ?? ""}`}>
+                            {job ? (job.status === "running" ? STAGE_LABELS[job.stage] ?? STATUS.running : STATUS[job.status]) : "不可用"}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </li>
+              );
+            })}
           </ul>
         </section>
       )}
