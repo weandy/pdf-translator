@@ -105,6 +105,7 @@ export function SegmentEditor({ segment, onChange, onClose, history }: Props) {
 
   return (
     <aside className="editor" aria-label="段落编辑">
+      <span className="editor-grip" aria-hidden="true" />
       <header>
         <strong>段落</strong>
         <span className={`tag ${segment.status}`}>{STATUS[segment.status]}</span>

@@ -156,6 +156,7 @@ export function JobPage() {
         />
         {showHistory && (
           <aside className="editor" aria-label="修改记录">
+            <span className="editor-grip" aria-hidden="true" />
             <header>
               <strong>修改记录</strong>
               <span className="spacer" />

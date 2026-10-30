@@ -237,81 +237,83 @@ export function ReaderView({
     <div className="reader">
       <div className="toolbar">
         {heading}
-        <div className="segmented" role="group" aria-label="显示方式">
-          {(
-            [
-              ["both", "对照"],
-              ["translated", "译文"],
-              ["original", "原文"],
-            ] as const
-          ).map(([m, label]) => (
+        <div className="toolbar-tools">
+          <div className="segmented" role="group" aria-label="显示方式">
+            {(
+              [
+                ["both", "对照"],
+                ["translated", "译文"],
+                ["original", "原文"],
+              ] as const
+            ).map(([m, label]) => (
+              <button
+                key={m}
+                type="button"
+                className={mode === m ? "on" : ""}
+                aria-pressed={mode === m}
+                onClick={() => setMode(m)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="zoom" role="group" aria-label="缩放">
             <button
-              key={m}
               type="button"
-              className={mode === m ? "on" : ""}
-              aria-pressed={mode === m}
-              onClick={() => setMode(m)}
+              className="quiet"
+              onClick={() => setZoom(Math.max(0.3, scale - 0.15))}
+              aria-label="缩小"
             >
-              {label}
+              −
             </button>
-          ))}
-        </div>
-        <div className="zoom" role="group" aria-label="缩放">
+            <button type="button" className="quiet zoom-label" onClick={() => setZoom(null)} title="适应宽度">
+              {Math.round(scale * 100)}%
+            </button>
+            <button type="button" className="quiet" onClick={() => setZoom(Math.min(4, scale + 0.15))} aria-label="放大">
+              +
+            </button>
+          </div>
+          <label className="page-jump">
+            第
+            <input
+              className="num"
+              inputMode="numeric"
+              aria-label="跳到第几页"
+              value={pageDraft ?? String(current + 1)}
+              onFocus={(e) => e.currentTarget.select()}
+              onChange={(e) => setPageDraft(e.target.value.replace(/\D/g, ""))}
+              onBlur={() => setPageDraft(null)}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter") return;
+                const n = Number(pageDraft);
+                if (n >= 1 && n <= doc.pages.length) goTo(n - 1);
+                setPageDraft(null);
+                e.currentTarget.blur();
+              }}
+            />
+            / {doc.pages.length} 页
+          </label>
+          {doc.outline.length > 0 && (
+            <button
+              type="button"
+              className={showOutline ? "quiet on" : "quiet"}
+              aria-pressed={showOutline}
+              onClick={() => setShowOutline((v) => !v)}
+            >
+              目录
+            </button>
+          )}
           <button
             type="button"
-            className="quiet"
-            onClick={() => setZoom(Math.max(0.3, scale - 0.15))}
-            aria-label="缩小"
+            className={searchOpen ? "quiet on" : "quiet"}
+            aria-pressed={searchOpen}
+            onClick={() => setSearchOpen((v) => !v)}
+            title="搜索原文和译文"
           >
-            −
+            搜索
           </button>
-          <button type="button" className="quiet zoom-label" onClick={() => setZoom(null)} title="适应宽度">
-            {Math.round(scale * 100)}%
-          </button>
-          <button type="button" className="quiet" onClick={() => setZoom(Math.min(4, scale + 0.15))} aria-label="放大">
-            +
-          </button>
+          {actions}
         </div>
-        <label className="page-jump">
-          第
-          <input
-            className="num"
-            inputMode="numeric"
-            aria-label="跳到第几页"
-            value={pageDraft ?? String(current + 1)}
-            onFocus={(e) => e.currentTarget.select()}
-            onChange={(e) => setPageDraft(e.target.value.replace(/\D/g, ""))}
-            onBlur={() => setPageDraft(null)}
-            onKeyDown={(e) => {
-              if (e.key !== "Enter") return;
-              const n = Number(pageDraft);
-              if (n >= 1 && n <= doc.pages.length) goTo(n - 1);
-              setPageDraft(null);
-              e.currentTarget.blur();
-            }}
-          />
-          / {doc.pages.length} 页
-        </label>
-        {doc.outline.length > 0 && (
-          <button
-            type="button"
-            className={showOutline ? "quiet on" : "quiet"}
-            aria-pressed={showOutline}
-            onClick={() => setShowOutline((v) => !v)}
-          >
-            目录
-          </button>
-        )}
-        <button
-          type="button"
-          className={searchOpen ? "quiet on" : "quiet"}
-          aria-pressed={searchOpen}
-          onClick={() => setSearchOpen((v) => !v)}
-          title="搜索原文和译文"
-        >
-          搜索
-        </button>
-        {actions}
       </div>
       {searchOpen && (
         <div className="reader-search" role="search" aria-label="全文搜索">
