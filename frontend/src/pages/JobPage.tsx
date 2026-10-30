@@ -14,7 +14,7 @@ import { JobProgress } from "@/features/job-progress/JobProgress";
 import { ReaderView } from "@/features/reader/ReaderView";
 import { RevisionList } from "@/features/revisions/RevisionList";
 import { SegmentEditor } from "@/features/segment-edit/SegmentEditor";
-import { api, type DocumentData, type Job, type Revision, type SegmentData } from "@/shared/api/client";
+import { api, exportUrl, type DocumentData, type Job, type Revision, type SegmentData } from "@/shared/api/client";
 import { APP_TITLE, notify, useVisible } from "@/shared/attention/attention";
 import { expiresSoon, formatRemaining } from "@/shared/time/elapsed";
 
@@ -27,6 +27,7 @@ export function JobPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
+  const [showCompletion, setShowCompletion] = useState(true);
   const [spot, setSpot] = useState<{ id: string; n: number } | null>(null);
   const [marked, setMarked] = useState<ReadonlySet<string>>(new Set());
   const [revealKey, setRevealKey] = useState(0);
@@ -108,6 +109,31 @@ export function JobPage() {
 
   return (
     <main className="job">
+      {showCompletion && (
+        <section className="completion-bar" aria-label="翻译完成" role="status">
+          <div>
+            <strong>翻译完成，可以开始阅读了</strong>
+            <span className="hint">
+              {stats.done} 段已完成
+              {job.cost_cny !== null ? `，本次花费 ¥${job.cost_cny.toFixed(3)}` : ""}
+            </span>
+          </div>
+          <div className="completion-actions">
+            <button type="button" className="primary" onClick={() => setShowCompletion(false)}>
+              开始阅读
+            </button>
+            <a className="button" href={exportUrl(id, "mono")} download onClick={() => setShowCompletion(false)}>
+              下载中文版
+            </a>
+            <a className="button" href={exportUrl(id, "dual", translationSide)} download onClick={() => setShowCompletion(false)}>
+              下载双语版
+            </a>
+            <button type="button" className="quiet" onClick={() => setShowCompletion(false)} aria-label="关闭完成提示">
+              稍后
+            </button>
+          </div>
+        </section>
+      )}
       <div className="workspace">
         <ReaderView
           doc={doc}
