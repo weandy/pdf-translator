@@ -52,6 +52,11 @@ const SPINE = 2; // 对照模式两页之间的装订线
 const NARROW = 760; // 视口窄于这个宽度时默认只显示译文
 const POSITIONS = "pdftr.pos.v1"; // 每篇文档上次读到的页（浏览器本地）
 
+interface JumpTarget {
+  page: number;
+  top: number;
+}
+
 function savedPage(jobId: string): number {
   return readJSON<Record<string, number>>(POSITIONS, {})[jobId] ?? 0;
 }
@@ -83,6 +88,8 @@ export function ReaderView({
   const [hovered, setHovered] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null); // 刚跳到的标题段落：原文与译文上短暂高亮
   const flashTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const jumpTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null);
   const [showOutline, setShowOutline] = useState(() => window.innerWidth >= 1280 && doc.outline.length > 0);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -151,7 +158,15 @@ export function ReaderView({
     },
     [scale],
   );
-  const jump = useCallback((page: number, top: number) => goTo(page, top), [goTo]);
+  const jump = useCallback(
+    (page: number, top: number) => {
+      goTo(page, top);
+      setJumpTarget({ page, top });
+      clearTimeout(jumpTimer.current);
+      jumpTimer.current = setTimeout(() => setJumpTarget(null), 2400);
+    },
+    [goTo],
+  );
 
   const jumpSearch = useCallback(
     (hit: SearchHit) => {
@@ -159,12 +174,12 @@ export function ReaderView({
       const block = doc.pages.flatMap((p) => p.blocks).find((b) => b.id === segment?.block_ids[0]);
       if (!block) return;
       setSearchIndex(searchResults.findIndex((item) => item.segmentId === hit.segmentId));
-      goTo(block.page, block.bbox.y0);
+      jump(block.page, block.bbox.y0);
       setFlash(hit.segmentId);
       clearTimeout(flashTimer.current);
       flashTimer.current = setTimeout(() => setFlash(null), 2400);
     },
-    [doc, goTo, searchResults],
+    [doc, jump, searchResults],
   );
 
   const moveSearch = (delta: number) => {
@@ -226,7 +241,7 @@ export function ReaderView({
   const [picked, setPicked] = useState<number | null>(null); // 刚在目录里点的一项（同一页有好几节时高亮它）
   const goOutline = (item: OutlineData) => {
     setPicked(doc.outline.indexOf(item));
-    goTo(item.page, item.top);
+    jump(item.page, item.top);
     clearTimeout(flashTimer.current);
     setFlash(item.segment_id ?? null);
     flashTimer.current = setTimeout(() => setFlash(null), 2400);
@@ -399,6 +414,7 @@ export function ReaderView({
               onSelect={onSelectSegment}
               pageLinks={byPage.get(page.index)}
               blockLinks={byBlock}
+              jumpTarget={jumpTarget?.page === page.index ? jumpTarget : null}
               onJump={jump}
             />
           ))}
@@ -427,6 +443,7 @@ interface RowProps {
   onSelect: (id: string) => void;
   pageLinks: LinkData[] | undefined;
   blockLinks: Map<string, LinkData[]>;
+  jumpTarget: JumpTarget | null;
   onJump: (page: number, top: number) => void;
 }
 
@@ -493,6 +510,16 @@ function useNearViewport<T extends HTMLElement>(): [React.RefObject<T | null>, b
   return [ref, near];
 }
 
+function JumpMarker({ top, scale }: { top: number; scale: number }) {
+  return (
+    <div
+      className="page-jump-flash"
+      style={{ top: top * scale, height: Math.max(28, 36 * scale) }}
+      aria-hidden="true"
+    />
+  );
+}
+
 function PageRow({
   page,
   scale,
@@ -512,6 +539,7 @@ function PageRow({
   onSelect,
   pageLinks,
   blockLinks,
+  jumpTarget,
   onJump,
 }: RowProps) {
   const [ref, near] = useNearViewport<HTMLDivElement>();
@@ -537,6 +565,7 @@ function PageRow({
       {mode !== "translated" && (
         <div className="page" style={size} aria-label={`原文第 ${page.index + 1} 页`}>
           {near && original && <PdfCanvas doc={original} page={page.index} scale={scale} />}
+          {jumpTarget && <JumpMarker top={jumpTarget.top} scale={scale} />}
           {near && (
             <div className="source-text-layer" aria-label={`原文第 ${page.index + 1} 页文字`}>
               {blocks.map((b) => {
@@ -586,6 +615,7 @@ function PageRow({
       {mode !== "original" && (
         <div className="page" style={size} aria-label={`译文第 ${page.index + 1} 页`}>
           {near && background && <PdfCanvas doc={background} page={page.index} scale={scale} />}
+          {jumpTarget && <JumpMarker top={jumpTarget.top} scale={scale} />}
           {near && (
             <div className="overlay" style={{ width: page.width * scale, height: page.height * scale }}>
               {blocks.map((b) => {

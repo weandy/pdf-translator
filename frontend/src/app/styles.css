@@ -1144,6 +1144,27 @@ input[type="radio"] {
   font-size: 14px;
   text-align: center;
 }
+.page-jump-flash {
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 4;
+  border: 2px solid var(--pen);
+  border-radius: 3px;
+  background: rgb(118 190 220 / 0.2);
+  box-shadow: 0 0 0 3px rgb(118 190 220 / 0.14);
+  pointer-events: none;
+  animation: page-jump-fade 2.4s ease-out forwards;
+}
+@keyframes page-jump-fade {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
 .hit {
   position: absolute;
   border-radius: 2px;
