@@ -25,6 +25,7 @@ import { dropFakeScripts, keyActivate, shortLabel, spaceCjkLatin, wantsIndent } 
 import { PdfCanvas, usePdf } from "@/shared/pdf/pdf";
 
 import { OutlinePanel } from "./OutlinePanel";
+import { searchDocument, type SearchHit } from "./search";
 
 export type ViewMode = "both" | "translated" | "original";
 
@@ -83,6 +84,9 @@ export function ReaderView({
   const [flash, setFlash] = useState<string | null>(null); // 刚跳到的标题段落：原文与译文上短暂高亮
   const flashTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [showOutline, setShowOutline] = useState(() => window.innerWidth >= 1280 && doc.outline.length > 0);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchIndex, setSearchIndex] = useState(0);
   const [current, setCurrent] = useState(0); // 当前页（0 起）
   const [pageDraft, setPageDraft] = useState<string | null>(null); // 正在输入的页码
   const scroller = useRef<HTMLDivElement>(null);
@@ -122,6 +126,20 @@ export function ReaderView({
   const columns = mode === "both" ? 2 : 1;
   const fitZoom = Math.max(0.3, (width - PADDING - (columns - 1) * SPINE) / columns / maxPageWidth);
   const scale = zoom ?? fitZoom;
+  const searchResults = useMemo(() => searchDocument(doc, searchQuery), [doc, searchQuery]);
+  const searchIds = useMemo(() => new Set(searchResults.map((hit) => hit.segmentId)), [searchResults]);
+  const activeSearchIndex = Math.min(searchIndex, Math.max(0, searchResults.length - 1));
+  const currentSearchId = searchResults[activeSearchIndex]?.segmentId ?? null;
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSearchOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [searchOpen]);
+
   // 跳到某页的某个位置（top 为离页顶的 PDF 点）
   const goTo = useCallback(
     (page: number, top = 0, smooth = true) => {
@@ -134,6 +152,28 @@ export function ReaderView({
     [scale],
   );
   const jump = useCallback((page: number, top: number) => goTo(page, top), [goTo]);
+
+  const jumpSearch = useCallback(
+    (hit: SearchHit) => {
+      const segment = doc.segments.find((s) => s.id === hit.segmentId);
+      const block = doc.pages.flatMap((p) => p.blocks).find((b) => b.id === segment?.block_ids[0]);
+      if (!block) return;
+      setSearchIndex(searchResults.findIndex((item) => item.segmentId === hit.segmentId));
+      goTo(block.page, block.bbox.y0);
+      setFlash(hit.segmentId);
+      clearTimeout(flashTimer.current);
+      flashTimer.current = setTimeout(() => setFlash(null), 2400);
+    },
+    [doc, goTo, searchResults],
+  );
+
+  const moveSearch = (delta: number) => {
+    if (!searchResults.length) return;
+    const next = (activeSearchIndex + delta + searchResults.length) % searchResults.length;
+    setSearchIndex(next);
+    const hit = searchResults[next];
+    if (hit) jumpSearch(hit);
+  };
 
   // 滚动时算出当前页（工具栏页码、目录高亮），并记下来，下次打开回到这里
   const onScroll = () => {
@@ -262,8 +302,66 @@ export function ReaderView({
             目录
           </button>
         )}
+        <button
+          type="button"
+          className={searchOpen ? "quiet on" : "quiet"}
+          aria-pressed={searchOpen}
+          onClick={() => setSearchOpen((v) => !v)}
+          title="搜索原文和译文"
+        >
+          搜索
+        </button>
         {actions}
       </div>
+      {searchOpen && (
+        <div className="reader-search" role="search" aria-label="全文搜索">
+          <label className="reader-search-input">
+            <span>全文搜索</span>
+            <input
+              autoFocus
+              type="search"
+              value={searchQuery}
+              placeholder="搜索原文或译文"
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  moveSearch(e.shiftKey ? -1 : 1);
+                }
+              }}
+              aria-label="搜索原文或译文"
+            />
+          </label>
+          <span className="reader-search-count" aria-live="polite">
+            {searchQuery.trim() ? (searchResults.length ? `${activeSearchIndex + 1} / ${searchResults.length}` : "没有结果") : "输入关键词"}
+          </span>
+          <button type="button" className="quiet" onClick={() => moveSearch(-1)} disabled={!searchResults.length} aria-label="上一个结果">
+            ↑
+          </button>
+          <button type="button" className="quiet" onClick={() => moveSearch(1)} disabled={!searchResults.length} aria-label="下一个结果">
+            ↓
+          </button>
+          <button type="button" className="quiet" onClick={() => setSearchOpen(false)}>
+            关闭
+          </button>
+          {searchResults.length > 0 && (
+            <ol className="reader-search-results">
+              {searchResults.slice(0, 50).map((hit, index) => (
+                <li key={hit.segmentId}>
+                  <button
+                    type="button"
+                    className={index === activeSearchIndex ? "search-result on" : "search-result"}
+                    onClick={() => jumpSearch(hit)}
+                  >
+                    <span>第 {hit.page + 1} 页</span>
+                    <strong>{shortLabel(hit.target || hit.source, 90)}</strong>
+                  </button>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
       <div className="reader-body">
         {showOutline && (
           <OutlinePanel
@@ -293,6 +391,8 @@ export function ReaderView({
               selected={selectedSegment}
               fontsVersion={fontsVersion}
               side={side}
+              searchIds={searchIds}
+              currentSearchId={currentSearchId}
               onHover={setHovered}
               onSelect={onSelectSegment}
               pageLinks={byPage.get(page.index)}
@@ -319,6 +419,8 @@ interface RowProps {
   selected: string | null;
   fontsVersion: number;
   side: "left" | "right";
+  searchIds: ReadonlySet<string>;
+  currentSearchId: string | null;
   onHover: (id: string | null) => void;
   onSelect: (id: string) => void;
   pageLinks: LinkData[] | undefined;
@@ -402,6 +504,8 @@ function PageRow({
   selected,
   fontsVersion,
   side,
+  searchIds,
+  currentSearchId,
   onHover,
   onSelect,
   pageLinks,
@@ -413,7 +517,14 @@ function PageRow({
   const blocks = page.blocks.filter((b) => texts.has(b.id));
   const mark = (segId: string) =>
     (segId === selected ? " selected" : segId === hovered ? " hovered" : "") +
-    (segId === flash ? " flash" : marked?.has(segId) ? " marked" : "");
+    (segId === flash ? " flash" : marked?.has(segId) ? " marked" : "") +
+    (searchIds.has(segId) ? " search-hit" : "") +
+    (currentSearchId === segId ? " search-current" : "");
+
+  const selectSegment = (id: string) => {
+    if (window.getSelection()?.toString()) return;
+    onSelect(id);
+  };
 
   return (
     <div
@@ -424,6 +535,30 @@ function PageRow({
       {mode !== "translated" && (
         <div className="page" style={size} aria-label={`原文第 ${page.index + 1} 页`}>
           {near && original && <PdfCanvas doc={original} page={page.index} scale={scale} />}
+          {near && (
+            <div className="source-text-layer" aria-label={`原文第 ${page.index + 1} 页文字`}>
+              {blocks.map((b) => {
+                const t = texts.get(b.id);
+                return t ? (
+                  <div
+                    key={b.id}
+                    className={`source-text${mark(t.segment.id)}`}
+                    style={{
+                      left: b.bbox.x0 * scale,
+                      top: b.bbox.y0 * scale,
+                      width: (b.bbox.x1 - b.bbox.x0) * scale,
+                      height: (b.bbox.y1 - b.bbox.y0) * scale,
+                      fontSize: b.font_size * scale,
+                    }}
+                    aria-label={t.sourceText}
+                    onClick={() => selectSegment(t.segment.id)}
+                  >
+                    {t.sourceText.replace(/<m\d+\/>/g, "[公式]").replace(/<\/?(?:sup|sub|b|i)>/g, "")}
+                  </div>
+                ) : null;
+              })}
+            </div>
+          )}
           {blocks.map((b) => {
             const t = texts.get(b.id);
             if (!t) return null;
@@ -439,7 +574,7 @@ function PageRow({
                 }}
                 onMouseEnter={() => onHover(t.segment.id)}
                 onMouseLeave={() => onHover(null)}
-                onClick={() => onSelect(t.segment.id)}
+                onClick={() => selectSegment(t.segment.id)}
               />
             );
           })}
@@ -554,7 +689,9 @@ function OverlayBlock({
       title={overflow ? "译文放不下，点击查看全文" : undefined}
       onMouseEnter={() => onHover(segment.id)}
       onMouseLeave={() => onHover(null)}
-      onClick={() => onSelect(segment.id)}
+      onClick={() => {
+            if (!window.getSelection()?.toString()) onSelect(segment.id);
+      }}
       tabIndex={first ? 0 : -1}
       role="button"
       aria-label={`段落：${shortLabel(segment.source)}`}

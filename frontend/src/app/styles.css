@@ -811,6 +811,72 @@ input[type="radio"] {
   font-variant-numeric: tabular-nums;
 }
 
+.reader-search {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+}
+.reader-search-input {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+.reader-search-input input {
+  min-width: 0;
+  padding: 6px 8px;
+}
+.reader-search-count {
+  color: var(--ink-soft);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.reader-search-results {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 2px;
+  max-height: 220px;
+  margin: 0;
+  padding: 4px 0 0;
+  overflow: auto;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+}
+.search-result {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+.search-result span {
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+.search-result strong {
+  overflow: hidden;
+  font-family: var(--serif);
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-result:hover,
+.search-result.on {
+  background: var(--pencil);
+}
+
 /* 下载菜单 */
 .download {
   position: relative;
@@ -904,6 +970,29 @@ input[type="radio"] {
   width: 100%;
   height: 100%;
 }
+.source-text-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+.source-text {
+  position: absolute;
+  overflow: hidden;
+  color: transparent;
+  font-family: var(--serif);
+  line-height: 1.2;
+  white-space: pre-wrap;
+  user-select: text;
+  cursor: text;
+}
+.source-text.search-hit {
+  outline: 2px solid var(--pencil-strong);
+  background: rgb(118 190 220 / 0.16);
+}
+.source-text.search-current {
+  outline-color: var(--pen);
+  background: var(--pencil-strong);
+}
 .pdf-error {
   position: absolute;
   top: 40%;
@@ -967,6 +1056,15 @@ input[type="radio"] {
   text-align: left;
   word-break: break-word;
   cursor: pointer;
+  user-select: text;
+}
+.tblock.search-hit {
+  outline: 2px solid var(--pencil-strong);
+  background: rgb(118 190 220 / 0.16);
+}
+.tblock.search-current {
+  outline-color: var(--pen);
+  background: var(--pencil-strong);
 }
 .tblock.untranslated {
   color: #777 !important;
@@ -1043,6 +1141,18 @@ input[type="radio"] {
 .editor h3 small {
   margin-left: 6px;
   font-weight: 400;
+}
+.copy-button {
+  min-height: 24px;
+  margin-left: 8px;
+  padding: 0 6px;
+  border-color: transparent;
+  color: var(--pen);
+  font-size: 12px;
+  vertical-align: 1px;
+}
+.copy-button:hover:not(:disabled) {
+  border-color: var(--rule);
 }
 .segment-history {
   margin-top: 8px;
@@ -2114,6 +2224,16 @@ input[type="radio"] {
   .toolbar .zoom button {
     min-width: 28px;
     padding: 0 4px;
+  }
+  .reader-search {
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    padding: 8px 10px;
+  }
+  .reader-search-input {
+    grid-column: 1 / -1;
+  }
+  .reader-search-input span {
+    display: none;
   }
 }
 .gl-toolbar select {

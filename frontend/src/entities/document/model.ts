@@ -8,6 +8,7 @@ export interface BlockText {
   block: BlockData;
   segment: SegmentData;
   text: string; // 译文片段；没有译文（失败/未完成）时为原文片段
+  sourceText: string; // 原文片段，用于阅读器的可选择文字层
   translated: boolean;
   first: boolean; // 段落的第一部分（跨栏/跨页段落拆开后）
 }
@@ -45,9 +46,21 @@ export function blockTexts(doc: DocumentData): Map<string, BlockText> {
       text,
       seg.parts.map((p) => p.chars),
     );
+    const sourcePieces = splitByParts(
+      seg.source,
+      seg.parts.map((p) => p.chars),
+    );
     seg.block_ids.forEach((id, i) => {
       const block = blocks.get(id);
-      if (block) out.set(id, { block, segment: seg, text: pieces[i] ?? "", translated, first: i === 0 });
+      if (block)
+        out.set(id, {
+          block,
+          segment: seg,
+          text: pieces[i] ?? "",
+          sourceText: sourcePieces[i] ?? "",
+          translated,
+          first: i === 0,
+        });
     });
   }
   return out;

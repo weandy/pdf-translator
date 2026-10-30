@@ -26,6 +26,7 @@ export function SegmentEditor({ segment, onChange, onClose, history }: Props) {
   const [draft, setDraft] = useState(segment.target ?? "");
   const [busy, setBusy] = useState<"save" | Quality | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState<"source" | "target" | null>(null);
   const box = useRef<HTMLTextAreaElement>(null);
   const formulaKeys = Object.keys(segment.formulas).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
   const check = checkPlaceholders(segment.source, draft);
@@ -77,6 +78,17 @@ export function SegmentEditor({ segment, onChange, onClose, history }: Props) {
     setTerm({ source: "", target: "", note: "" });
   };
 
+  const copy = async (kind: "source" | "target") => {
+    const text = kind === "source" ? segment.source : draft;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(kind);
+      window.setTimeout(() => setCopied((current) => (current === kind ? null : current)), 1600);
+    } catch {
+      setError("复制失败，请检查浏览器的剪贴板权限");
+    }
+  };
+
   const run = async (kind: "save" | Quality) => {
     setBusy(kind);
     setError(null);
@@ -106,6 +118,9 @@ export function SegmentEditor({ segment, onChange, onClose, history }: Props) {
       <div className="panes">
         <h3>
           原文 <small className="muted">只读</small>
+          <button type="button" className="copy-button" onClick={() => void copy("source")}>
+            {copied === "source" ? "已复制" : "复制"}
+          </button>
         </h3>
         <textarea
           className="source"
@@ -116,7 +131,12 @@ export function SegmentEditor({ segment, onChange, onClose, history }: Props) {
           onMouseUp={(e) => pickSelection(e.currentTarget)}
           onKeyUp={(e) => pickSelection(e.currentTarget)}
         />
-        <h3>译文</h3>
+        <h3>
+          译文
+          <button type="button" className="copy-button" onClick={() => void copy("target")}>
+            {copied === "target" ? "已复制" : "复制译文"}
+          </button>
+        </h3>
         <textarea ref={box} value={draft} onChange={(e) => setDraft(e.target.value)} aria-label="译文" />
       </div>
       {formulaKeys.length > 0 && (
