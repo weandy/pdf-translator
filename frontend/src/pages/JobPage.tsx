@@ -16,6 +16,7 @@ import { RevisionList } from "@/features/revisions/RevisionList";
 import { SegmentEditor } from "@/features/segment-edit/SegmentEditor";
 import { api, exportUrl, type DocumentData, type Job, type Revision, type SegmentData } from "@/shared/api/client";
 import { APP_TITLE, notify, useVisible } from "@/shared/attention/attention";
+import { ErrorCard } from "@/shared/feedback/ErrorCard";
 import { expiresSoon, formatRemaining } from "@/shared/time/elapsed";
 
 export function JobPage() {
@@ -50,10 +51,25 @@ export function JobPage() {
   });
   const labels = useMemo(() => segmentLabels(doc), [doc]);
 
-  if (error) return <main className="center error">{error}</main>;
+  if (error)
+    return (
+      <main className="center">
+        <ErrorCard title="无法打开任务" message={error} actionLabel="重新加载" onAction={refresh} />
+      </main>
+    );
   if (!job) return <main className="center muted">正在打开…</main>;
   if (!ready) return <JobProgress job={job} onRetried={refresh} />;
-  if (docError) return <main className="center error">{String(docError)}</main>;
+  if (docError)
+    return (
+      <main className="center">
+        <ErrorCard
+          title="译文数据加载失败"
+          message={String(docError)}
+          actionLabel="重新加载"
+          onAction={() => void qc.invalidateQueries({ queryKey: ["document", id] })}
+        />
+      </main>
+    );
   if (!doc) return <main className="center muted">正在打开译文…</main>;
 
   const onChange = (seg: SegmentData) => {

@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router";
 import { deleteJob, STAGE_LABELS, STAGE_ORDER } from "@/entities/job/model";
 import { api, type Job } from "@/shared/api/client";
 import { askNotify, notifyState, type NotifyState } from "@/shared/attention/attention";
+import { ErrorCard } from "@/shared/feedback/ErrorCard";
 import { formatDuration, formatRemaining, useNow } from "@/shared/time/elapsed";
 
 interface Props {
@@ -20,7 +21,6 @@ export function JobProgress({ job, onRetried }: Props) {
   const [cancelling, setCancelling] = useState(false);
   const [notifying, setNotifying] = useState<NotifyState>(notifyState);
   const live = job.status === "running" || job.status === "queued";
-  const stopped = job.status === "failed" || job.status === "cancelled";
   const now = useNow(live);
   const current = STAGE_ORDER.indexOf(job.stage);
   const since = (iso: string | null | undefined) => (iso ? formatDuration(now - Date.parse(iso)) : null);
@@ -114,15 +114,14 @@ export function JobProgress({ job, onRetried }: Props) {
               )}
               {(state === "failed" || state === "cancelled") && (
                 <div className="stage-detail failure">
-                  {state === "failed" ? <p className="error">{job.error || "这一步失败了"}</p> : <p>在这一步取消了</p>}
-                  <div className="row-actions">
-                    <button type="button" className="primary" onClick={() => void retry()}>
-                      {state === "failed" ? "从中断处重试" : "重新开始"}
-                    </button>
-                    <button type="button" className="quiet danger" onClick={() => void remove()}>
-                      删除
-                    </button>
-                  </div>
+                  <ErrorCard
+                    title={state === "failed" ? `${STAGE_LABELS[job.stage] ?? "处理"}失败` : "任务已取消"}
+                    message={state === "failed" ? job.error || "这一步没有完成，可以从中断处继续。" : "已完成的步骤会保留，可以从中断处重新开始。"}
+                    actionLabel={state === "failed" ? "从中断处重试" : "重新开始"}
+                    onAction={() => void retry()}
+                    secondaryLabel="删除"
+                    onSecondary={() => void remove()}
+                  />
                 </div>
               )}
             </li>
@@ -145,8 +144,9 @@ export function JobProgress({ job, onRetried }: Props) {
           </button>
         </div>
       )}
-      {stopped && error && <p className="error">{error}</p>}
-      {live && error && <p className="error">{error}</p>}
+      {error && (
+        <ErrorCard title="操作没有完成" message={error} actionLabel="再试一次" onAction={() => void retry()} />
+      )}
     </section>
   );
 }

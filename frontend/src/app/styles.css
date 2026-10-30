@@ -187,6 +187,53 @@ input[type="radio"] {
 .error {
   color: var(--red-pen);
 }
+.error-card {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border: 1px solid rgb(179 38 30 / 0.35);
+  border-left: 3px solid var(--red-pen);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  text-align: left;
+  box-shadow: var(--sheet-shadow);
+}
+.error-card-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--red-pen);
+  color: #fff;
+  font-weight: 700;
+}
+.error-card-body {
+  display: grid;
+  flex: 1;
+  gap: 6px;
+  min-width: 0;
+}
+.error-card-body p {
+  margin: 0;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+.error-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.unsaved-tag {
+  margin-left: 6px;
+  color: #a56b00;
+  font-size: 12px;
+  font-weight: 400;
+}
 .center {
   padding: 96px 16px;
   text-align: center;
@@ -762,6 +809,10 @@ input[type="radio"] {
   gap: 12px;
   justify-items: start;
   margin-top: 8px;
+}
+.failure .error-card {
+  width: 100%;
+  box-shadow: none;
 }
 
 @keyframes sweep {

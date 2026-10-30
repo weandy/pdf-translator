@@ -13,16 +13,22 @@ interface Props {
 export function SettingsPanel({ onClose }: Props) {
   const saved = useSettings();
   const [form, setForm] = useState<Settings>(saved);
+  const dirty = JSON.stringify(form) !== JSON.stringify(saved);
   const { data: config } = useQuery({
     queryKey: ["config"],
     queryFn: api.config,
   });
 
+  const requestClose = () => {
+    if (dirty && !window.confirm("设置还没有保存，确定要关闭吗？")) return;
+    onClose();
+  };
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && requestClose();
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  });
 
   const protocol = form.protocol || config?.default_protocol || "openai";
   const [models, setModels] = useState<{ list: string[]; error: string | null; busy: boolean }>({
@@ -73,7 +79,7 @@ export function SettingsPanel({ onClose }: Props) {
   };
 
   return (
-    <div className="dialog-backdrop" role="presentation" onClick={onClose}>
+    <div className="dialog-backdrop" role="presentation" onClick={requestClose}>
       <form
         className="dialog"
         role="dialog"
@@ -83,8 +89,8 @@ export function SettingsPanel({ onClose }: Props) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="dialog-head">
-          <h2 id="settings-title">设置</h2>
-          <button type="button" className="quiet" onClick={onClose}>
+          <h2 id="settings-title">设置 {dirty && <small className="unsaved-tag">未保存</small>}</h2>
+          <button type="button" className="quiet" onClick={requestClose}>
             关闭
           </button>
         </div>
