@@ -59,6 +59,8 @@ export function JobPage() {
   const onChange = (seg: SegmentData) => {
     qc.setQueryData<DocumentData>(["document", id], (d) => (d ? withSegment(d, seg) : d));
     void qc.invalidateQueries({ queryKey: ["revisions", id] });
+    // 重翻会更新任务费用，编辑或重翻结束后立即刷新任务摘要，顶部费用与保留时间保持同步。
+    refresh();
   };
   const onRevert = async (rev: Revision) => onChange(await api.revert(rev.id));
   const open = (segmentId: string) => {
