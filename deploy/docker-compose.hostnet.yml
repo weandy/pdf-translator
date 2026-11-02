@@ -14,5 +14,5 @@ services:
     network_mode: host
     ports: !reset []
     environment:
-      PDFTR_LISTEN: ":${PDFTR_PORT:-8080}"
+      PDFTR_LISTEN: ":${PDFTR_PORT:-18765}"
       PDFTR_UPSTREAM: "127.0.0.1:8000"

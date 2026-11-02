@@ -14,17 +14,29 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/weandy/pdf-translator/main/deploy/install.sh)
 ```
 
-脚本会把项目安装到 `/opt/pdf-translator`，创建 `.env`，并使用 Docker Compose 构建和启动服务。已有安装会先检查工作区，再同步代码；已有 `.env` 和 Docker 数据卷会保留。
+脚本会把项目安装到 `/opt/pdf-translator`，创建 `.env`，并使用 Docker Compose 构建和启动服务。默认将宿主机的 `0.0.0.0:18765` 映射到前端容器的 80 端口，云服务器安全组需要放行 TCP 18765。已有安装会先检查工作区，再同步代码；已有 `.env` 和 Docker 数据卷会保留。
 
 自定义安装目录或端口：
 
 ```bash
 PDFTR_INSTALL_DIR=/srv/pdf-translator \
-PDFTR_PORT=8080 \
+PDFTR_PORT=18765 \
 bash <(curl -fsSL https://raw.githubusercontent.com/weandy/pdf-translator/main/deploy/install.sh)
 ```
 
-脚本不会自动安装 Docker，也不会修改系统防火墙。首次启动后，在网页右上角“设置”中填写翻译服务 API Key 和 MinerU Token。脚本源码见 [deploy/install.sh](deploy/install.sh)。
+如果没有 Docker，脚本会先询问是否在 Debian/Ubuntu 系统上运行 Docker 官方安装脚本；不支持的发行版会提示手动安装。脚本不会修改系统防火墙。首次启动后，在网页右上角“设置”中填写翻译服务 API Key 和 MinerU Token。脚本源码见 [deploy/install.sh](deploy/install.sh)。
+
+国内服务器可以在脚本提示时选择 GitHub 加速，并在下一步输入自己的加速地址；直接回车使用 `https://ghfast.top/`，输入 `no` 则直连 GitHub。也可以通过环境变量预先指定：
+
+```bash
+PDFTR_USE_GITHUB_PROXY=yes \
+PDFTR_GITHUB_PROXY=https://ghfast.top/ \
+bash <(curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/weandy/pdf-translator/main/deploy/install.sh)
+```
+
+加速地址是第三方服务，脚本只用它下载公开仓库代码；生产环境建议固定提交版本并检查代码来源。
+
+GitHub 加速只作用于仓库和脚本下载，Docker 基础镜像和 Python/Node 依赖仍由 Docker、uv 和 npm 按各自地址下载；这些下载需要单独配置 Docker registry 或系统网络代理。
 
 ## 适合什么场景
 
@@ -112,13 +124,13 @@ docker compose -f deploy/docker-compose.yml up -d --build
 浏览器访问：
 
 ```text
-http://服务器地址:8080
+http://服务器地址:18765
 ```
 
 端口可以在 `.env` 中修改：
 
 ```env
-PDFTR_PORT=8080
+PDFTR_PORT=18765
 ```
 
 然后在网页右上角“设置”中填写：

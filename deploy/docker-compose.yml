@@ -20,7 +20,7 @@ services:
   web:
     build: ../frontend
     ports:
-      - "${PDFTR_PORT:-8080}:80"
+      - "${PDFTR_PORT:-18765}:80"
     depends_on:
       app:
         condition: service_healthy
