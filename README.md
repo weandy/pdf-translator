@@ -24,7 +24,7 @@ PDFTR_PORT=18765 \
 bash <(curl -fsSL https://raw.githubusercontent.com/weandy/pdf-translator/main/deploy/install.sh)
 ```
 
-首次安装时脚本还会交互式询问公网端口、翻译服务 Base URL、模型、协议、共享 LLM Key、MinerU Token 和 MinerU 代理地址。代理地址直接回车表示保持当前值，输入 `direct` 表示直连；MinerU 代理为空时不会经过代理。脚本还提供高级配置，可调整上传大小、页数、并发、排队数量、保留时间和最低磁盘空间。已有安装默认保留原配置，可设置 `PDFTR_CONFIGURE_ENV=yes` 再次进入配置。
+首次安装时脚本只交互式询问 GitHub 下载加速和可选的 MinerU 网络代理。MinerU 代理地址直接回车表示保持当前值，输入 `direct` 表示直连；代理为空时不会经过代理。翻译服务地址、模型、LLM Key、MinerU Token 等继续由用户在网页设置中保存。已有安装默认保留原配置，可设置 `PDFTR_CONFIGURE_ENV=yes` 再次修改 MinerU 代理。
 
 如果没有 Docker，脚本会先询问是否在 Debian/Ubuntu 系统上运行 Docker 官方安装脚本；不支持的发行版会提示手动安装。脚本不会修改系统防火墙。首次启动后，在网页右上角“设置”中仍可以为当前浏览器填写个人 API Key。脚本源码见 [deploy/install.sh](deploy/install.sh)。
 

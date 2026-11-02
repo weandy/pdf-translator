@@ -38,7 +38,7 @@ usage() {
   PDFTR_USE_GITHUB_PROXY         yes/no，是否通过 GitHub 加速地址下载
   PDFTR_GITHUB_PROXY             加速地址，默认 https://ghfast.top/
   PDFTR_AUTO_INSTALL_DOCKER      ask/yes/no，未找到 Docker 时的处理方式
-  PDFTR_CONFIGURE_ENV            yes/no，是否交互配置共享 API 参数
+  PDFTR_CONFIGURE_ENV            yes/no，是否交互配置 MinerU 网络代理
 EOF
 }
 
@@ -214,34 +214,10 @@ set_env_value() {
   fi
 }
 
-prompt_value() {
-  local key="$1" label="$2" default="$3" current value
-  current="$(env_value "$key")"
-  default="${current:-$default}"
-  read -r -p "${label} [${default}]：" value
-  set_env_value "$key" "${value:-$default}"
-}
-
-prompt_secret() {
-  local key="$1" label="$2" current value
-  current="$(env_value "$key")"
-  if [[ -n "$current" ]]; then
-    read -r -s -p "${label}（已配置，回车保持不变，输入新值替换）：" value
-    printf '\n'
-    [[ -n "$value" ]] && set_env_value "$key" "$value"
-  else
-    read -r -s -p "${label}（可选，回车跳过）：" value
-    printf '\n'
-    [[ -n "$value" ]] && set_env_value "$key" "$value"
-  fi
-}
-
 configure_env_interactive() {
-  local configure="${PDFTR_CONFIGURE_ENV:-}" proxy proxy_display
+  local configure="${PDFTR_CONFIGURE_ENV:-}" proxy proxy_display proxy_input
   if [[ -z "$configure" ]]; then
     if [[ "$NEW_INSTALL" == "yes" && -t 0 ]]; then
-      configure="yes"
-    elif [[ -t 0 ]] && ask_yes_no "是否现在交互配置共享 API 参数？（也可以稍后在网页设置）" no; then
       configure="yes"
     else
       configure="no"
@@ -250,13 +226,7 @@ configure_env_interactive() {
   [[ "$configure" == "yes" ]] || return 0
   [[ -t 0 ]] || fail "PDFTR_CONFIGURE_ENV=yes 需要交互式终端。"
 
-  printf '\n--- 共享环境变量配置（可选）---\n'
-  prompt_value "PDFTR_PORT" "公网端口" "$DEFAULT_PORT"
-  prompt_value "PDFTR_LLM_BASE_URL" "翻译服务 Base URL" "https://api.deepseek.com"
-  prompt_value "PDFTR_LLM_MODEL" "翻译模型" "deepseek-flash"
-  prompt_value "PDFTR_LLM_PROTOCOL" "翻译协议（openai/anthropic）" "openai"
-  prompt_secret "PDFTR_LLM_API_KEY" "共享翻译服务 API Key"
-  prompt_secret "PDFTR_MINERU_API_TOKEN" "共享 MinerU Token"
+  printf '\n--- MinerU 网络代理配置（服务器级，可选）---\n'
   proxy="$(env_value PDFTR_MINERU_PROXY)"
   proxy_display="${proxy:+已配置}"
   read -r -p "MinerU 代理地址（直接回车保持当前值；输入 direct 表示直连）[${proxy_display:-直连}]：" proxy_input
@@ -265,24 +235,12 @@ configure_env_interactive() {
   elif [[ -n "$proxy_input" ]]; then
     set_env_value "PDFTR_MINERU_PROXY" "$proxy_input"
   fi
-  printf 'MinerU 代理只影响版面解析上传、轮询和结果下载；翻译服务仍使用上面的 Base URL。\n\n'
-
-  if ask_yes_no "是否修改高级资源与保留设置？" no; then
-    prompt_value "PDFTR_MAX_UPLOAD_MB" "单个 PDF 大小上限（MB）" "200"
-    prompt_value "PDFTR_MAX_PAGES" "单个 PDF 页数上限" "200"
-    prompt_value "PDFTR_LLM_CONCURRENCY" "每个任务的翻译请求并发数（0 为自动）" "0"
-    prompt_value "PDFTR_MAX_CONCURRENT_JOBS" "同时上传和解析的任务数" "4"
-    prompt_value "PDFTR_MAX_CONCURRENT_TRANSLATIONS" "同时翻译的任务数" "1"
-    prompt_value "PDFTR_MAX_QUEUED_JOBS" "最大排队任务数" "10"
-    prompt_value "PDFTR_RETENTION_HOURS" "任务文件保留小时数（0 不自动删除）" "24"
-    prompt_value "PDFTR_MIN_FREE_DISK_MB" "拒绝上传的最低剩余磁盘（MB）" "1024"
-  fi
+  printf 'MinerU 代理只影响版面解析上传、轮询和结果下载；用户的翻译 Key 和 MinerU Token 仍在网页设置中填写。\n\n'
 }
 
 sync_env_overrides() {
   local key
-  for key in PDFTR_PORT PDFTR_LLM_BASE_URL PDFTR_LLM_MODEL PDFTR_LLM_PROTOCOL \
-    PDFTR_LLM_API_KEY PDFTR_MINERU_API_TOKEN PDFTR_MINERU_PROXY; do
+  for key in PDFTR_PORT PDFTR_MINERU_PROXY; do
     if [[ -v "$key" ]]; then
       set_env_value "$key" "${!key}"
     fi
