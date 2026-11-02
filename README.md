@@ -6,6 +6,26 @@
 
 > 当前版本：v0.2.0
 
+## 一键部署（Docker）
+
+适用于已安装 Docker Engine 和 Docker Compose v2 的 Linux 云服务器：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/weandy/pdf-translator/main/deploy/install.sh)
+```
+
+脚本会把项目安装到 `/opt/pdf-translator`，创建 `.env`，并使用 Docker Compose 构建和启动服务。已有安装会先检查工作区，再同步代码；已有 `.env` 和 Docker 数据卷会保留。
+
+自定义安装目录或端口：
+
+```bash
+PDFTR_INSTALL_DIR=/srv/pdf-translator \
+PDFTR_PORT=8080 \
+bash <(curl -fsSL https://raw.githubusercontent.com/weandy/pdf-translator/main/deploy/install.sh)
+```
+
+脚本不会自动安装 Docker，也不会修改系统防火墙。首次启动后，在网页右上角“设置”中填写翻译服务 API Key 和 MinerU Token。脚本源码见 [deploy/install.sh](deploy/install.sh)。
+
 ## 适合什么场景
 
 - 英文论文、技术报告和其他以 PDF 为主的文档
