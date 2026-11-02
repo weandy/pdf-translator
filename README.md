@@ -14,7 +14,7 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/weandy/pdf-translator/main/deploy/install.sh)
 ```
 
-脚本会把项目安装到 `/opt/pdf-translator`，创建 `.env`，并使用 Docker Compose 构建和启动服务。默认将宿主机的 `0.0.0.0:18765` 映射到前端容器的 80 端口，云服务器安全组需要放行 TCP 18765。已有安装会先检查工作区，再同步代码；已有 `.env` 和 Docker 数据卷会保留。
+脚本会把项目安装到 `/opt/pdf-translator`，创建 `.env`，并使用 Docker Compose 构建和启动服务。默认将宿主机的 `127.0.0.1:18765` 映射到前端容器的 80 端口，公网通过宿主机已有的 Nginx、Caddy 或其他网关反代到这个地址。已有安装会先检查工作区，再同步代码；已有 `.env` 和 Docker 数据卷会保留。
 
 自定义安装目录或端口：
 
@@ -123,17 +123,36 @@ cp .env.example .env
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
-浏览器访问：
+配置宿主机反向代理，将域名转发到：
 
 ```text
-http://服务器地址:18765
+http://127.0.0.1:18765
 ```
 
-端口可以在 `.env` 中修改：
+本机测试可以直接访问 `http://127.0.0.1:18765`。端口可以在 `.env` 中修改：
 
 ```env
 PDFTR_PORT=18765
 ```
+
+项目的 `web` 容器内部自带 Caddy，用来提供静态前端、处理单页路由，并把 `/api` 和 SSE 请求转发给 `app:8000`。宿主机不需要另外安装 Caddy；已有 Nginx、Caddy 或其他网关只需要反代 `127.0.0.1:18765`。
+
+脚本首次运行会从 [.env.example](.env.example) 创建 `.env`。默认关键配置如下，Key 和代理都为空：
+
+```env
+PDFTR_PORT=18765
+PDFTR_LLM_BASE_URL=https://api.deepseek.com
+PDFTR_LLM_MODEL=deepseek-flash
+PDFTR_LLM_API_KEY=
+PDFTR_LLM_PROTOCOL=openai
+PDFTR_MINERU_API_TOKEN=
+PDFTR_MINERU_PROXY=
+PDFTR_MAX_UPLOAD_MB=200
+PDFTR_MAX_PAGES=200
+PDFTR_RETENTION_HOURS=24
+```
+
+用户自己的翻译 Key、模型和 MinerU Token 可以在网页“设置”中保存；`.env` 中的同名配置只作为部署者共享的默认值。
 
 然后在网页右上角“设置”中填写：
 
@@ -145,7 +164,7 @@ PDFTR_PORT=18765
 ### 公网部署建议
 
 1. 使用域名和 HTTPS。
-2. 打开 [frontend/Caddyfile](frontend/Caddyfile) 中的 `basic_auth`，或在前置网关配置登录认证。
+2. 在宿主机前置网关配置登录认证；也可以打开项目内部 [frontend/Caddyfile](frontend/Caddyfile) 的 `basic_auth`。
 3. 给 Docker 的 `pdftr-data` 卷做定期备份。
 4. 保持单个 `app` 实例，不要直接扩展多个副本。
 5. 监控 `/data` 磁盘空间、内存和外部 API 错误率。
@@ -181,7 +200,7 @@ docker compose \
 
 | 配置 | 默认值 | 作用 |
 |---|---:|---|
-| `PDFTR_PORT` | `18765` | 公网访问端口 |
+| `PDFTR_PORT` | `18765` | 宿主机本地反代端口 |
 | `PDFTR_LLM_BASE_URL` | `https://api.deepseek.com` | 共享翻译服务地址 |
 | `PDFTR_LLM_MODEL` | `deepseek-flash` | 共享翻译模型 |
 | `PDFTR_LLM_PROTOCOL` | `openai` | `openai` 或 `anthropic` |
