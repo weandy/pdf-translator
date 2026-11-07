@@ -73,7 +73,7 @@ export const api = {
     request<Estimate>(
       `/api/estimate?${new URLSearchParams({ pages: String(pages), quality, ...(model ? { model } : {}) })}`,
     ),
-  job: (id: string) => request<Job>(`/api/jobs/${id}`),
+  job: (id: string, signal?: AbortSignal) => request<Job>(`/api/jobs/${id}`, { signal }),
   deleteJob: (id: string) => request<void>(`/api/jobs/${id}`, { method: "DELETE" }),
   createJob: (file: File, options: Partial<JobOptions>) => {
     const form = new FormData();

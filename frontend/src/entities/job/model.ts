@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
-import { api, ApiError, subscribeJob, type Job } from "@/shared/api/client";
+import { watchJob, type JobSnapshot } from "@/entities/job/sync";
+import { api, ApiError, type Job } from "@/shared/api/client";
 import { readJSON, writeJSON } from "@/shared/storage/local";
 
 export const STAGE_LABELS: Record<string, string> = {
@@ -92,42 +93,29 @@ export async function deleteJob(id: string): Promise<void> {
   forgetJob(id);
 }
 
-/** 任务实时状态：先取一次，再订阅 SSE；连接断开时退回轮询。 */
+/** 任务实时状态：SSE 推送与定期校准并行，漏掉完成事件也能自动恢复。 */
 export function useJob(id: string): {
   job: Job | null;
   error: string | null;
   refresh: () => void;
 } {
-  const [job, setJob] = useState<Job | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<JobSnapshot & { id: string }>({ id, job: null, error: null });
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
-    let alive = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let unsubscribe = () => {};
-    const poll = () => {
-      api.job(id).then(
-        (j) => {
-          if (!alive) return;
-          setJob(j);
-          if (j.status === "queued" || j.status === "running")
-            timer = setTimeout(poll, 3000);
-        },
-        (e: unknown) => alive && setError(String(e)),
-      );
-    };
-    unsubscribe = subscribeJob(
-      id,
-      (j) => alive && setJob(j),
-      () => alive && poll(),
+    return watchJob(id, (next) =>
+      setSnapshot((previous) => ({
+        id,
+        ...next,
+        // 编辑后刷新摘要时保留已打开的阅读器；切换任务时不展示上一份文档。
+        job: next.job ?? (previous.id === id ? previous.job : null),
+      })),
     );
-    return () => {
-      alive = false;
-      unsubscribe();
-      clearTimeout(timer);
-    };
   }, [id, tick]);
 
-  return { job, error, refresh: () => setTick((t) => t + 1) };
+  return {
+    job: snapshot.id === id ? snapshot.job : null,
+    error: snapshot.id === id ? snapshot.error : null,
+    refresh: () => setTick((t) => t + 1),
+  };
 }
