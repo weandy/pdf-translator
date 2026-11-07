@@ -64,12 +64,13 @@ def delete_job(job_id: str, p: PipelineDep) -> Response:
 
 @router.get("/{job_id}/events")
 async def job_events(job_id: str, request: Request, p: PipelineDep) -> StreamingResponse:
-    job = usecases.get_job(p, job_id)
+    usecases.get_job(p, job_id)  # 响应开始前校验，未知任务仍返回正常的 404。
 
     async def stream() -> AsyncIterator[str]:
         q = p.deps.events.subscribe(job_id)
         try:
-            current = job
+            # 先订阅再读取快照，避免任务在响应建立与订阅之间完成，导致漏掉唯一的完成事件。
+            current = usecases.get_job(p, job_id)
             while True:
                 yield f"data: {JobOut.of(current).model_dump_json()}\n\n"
                 if current.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
@@ -81,7 +82,9 @@ async def job_events(job_id: str, request: Request, p: PipelineDep) -> Streaming
                         current = await asyncio.wait_for(q.get(), timeout=15)
                         break
                     except TimeoutError:
-                        yield ": ping\n\n"  # 保持连接，防止代理断开
+                        # 数据心跳既保持连接，也纠正漏掉的事件，不能永久停留在旧进度。
+                        current = usecases.get_job(p, job_id)
+                        break
         finally:
             p.deps.events.unsubscribe(job_id, q)
 
