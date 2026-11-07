@@ -19,6 +19,7 @@ export type Revision = components["schemas"]["RevisionOut"];
 export type LlmCheck = components["schemas"]["LlmCheck"];
 export type ParsedGlossary = components["schemas"]["ParsedGlossary"];
 export type TermUse = components["schemas"]["TermUse"];
+export type SiteStats = components["schemas"]["StatsOut"];
 export type Quality = "default" | "careful";
 
 export class ApiError extends Error {
@@ -36,10 +37,10 @@ export function setAuthHeaders(provider: () => Record<string, string>): void {
   authHeaders = provider;
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}, includeAuth = true): Promise<T> {
   const res = await fetch(path, {
     ...init,
-    headers: { Accept: "application/json", ...authHeaders(), ...init.headers },
+    headers: { Accept: "application/json", ...(includeAuth ? authHeaders() : {}), ...init.headers },
   });
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
@@ -67,6 +68,10 @@ export interface Health {
 }
 
 export const api = {
+  // 匿名统计无需模型凭据，避免将个人 Key 附带在统计请求中。
+  stats: (days = 30, signal?: AbortSignal) => request<SiteStats>(`/api/stats?days=${days}`, { signal }, false),
+  recordVisit: (body: components["schemas"]["StatsVisitIn"], signal?: AbortSignal) =>
+    request<void>("/api/stats/visits", { method: "POST", ...json(body), signal }, false),
   health: () => request<Health>("/api/health"),
   config: () => request<ServerConfig>("/api/config"),
   estimate: (pages: number, quality: Quality, model?: string) =>

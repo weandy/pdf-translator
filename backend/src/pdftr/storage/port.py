@@ -5,6 +5,7 @@ from typing import Protocol
 
 from pdftr.domain.ir import Revision, Segment, SegmentStatus
 from pdftr.domain.job import Job, JobStatus
+from pdftr.domain.stats import StatsOut
 
 
 class ArtifactStore(Protocol):
@@ -16,6 +17,10 @@ class ArtifactStore(Protocol):
 
 
 class JobStore(Protocol):
+    def record_visit(self, event_id: str, visitor_id: str) -> None: ...
+
+    def stats(self, days: int = 30) -> StatsOut: ...
+
     def save_job(self, job: Job) -> None: ...
 
     def get_job(self, job_id: str) -> Job | None: ...

@@ -6,6 +6,7 @@ import { clearHistory, removeHistory, useHistory } from "@/entities/history/mode
 import { deleteJob, MY_JOBS_QUERY, STAGE_LABELS, useMyJobs } from "@/entities/job/model";
 import { readBatches, rememberBatch, removeBatch, type BatchEntry } from "@/entities/batch/model";
 import { UploadPanel } from "@/features/upload/UploadPanel";
+import { StatsSummary } from "@/features/site-stats/StatsSummary";
 import { api, exportUrl } from "@/shared/api/client";
 import { APP_TITLE, notify } from "@/shared/attention/attention";
 import { expiresSoon, formatRemaining } from "@/shared/time/elapsed";
@@ -249,6 +250,7 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
           </ul>
         </section>
       )}
+      <StatsSummary />
     </main>
   );
 }

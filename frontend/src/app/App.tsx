@@ -1,12 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { lazy, Suspense, useState } from "react";
-import { createBrowserRouter, Link, Outlet, RouterProvider, useOutletContext } from "react-router";
+import { createBrowserRouter, Link, Outlet, RouterProvider, useLocation, useOutletContext } from "react-router";
 
 import { authHeaders } from "@/entities/settings/model";
+import { usePageVisit } from "@/entities/stats/model";
 import { SettingsPanel } from "@/features/settings/SettingsPanel";
 import { GlossaryPage } from "@/pages/GlossaryPage";
 import { GuidePage } from "@/pages/GuidePage";
 import { HomePage } from "@/pages/HomePage";
+import { StatsPage } from "@/pages/StatsPage";
 import { setAuthHeaders } from "@/shared/api/client";
 
 // 把浏览器里保存的 Key 注入接口客户端（shared 层不依赖 entities，由这里连接）
@@ -25,6 +27,8 @@ interface LayoutContext {
 
 function Layout() {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const location = useLocation();
+  usePageVisit(location.key);
   return (
     <>
       <header className="topbar">
@@ -46,6 +50,9 @@ function Layout() {
         </Link>
         <Link to="/glossary" className="topbar-link">
           术语库
+        </Link>
+        <Link to="/stats" className="topbar-link">
+          统计
         </Link>
         <button type="button" className="quiet" onClick={() => setSettingsOpen(true)}>
           设置
@@ -69,6 +76,7 @@ const router = createBrowserRouter([
       { path: "/", element: <Home /> },
       { path: "/guide", element: <GuidePage /> },
       { path: "/glossary", element: <GlossaryPage /> },
+      { path: "/stats", element: <StatsPage /> },
       {
         path: "/jobs/:id",
         element: (

@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from pdftr import __version__
-from pdftr.api import routes_jobs, routes_meta, routes_segments
+from pdftr.api import routes_jobs, routes_meta, routes_segments, routes_stats
 from pdftr.container import Container, build_container
 from pdftr.domain.llm import ChatError
 from pdftr.pipeline.usecases import NotFound, ServiceBusy, UserError, purge_expired
@@ -95,4 +95,5 @@ def create_app(container: Container | None = None) -> FastAPI:
     app.include_router(routes_meta.router)
     app.include_router(routes_jobs.router)
     app.include_router(routes_segments.router)
+    app.include_router(routes_stats.router)
     return app

@@ -1731,6 +1731,85 @@
      }
     }
    }
+  },
+  "/api/stats": {
+   "get": {
+    "tags": [
+     "stats"
+    ],
+    "summary": "Stats",
+    "operationId": "stats_api_stats_get",
+    "parameters": [
+     {
+      "name": "days",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 90,
+       "minimum": 1,
+       "default": 30,
+       "title": "Days"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/StatsOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/stats/visits": {
+   "post": {
+    "tags": [
+     "stats"
+    ],
+    "summary": "Visit",
+    "operationId": "visit_api_stats_visits_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/StatsVisitIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
   }
  },
  "components": {
@@ -2803,6 +2882,131 @@
      "formulas"
     ],
     "title": "SegmentOut"
+   },
+   "StatsCounts": {
+    "properties": {
+     "page_views": {
+      "type": "integer",
+      "title": "Page Views",
+      "default": 0
+     },
+     "visitors": {
+      "type": "integer",
+      "title": "Visitors",
+      "default": 0
+     },
+     "jobs_submitted": {
+      "type": "integer",
+      "title": "Jobs Submitted",
+      "default": 0
+     },
+     "jobs_completed": {
+      "type": "integer",
+      "title": "Jobs Completed",
+      "default": 0
+     },
+     "pages_submitted": {
+      "type": "integer",
+      "title": "Pages Submitted",
+      "default": 0
+     }
+    },
+    "type": "object",
+    "title": "StatsCounts"
+   },
+   "StatsDay": {
+    "properties": {
+     "page_views": {
+      "type": "integer",
+      "title": "Page Views",
+      "default": 0
+     },
+     "visitors": {
+      "type": "integer",
+      "title": "Visitors",
+      "default": 0
+     },
+     "jobs_submitted": {
+      "type": "integer",
+      "title": "Jobs Submitted",
+      "default": 0
+     },
+     "jobs_completed": {
+      "type": "integer",
+      "title": "Jobs Completed",
+      "default": 0
+     },
+     "pages_submitted": {
+      "type": "integer",
+      "title": "Pages Submitted",
+      "default": 0
+     },
+     "date": {
+      "type": "string",
+      "title": "Date"
+     }
+    },
+    "type": "object",
+    "required": [
+     "date"
+    ],
+    "title": "StatsDay"
+   },
+   "StatsOut": {
+    "properties": {
+     "since": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Since"
+     },
+     "timezone": {
+      "type": "string",
+      "const": "Asia/Shanghai",
+      "title": "Timezone",
+      "default": "Asia/Shanghai"
+     },
+     "total": {
+      "$ref": "#/components/schemas/StatsCounts"
+     },
+     "today": {
+      "$ref": "#/components/schemas/StatsCounts"
+     },
+     "daily": {
+      "items": {
+       "$ref": "#/components/schemas/StatsDay"
+      },
+      "type": "array",
+      "title": "Daily"
+     }
+    },
+    "type": "object",
+    "required": [
+     "since",
+     "total",
+     "today",
+     "daily"
+    ],
+    "title": "StatsOut"
+   },
+   "StatsVisitIn": {
+    "properties": {
+     "event_id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Event Id"
+     },
+     "visitor_id": {
+      "type": "string",
+      "format": "uuid",
+      "title": "Visitor Id"
+     }
+    },
+    "type": "object",
+    "required": [
+     "event_id",
+     "visitor_id"
+    ],
+    "title": "StatsVisitIn"
    },
    "TermEntry": {
     "properties": {

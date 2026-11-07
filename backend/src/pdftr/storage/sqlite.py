@@ -10,6 +10,9 @@ from pathlib import Path
 
 from pdftr.domain.ir import Revision, Segment, SegmentStatus
 from pdftr.domain.job import Job, JobStatus
+from pdftr.domain.stats import StatsOut
+from pdftr.storage.stats import SCHEMA as STATS_SCHEMA
+from pdftr.storage.stats import SqliteStats, utc_now
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -44,18 +47,28 @@ class SqliteStore:
         self._lock = threading.Lock()
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.executescript(_SCHEMA)
-        self._db.commit()
+        self._db.executescript(_SCHEMA + STATS_SCHEMA)
+        self._stats = SqliteStats(self._db)
+        with self._db:
+            self._stats.initialize(utc_now())
 
     # ---- 任务 ----
     def save_job(self, job: Job) -> None:
         job.updated_at = datetime.now(UTC)
-        with self._lock:
+        with self._lock, self._db:
             self._db.execute(
                 "INSERT OR REPLACE INTO jobs (id, status, data, created_at) VALUES (?, ?, ?, ?)",
                 (job.id, job.status, job.model_dump_json(), job.created_at.isoformat()),
             )
-            self._db.commit()
+            self._stats.job_saved(job, utc_now())
+
+    def record_visit(self, event_id: str, visitor_id: str) -> None:
+        with self._lock, self._db:
+            self._stats.visit(event_id, visitor_id, utc_now())
+
+    def stats(self, days: int = 30) -> StatsOut:
+        with self._lock:
+            return self._stats.summary(days, utc_now())
 
     def get_job(self, job_id: str) -> Job | None:
         with self._lock:
