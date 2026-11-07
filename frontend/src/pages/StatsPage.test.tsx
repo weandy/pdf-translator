@@ -4,21 +4,22 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { StatsSummary } from "@/features/site-stats/StatsSummary";
+import { StatsPage } from "@/pages/StatsPage";
 import { api, type SiteStats } from "@/shared/api/client";
 
-describe("首页统计概览", () => {
+describe("最近七天统计页面", () => {
   let root: Root;
   let host: HTMLDivElement;
   let client: QueryClient;
   const zero = { page_views: 0, visitors: 0, jobs_submitted: 0, jobs_completed: 0, pages_submitted: 0 };
   const empty: SiteStats = {
-    since: "2026-11-07T00:00:00Z",
+    since: "2026-10-01T00:00:00Z",
     timezone: "Asia/Shanghai",
-    total: zero,
+    total: { ...zero, page_views: 987654 },
     today: zero,
-    daily: [],
+    daily: Array.from({ length: 7 }, (_, index) => ({ ...zero, date: `2026-11-0${index + 1}` })),
   };
+
   beforeAll(() => Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }));
   afterAll(() => Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT"));
   beforeEach(() => {
@@ -37,7 +38,7 @@ describe("首页统计概览", () => {
       root.render(
         <QueryClientProvider client={client}>
           <MemoryRouter>
-            <StatsSummary />
+            <StatsPage />
           </MemoryRouter>
         </QueryClientProvider>,
       ),
@@ -47,28 +48,35 @@ describe("首页统计概览", () => {
     });
   }
 
-  it("合法的零计数正常显示，不误判为加载失败", async () => {
+  it("只请求七天并渲染七条每日记录，不展示历史累计量", async () => {
     vi.spyOn(api, "stats").mockResolvedValue(empty);
     await render();
-    expect(host.querySelectorAll("dd")).toHaveLength(5);
+    expect(api.stats).toHaveBeenCalledWith(7, expect.any(AbortSignal));
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(7);
+    expect(host.querySelectorAll("svg rect")).toHaveLength(7);
+    expect(host.textContent).toContain("最近 7 天");
+    expect(host.textContent).toContain("历史汇总数据长期保留");
+    expect(host.textContent).not.toContain("累计");
+    expect(host.textContent).not.toContain("987,654");
+    expect(host.textContent).not.toContain("30 天");
     expect(host.textContent).toContain("0次");
-    expect(host.querySelector('a[href="/stats"]')).not.toBeNull();
   });
 
-  it("未完成请求时显示加载状态，不提前显示零", async () => {
+  it("请求尚未完成时展示加载，不以零代替未知数据", async () => {
     vi.spyOn(api, "stats").mockImplementation(() => new Promise(() => {}));
     await render();
     expect(host.textContent).toContain("正在加载统计");
     expect(host.querySelectorAll("dd")).toHaveLength(0);
   });
 
-  it("请求失败时显示不可用，不编造零计数", async () => {
-    vi.spyOn(api, "stats").mockRejectedValue(new Error("连接失败"));
+  it("请求失败时展示错误和重试入口", async () => {
+    vi.spyOn(api, "stats").mockRejectedValue(new Error("暂时不可用"));
     await render();
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 1100));
     });
     expect(host.textContent).toContain("统计暂时不可用");
+    expect(host.textContent).toContain("重新加载");
     expect(host.querySelectorAll("dd")).toHaveLength(0);
   });
 });

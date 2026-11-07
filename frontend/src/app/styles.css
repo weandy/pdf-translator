@@ -2569,11 +2569,6 @@ input[type="radio"] {
 }
 
 /* ---------- 访问与使用统计 ---------- */
-.stats-summary {
-  margin-top: 44px;
-  padding-top: 24px;
-  border-top: 1px solid var(--rule);
-}
 .stats-section-head,
 .stats-page-head {
   display: flex;
@@ -2585,9 +2580,6 @@ input[type="radio"] {
 .stats-section-head h2 {
   margin: 0;
   font-size: 17px;
-}
-.stats-section-head > a {
-  font-size: 13px;
 }
 .stats-metrics {
   display: grid;

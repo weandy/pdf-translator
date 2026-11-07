@@ -6,7 +6,8 @@ import { readJSON, writeJSON } from "@/shared/storage/local";
 
 const VISITOR_KEY = "pdftr.stats.visitor.v1";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-export const STATS_QUERY = ["site-stats", 30] as const;
+export const STATS_DAYS = 7;
+export const STATS_QUERY = ["site-stats", STATS_DAYS] as const;
 
 /** HTTP 自部署环境可能没有 randomUUID，getRandomValues 仍可生成匿名的随机标识。 */
 function randomId(): string {
@@ -60,7 +61,7 @@ export function usePageVisit(navigationKey: string): void {
 export function useSiteStats() {
   return useQuery<SiteStats>({
     queryKey: STATS_QUERY,
-    queryFn: ({ signal }) => api.stats(30, signal),
+    queryFn: ({ signal }) => api.stats(STATS_DAYS, signal),
     staleTime: 30000,
     retry: 1,
   });

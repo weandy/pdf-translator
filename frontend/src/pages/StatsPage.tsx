@@ -1,14 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
 
-import { useSiteStats } from "@/entities/stats/model";
-import { StatsMetrics, STATS_METRICS } from "@/features/site-stats/StatsSummary";
+import { STATS_DAYS, useSiteStats } from "@/entities/stats/model";
+import { StatsMetrics, STATS_METRICS } from "@/features/site-stats/StatsMetrics";
 import type { SiteStats } from "@/shared/api/client";
 import { ErrorCard } from "@/shared/feedback/ErrorCard";
 
 type Metric = (typeof STATS_METRICS)[number]["key"];
 const number = new Intl.NumberFormat("zh-CN");
-const sinceDate = (value: string) => new Date(value).toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai" });
 
 function Trend({ daily, metric }: { daily: SiteStats["daily"]; metric: Metric }) {
   const max = Math.max(1, ...daily.map((day) => day[metric]));
@@ -67,7 +66,7 @@ export function StatsPage() {
       <div className="stats-page-head">
         <div>
           <h1>访问与使用统计</h1>
-          <p className="hint">了解本站的访问和翻译使用情况，所有日期均按北京时间统计。</p>
+          <p className="hint">展示最近 {STATS_DAYS} 天的访问和翻译使用情况，所有日期均按北京时间统计。</p>
         </div>
         <button type="button" className="quiet" disabled={isFetching} onClick={() => void refetch()}>
           {isFetching ? "刷新中…" : "刷新数据"}
@@ -93,16 +92,9 @@ export function StatsPage() {
             </div>
             <StatsMetrics counts={data.today} />
           </section>
-          <section className="stats-card" aria-labelledby="stats-total">
-            <div className="stats-section-head">
-              <h2 id="stats-total">累计</h2>
-              <span className="hint">自 {sinceDate(data.since)} 启用统计以来</span>
-            </div>
-            <StatsMetrics counts={data.total} />
-          </section>
           <section className="stats-card" aria-labelledby="stats-trend-title">
             <div className="stats-section-head">
-              <h2 id="stats-trend-title">最近 30 天</h2>
+              <h2 id="stats-trend-title">最近 {STATS_DAYS} 天</h2>
               <label className="stats-metric-select">
                 <span className="hint">查看指标</span>
                 <select value={metric} onChange={(event) => setMetric(event.target.value as Metric)}>
@@ -119,7 +111,7 @@ export function StatsPage() {
               <summary>每日明细</summary>
               <div className="stats-table-scroll" tabIndex={0} role="region" aria-label="可横向滚动的每日统计">
                 <table>
-                  <caption className="visually-hidden">最近 30 天每日访问与使用统计</caption>
+                  <caption className="visually-hidden">最近 {STATS_DAYS} 天每日访问与使用统计</caption>
                   <thead>
                     <tr>
                       <th scope="col">日期</th>
@@ -157,7 +149,7 @@ export function StatsPage() {
               <li>打开或切换一个页面记一次访问；任务进度轮询、健康检查和静态文件请求不计入。</li>
               <li>匿名访客按浏览器随机标识去重，不等同于实际人数；清除浏览器数据或更换浏览器会重新计数。</li>
               <li>任务成功提交时统计篇数和完整 PDF 的上传页数，每个任务首次完成时记一次完成；重试不会重复计入。</li>
-              <li>统计从功能启用时开始，不追溯启用前的使用量；任务到期或删除后，累计统计仍会保留。</li>
+              <li>页面仅展示最近 {STATS_DAYS} 天，历史汇总数据长期保留；任务到期或删除不会清除使用统计。</li>
               <li>统计不保存论文内容、文件名、API Key 或原始 IP，也不向第三方发送统计数据。</li>
             </ul>
           </aside>

@@ -1,6 +1,3 @@
-import { Link } from "react-router";
-
-import { useSiteStats } from "@/entities/stats/model";
 import type { SiteStats } from "@/shared/api/client";
 
 export const STATS_METRICS = [
@@ -26,24 +23,5 @@ export function StatsMetrics({ counts }: { counts: SiteStats["total"] }) {
         </div>
       ))}
     </dl>
-  );
-}
-
-export function StatsSummary() {
-  const { data, isPending } = useSiteStats();
-  return (
-    <section className="stats-summary" aria-labelledby="site-stats-title">
-      <div className="stats-section-head">
-        <h2 id="site-stats-title">本站累计使用</h2>
-        <Link to="/stats">查看统计 →</Link>
-      </div>
-      {data ? (
-        <StatsMetrics counts={data.total} />
-      ) : (
-        <p className="hint" role="status">
-          {isPending ? "正在加载统计…" : "统计暂时不可用，稍后可在统计页重试。"}
-        </p>
-      )}
-    </section>
   );
 }
