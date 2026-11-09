@@ -9,6 +9,7 @@ import logging
 import re
 import shutil
 import tempfile
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -273,14 +274,37 @@ def _reader_text(seg: Segment) -> str:
     return seg.target if seg.target and seg.status is not SegmentStatus.FAILED else seg.source
 
 
-def _raw_links(pipeline: Pipeline, job_id: str, doc: Document, segments: list[Segment]) -> list[PdfLink]:
-    """原文链接只取决于原文与分段，第一次读出后缓存下来，之后打开、导出都不用再读 PDF。"""
-    cache = pipeline.deps.artifacts.path(job_id, f"links.v{LINKS_VERSION}.json")
-    if cache.exists():
+# 单进程内使用固定数量的锁，避免任务不断增加时锁表也长期增长。
+_LINK_CACHE_LOCKS = tuple(threading.Lock() for _ in range(32))
+
+
+def _read_link_cache(cache: Path) -> list[PdfLink] | None:
+    try:
         return [PdfLink.model_validate(x) for x in json.loads(cache.read_text(encoding="utf-8"))]
-    links = page_links(pipeline.deps.artifacts.path(job_id, "original.pdf"), doc, segments)
-    cache.write_text(json.dumps([x.model_dump(mode="json") for x in links], ensure_ascii=False), encoding="utf-8")
-    return links
+    except (FileNotFoundError, ValueError, TypeError):
+        # 旧版直接写最终文件，超时重试重叠时可能留下未写完的 JSON；重新提取即可修复。
+        return None
+
+
+def _raw_links(pipeline: Pipeline, job_id: str, doc: Document, segments: list[Segment]) -> list[PdfLink]:
+    """原文链接按任务缓存；首次并发阅读和下载共享一次提取，并原子发布缓存。"""
+    cache = pipeline.deps.artifacts.path(job_id, f"links.v{LINKS_VERSION}.json")
+    if (cached := _read_link_cache(cache)) is not None:
+        return cached
+    with _LINK_CACHE_LOCKS[hash(str(cache)) % len(_LINK_CACHE_LOCKS)]:
+        if (cached := _read_link_cache(cache)) is not None:
+            return cached
+        started = time.monotonic()
+        log.info("开始提取阅读链接 job=%s", job_id)
+        links = page_links(pipeline.deps.artifacts.path(job_id, "original.pdf"), doc, segments)
+        tmp = cache.with_suffix(".part")
+        try:
+            tmp.write_text(json.dumps([x.model_dump(mode="json") for x in links], ensure_ascii=False), encoding="utf-8")
+            tmp.replace(cache)
+        finally:
+            tmp.unlink(missing_ok=True)
+        log.info("阅读链接已缓存 job=%s links=%d elapsed_ms=%d", job_id, len(links), _ms(started))
+        return links
 
 
 def document_view(pipeline: Pipeline, job_id: str) -> DocumentView:

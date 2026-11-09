@@ -48,6 +48,46 @@ def compact(text: str) -> str:
     return _SPACE.sub("", _PLACEHOLDER.sub("", text))
 
 
+_Box = tuple[float, float, float, float]
+_TextLine = tuple[_Box, list[tuple[_Box, str]]]
+
+
+def _overlaps(a: _Box, b: _Box) -> bool:
+    return a[0] < b[2] and a[1] < b[3] and a[2] > b[0] and a[3] > b[1]
+
+
+def _text_lines(textpage: pymupdf.TextPage) -> list[_TextLine]:
+    """保留 PDF 原始行序与字符框；一次跨越 MuPDF 边界，后续链接只比较数值。"""
+    lines: list[_TextLine] = []
+    for block in textpage.extractRAWDICT()["blocks"]:
+        if block["type"] != 0:
+            continue
+        for line in block["lines"]:
+            chars = [(char["bbox"], char["c"]) for span in line["spans"] for char in span["chars"]]
+            if not chars:
+                continue
+            # 用实际字符框的并集过滤，避免行框与字形框略有差异时漏掉边缘字符。
+            bounds = (
+                min(box[0] for box, _ in chars),
+                min(box[1] for box, _ in chars),
+                max(box[2] for box, _ in chars),
+                max(box[3] for box, _ in chars),
+            )
+            lines.append((bounds, chars))
+    return lines
+
+
+def _link_anchor(lines: list[_TextLine], rect: pymupdf.Rect) -> str:
+    """与 get_textbox 一致：字符框严格相交即选中，命中的原始行之间补换行。"""
+    area = (rect.x0, rect.y0, rect.x1, rect.y1)
+    selected = (
+        "".join(text for box, text in chars if _overlaps(area, box))
+        for bounds, chars in lines
+        if _overlaps(area, bounds)
+    )
+    return "\n".join(text for text in selected if text).strip()
+
+
 def extract_links(pdf: Path, doc: Document, translated: Iterable[str]) -> list[PdfLink]:
     """读出原文 PDF 的全部链接；translated：被替换成译文的块 id（这些块里的链接要在译文里重新定位）。"""
     ids = set(translated)
@@ -57,20 +97,24 @@ def extract_links(pdf: Path, doc: Document, translated: Iterable[str]) -> list[P
         for page_no in range(len(src)):
             page = src[page_no]
             height = page.rect.height
+            lines = None
             for raw in page.get_links():
+                if raw["kind"] != pymupdf.LINK_URI and (raw.get("page", -1) is None or raw.get("page", -1) < 0):
+                    continue  # 打开文件、启动程序等其他链接不保留，也无需解析页面文字
+                if lines is None:
+                    # PyMuPDF 的 get_textbox 会逐链接跨 C/Python 遍历整页字符，缓存字符框后复用相同选字规则。
+                    lines = _text_lines(page.get_textpage())
                 r = raw["from"]
                 kind = (raw.get("nameddest") or "").split(".")[0]
                 kind = "cite" if _CITE_DEST.match(kind) else kind
                 link = PdfLink(page=page_no, rect=Rect(x0=r.x0, y0=r.y0, x1=r.x1, y1=r.y1),
-                               anchor=page.get_textbox(r).strip(), kind=kind)  # fmt: skip
+                               anchor=_link_anchor(lines, r), kind=kind)  # fmt: skip
                 if raw["kind"] == pymupdf.LINK_URI:
                     link.uri = raw.get("uri") or ""
-                elif raw.get("page", -1) is not None and raw.get("page", -1) >= 0:
+                else:
                     to = raw.get("to") or pymupdf.Point(0, height)
                     link.dest_page, link.dest_x, link.dest_y = raw["page"], to.x, to.y
                     link.dest_top = max(src[raw["page"]].rect.height - to.y, 0.0)
-                else:
-                    continue  # 打开文件、启动程序等其他链接不保留
                 cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
                 owner = next((b for b in blocks if b.page == page_no and b.bbox.x0 <= cx <= b.bbox.x1
                               and b.bbox.y0 <= cy <= b.bbox.y1), None)  # fmt: skip

@@ -1,7 +1,14 @@
 """链接文字在译文里的定位：引用编号、作者-年份、断词、图表编号、跨块、网址。"""
 
+from collections import Counter
+from pathlib import Path
+
+import pymupdf
+import pytest
+
 from pdftr.domain.geometry import Rect
-from pdftr.rendering.links import PdfLink, compact, locate
+from pdftr.domain.ir import Block, BlockStyle, BlockType, Document, Page
+from pdftr.rendering.links import PdfLink, _link_anchor, _text_lines, compact, extract_links, locate
 
 
 def _link(anchor: str, kind: str = "cite", block: str = "b1", y: float = 0, x: float = 0, uri: str = "") -> PdfLink:
@@ -68,3 +75,123 @@ def test_publisher_citation_dests_mailto_and_whole_block_links():
     assert locate([mail], {"b1": "作者：A a@b.cn 某大学"})[0].text == "a@b.cn"
     button = _link("View related articles", kind="", uri="https://x.org/r").model_copy(update={"whole": True})
     assert locate([button], {"b1": "查看相关文章"})[0].text == "查看相关文章"
+
+
+def test_extract_links_reuses_textpage_only_on_pages_with_retained_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    pdf = tmp_path / "synthetic-links.pdf"
+    with pymupdf.open() as src:
+        for _ in range(4):
+            src.new_page(width=300, height=200)
+        first = src[0]
+        first.insert_text((20, 40), "Reference [1]")
+        first.insert_text((20, 70), "Project website")
+        first.insert_link(
+            {
+                "kind": pymupdf.LINK_GOTO,
+                "from": first.search_for("Reference [1]")[0],
+                "page": 1,
+                "to": pymupdf.Point(0, 20),
+            }
+        )
+        first.insert_link(
+            {
+                "kind": pymupdf.LINK_URI,
+                "from": first.search_for("Project website")[0],
+                "uri": "https://example.com/project",
+            }
+        )
+        # 无链接页不应创建 TextPage。
+        src[1].insert_text((20, 40), "No links")
+        src[2].insert_text((20, 40), "Also no links")
+        last = src[3]
+        last.insert_text((20, 40), "Contact author")
+        last_rect = last.search_for("Contact author")[0]
+        last.insert_link({"kind": pymupdf.LINK_URI, "from": last_rect, "uri": "mailto:author@example.com"})
+        src.save(pdf)
+
+    def block(block_id: str, page: int, box: pymupdf.Rect) -> Block:
+        return Block(
+            id=block_id,
+            page=page,
+            type=BlockType.TEXT,
+            bbox=Rect(x0=box.x0, y0=box.y0, x1=box.x1, y1=box.y1),
+            order=0,
+            style=BlockStyle(font_size=11),
+            translatable=True,
+        )
+
+    doc = Document(
+        job_id="synthetic",
+        pages=[
+            Page(index=0, width=300, height=200, blocks=[block("b0", 0, pymupdf.Rect(10, 20, 250, 90))]),
+            Page(index=1, width=300, height=200),
+            Page(index=2, width=300, height=200),
+            Page(index=3, width=300, height=200, blocks=[block("b3", 3, last_rect)]),
+        ],
+    )
+    # 原来逐链接解析的锚点作为基准，确保复用不改变文字提取语义。
+    with pymupdf.open(pdf) as src:
+        expected_anchors = [src[0].get_textbox(raw["from"]).strip() for raw in src[0].get_links()]
+        expected_anchors += [src[3].get_textbox(raw["from"]).strip() for raw in src[3].get_links()]
+
+    calls: Counter[int] = Counter()
+    get_textpage = pymupdf.Page.get_textpage
+
+    def counted(page, *args, **kwargs):
+        calls[page.number] += 1
+        return get_textpage(page, *args, **kwargs)
+
+    monkeypatch.setattr(pymupdf.Page, "get_textpage", counted)
+    links = extract_links(pdf, doc, ["b0", "b3"])
+    assert calls == {0: 1, 3: 1}
+    assert [link.anchor for link in links] == expected_anchors == ["Reference [1]", "Project website", "Contact author"]
+    assert [link.block_id for link in links] == ["b0", "b0", "b3"]
+    assert [link.page for link in links] == [0, 0, 3]
+    assert links[0].dest_page == 1 and links[0].uri == ""
+    assert links[1].uri == "https://example.com/project" and links[1].dest_page is None
+    assert links[2].uri == "mailto:author@example.com" and links[2].whole
+
+
+def test_unsupported_link_actions_do_not_parse_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    pdf = tmp_path / "synthetic-actions.pdf"
+    with pymupdf.open() as src:
+        src.new_page()
+        src.save(pdf)
+    # MuPDF 对不支持动作的返回结构；不能误把它作为网页或页内跳转保留。
+    monkeypatch.setattr(
+        pymupdf.Page, "get_links", lambda _: [{"kind": pymupdf.LINK_LAUNCH, "from": pymupdf.Rect(0, 0, 20, 20)}]
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("不支持的链接不应触发页面文字解析")
+
+    monkeypatch.setattr(pymupdf.Page, "get_textpage", forbidden)
+    assert extract_links(pdf, Document(job_id="synthetic", pages=[]), []) == []
+
+
+def test_indexed_link_anchors_match_textbox_for_character_edges_lines_rotation_and_unicode():
+    with pymupdf.open() as src:
+        page = src.new_page(width=300, height=220)
+        page.insert_text((20, 40), "Alpha beta gamma", fontsize=12)
+        page.insert_text((20, 70), "Second line", fontsize=12)
+        page.insert_text((220, 180), "Rotated label", fontsize=12, rotate=90)
+        page.insert_text((20, 110), "示例链接", fontsize=12, fontname="china-s")
+        textpage = page.get_textpage()
+        lines = _text_lines(textpage)
+        first_box = lines[0][1][0][0]
+        rects = [
+            page.search_for("Alpha beta")[0],
+            # 框边横穿字形时仍取整字；仅贴边不应把左边的字选进来。
+            pymupdf.Rect(first_box[2] - 0.25, first_box[1], first_box[2] + 0.25, first_box[3]),
+            pymupdf.Rect(first_box[2], first_box[1], first_box[2] + 1, first_box[3]),
+            pymupdf.Rect(10, 10, 200, 75),
+            page.search_for("Rotated label")[0],
+            page.search_for("示例链接")[0],
+            pymupdf.Rect(280, 190, 290, 200),
+        ]
+        for rect in rects:
+            assert _link_anchor(lines, rect) == page.get_textbox(rect, textpage=textpage).strip()
+        assert _link_anchor(lines, rects[3]) == "Alpha beta gamma\nSecond line"
+        assert _link_anchor(lines, rects[5]) == "示例链接"
