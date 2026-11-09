@@ -149,12 +149,12 @@ export function ReaderView({
 
   // 跳到某页的某个位置（top 为离页顶的 PDF 点）
   const goTo = useCallback(
-    (page: number, top = 0, smooth = true) => {
+    (page: number, top = 0, smooth = true, inset = 56) => {
       const el = scroller.current;
       const row = el?.querySelector<HTMLElement>(`.page-row[data-page="${page}"]`);
       if (!el || !row) return;
       const offset = row.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
-      el.scrollTo({ top: Math.max(offset + top * scale - 56, 0), behavior: smooth ? "smooth" : "auto" });
+      el.scrollTo({ top: Math.max(offset + top * scale - inset, 0), behavior: smooth ? "smooth" : "auto" });
     },
     [scale],
   );
@@ -232,10 +232,21 @@ export function ReaderView({
     const seg = d.segments.find((s) => s.id === spot.id);
     const block = d.pages.flatMap((p) => p.blocks).find((b) => b.id === seg?.block_ids[0]);
     if (!block) return;
-    goToRef.current(block.page, block.bbox.y0);
-    clearTimeout(flashTimer.current);
-    setFlash(spot.id);
-    flashTimer.current = setTimeout(() => setFlash(null), 2400);
+    // 打开编辑侧栏会触发 ResizeObserver 和自适应缩放，等布局更新后再用最新比例定位。
+    let nextFrame = 0;
+    const frame = requestAnimationFrame(() => {
+      nextFrame = requestAnimationFrame(() => {
+        // 手机底部编辑面板会遮住一部分页面，段落起点靠近可见区顶部。
+        goToRef.current(block.page, block.bbox.y0, true, window.innerWidth < NARROW ? 12 : 56);
+        clearTimeout(flashTimer.current);
+        setFlash(spot.id);
+        flashTimer.current = setTimeout(() => setFlash(null), 2400);
+      });
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      cancelAnimationFrame(nextFrame);
+    };
   }, [spot]);
 
   const [picked, setPicked] = useState<number | null>(null); // 刚在目录里点的一项（同一页有好几节时高亮它）

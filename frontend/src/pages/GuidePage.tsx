@@ -85,6 +85,7 @@ export function GuidePage() {
             <li>点击译文段落，或用 Tab 选中后按回车，打开编辑面板。</li>
             <li>原文只读，译文可直接修改；公式占位符如 <code>&lt;m1/&gt;</code> 必须各保留一次，面板会实时检查。</li>
             <li>可以复制原文或译文，也可以“重翻”或“精修”；所有修改都记录在“修改记录”里，可逐步撤回。</li>
+            <li>点击顶部“未通过校验 · 点击定位”，会定位并高亮问题段落；在编辑面板用“上一处/下一处”逐段检查。</li>
             <li><span className="swatch untranslated" aria-hidden="true" />灰色虚线表示校验失败，<span className="swatch overflow" aria-hidden="true" />黄色点线表示译文过长。</li>
           </ul>
         </section>
@@ -101,7 +102,7 @@ export function GuidePage() {
         <section id="download">
           <h2>下载</h2>
           <ul>
-            <li>任务完成后，完成提示栏或阅读器右上角都可以下载中文版、双语版。</li>
+            <li>任务完成后，在阅读器工具栏的“下载 PDF”中选择中文版或双语版。</li>
             <li>下载会包含你的手动修改和链接；中断后再次点击可以继续。</li>
           </ul>
         </section>

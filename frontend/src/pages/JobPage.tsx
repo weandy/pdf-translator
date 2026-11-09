@@ -36,6 +36,7 @@ export function JobPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
+  const [reviewingFailed, setReviewingFailed] = useState(false);
   const [spot, setSpot] = useState<{ id: string; n: number } | null>(null);
   const [marked, setMarked] = useState<ReadonlySet<string>>(new Set());
   const [revealKey, setRevealKey] = useState(0);
@@ -91,6 +92,7 @@ export function JobPage() {
   };
   const onRevert = async (rev: Revision) => onChange(await api.revert(rev.id));
   const open = (segmentId: string) => {
+    setReviewingFailed(false);
     setSelected(segmentId);
     setShowHistory(false);
     setShowTerms(false);
@@ -109,6 +111,24 @@ export function JobPage() {
   const changes = revisions.filter((r) => r.action !== "revert" && r.reverted_by === null).length;
   const segment = doc.segments.find((s) => s.id === selected) ?? null;
   const stats = progressOf(doc);
+  // 沿用解析器的段落阅读顺序，避免按坐标排序打乱多栏正文。
+  const failedSegments = doc.segments.filter((s) => s.status === "failed");
+  const failedIndex = failedSegments.findIndex((s) => s.id === selected);
+  const locateFailed = (segmentId: string) => {
+    open(segmentId);
+    setReviewingFailed(true);
+    setSpot((s) => ({ id: segmentId, n: (s?.n ?? 0) + 1 }));
+  };
+  const moveFailed = (delta: number) => {
+    if (!failedSegments.length) return;
+    // 当前段修好后，以它在完整文档中的位置找下一段，不跳过紧接的问题段落。
+    const selectedIndex = doc.segments.findIndex((s) => s.id === selected);
+    const next =
+      failedIndex >= 0
+        ? failedSegments[(failedIndex + delta + failedSegments.length) % failedSegments.length]
+        : (doc.segments.slice(selectedIndex + 1).find((s) => s.status === "failed") ?? failedSegments[0]);
+    if (next) locateFailed(next.id);
+  };
 
   const heading = (
     <>
@@ -123,7 +143,16 @@ export function JobPage() {
           <span>
             已翻译 {stats.done}/{stats.total} 段
           </span>
-          {stats.failed > 0 && <span className="error">{stats.failed} 段未通过校验，点击灰色段落重翻</span>}
+          {stats.failed > 0 && (
+            <button
+              type="button"
+              className="link failed-segments-link"
+              onClick={() => locateFailed(failedSegments[failedIndex >= 0 ? failedIndex : 0]!.id)}
+              title="定位问题段落并打开编辑面板，可重翻或手动修改"
+            >
+              {stats.failed} 段未通过校验 · 点击定位
+            </button>
+          )}
           {job.cost_cny !== null && <span>花费 ¥{job.cost_cny.toFixed(3)}</span>}
           {job.expires_at &&
             (expiresSoon(job.expires_at) ? (
@@ -214,6 +243,29 @@ export function JobPage() {
             segment={segment}
             onChange={onChange}
             onClose={closeEditor}
+            navigation={
+              reviewingFailed && (
+                <nav className="failed-segment-nav" aria-label="待处理段落导航">
+                  <span role="status">
+                    {failedIndex >= 0
+                      ? `待处理 ${failedIndex + 1} / ${failedSegments.length}`
+                      : failedSegments.length > 0
+                        ? `本段已处理，还剩 ${failedSegments.length} 段`
+                        : "待处理段落已全部处理"}
+                  </span>
+                  {failedSegments.length > 1 && failedIndex >= 0 && (
+                    <button type="button" className="quiet" onClick={() => moveFailed(-1)}>
+                      上一处
+                    </button>
+                  )}
+                  {failedSegments.length > 0 && (failedSegments.length > 1 || failedIndex < 0) && (
+                    <button type="button" className="quiet" onClick={() => moveFailed(1)}>
+                      {failedIndex >= 0 ? "下一处" : "查看下一处"}
+                    </button>
+                  )}
+                </nav>
+              )
+            }
             history={
               <RevisionList revisions={revisions.filter((r) => r.segment_id === segment.id)} onRevert={onRevert} />
             }

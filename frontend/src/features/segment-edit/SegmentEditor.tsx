@@ -12,6 +12,8 @@ interface Props {
   onClose: () => void;
   /** 这一段的修改记录（由页面组合） */
   history?: ReactNode;
+  /** 页面组合的问题段落导航，便于逐段处理。 */
+  navigation?: ReactNode;
 }
 
 const STATUS: Record<SegmentData["status"], string> = {
@@ -22,7 +24,7 @@ const STATUS: Record<SegmentData["status"], string> = {
 };
 
 /** 切换段落或译文更新时由调用方用 key 重新挂载，草稿从 props 初始化。 */
-export function SegmentEditor({ segment, onChange, onClose, history }: Props) {
+export function SegmentEditor({ segment, onChange, onClose, history, navigation }: Props) {
   const [draft, setDraft] = useState(segment.target ?? "");
   const [busy, setBusy] = useState<"save" | Quality | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -115,6 +117,7 @@ export function SegmentEditor({ segment, onChange, onClose, history }: Props) {
           关闭
         </button>
       </header>
+      {navigation}
       {/* 原文与译文用同样大小的框，原文只读 */}
       <div className="panes">
         <h3>
