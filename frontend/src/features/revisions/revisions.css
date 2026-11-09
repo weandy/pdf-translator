@@ -1,0 +1,69 @@
+.revision-legend {
+  margin: 0 0 10px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.revision-added,
+.rev-diff .revision-added {
+  padding: 0 2px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--pen) 16%, transparent);
+  color: var(--ink);
+  font-weight: 700;
+  text-decoration: none;
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
+
+.revision-removed {
+  padding: 0 2px;
+  border-radius: 2px;
+  background: color-mix(in srgb, #b55742 12%, transparent);
+  color: var(--ink-soft);
+  text-decoration-line: line-through;
+}
+
+.revision-change-label {
+  margin: 3px 0 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.revision-preview,
+.revision-comparison-text p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.revision-comparison {
+  margin-top: 3px;
+  font-size: 12px;
+}
+
+.revision-comparison summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--ink-soft);
+}
+
+.revision-comparison-text {
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.revision-comparison-label {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.revisions li.voided .revision-preview {
+  opacity: 0.6;
+}
