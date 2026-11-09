@@ -155,9 +155,13 @@ export function ReaderView({
       const row = el?.querySelector<HTMLElement>(`.page-row[data-page="${page}"]`);
       if (!el || !row) return;
       const offset = row.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
-      el.scrollTo({ top: Math.max(offset + top * scale - inset, 0), behavior: smooth ? "smooth" : "auto" });
+      // 滚动条、侧栏会改变实际页宽；布局已更新但 effect 中的比例可能还未同步。
+      const pageWidth = doc.pages.find((p) => p.index === page)?.width;
+      const shownWidth = row.querySelector<HTMLElement>(".page")?.getBoundingClientRect().width;
+      const shownScale = pageWidth && shownWidth ? shownWidth / pageWidth : scale;
+      el.scrollTo({ top: Math.max(offset + top * shownScale - inset, 0), behavior: smooth ? "smooth" : "auto" });
     },
-    [scale],
+    [scale, doc.pages],
   );
   const jump = useCallback(
     (page: number, top: number) => {

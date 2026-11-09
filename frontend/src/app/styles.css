@@ -1074,6 +1074,7 @@ input[type="radio"] {
 .pages {
   flex: 1;
   overflow: auto;
+  scrollbar-gutter: stable;
   padding: 24px;
 }
 .page-row {

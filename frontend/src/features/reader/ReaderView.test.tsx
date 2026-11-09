@@ -111,4 +111,13 @@ describe("阅读位置恢复与手动段落定位", () => {
     await act(async () => vi.advanceTimersByTimeAsync(40));
     expect(scrollTo).toHaveBeenCalledTimes(2);
   });
+
+  it("按实际页宽定位，侧栏或滚动条改变布局后不使用过期缩放比例", async () => {
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      return this.classList.contains("page") ? new DOMRect(0, 0, 600, 800) : new DOMRect();
+    });
+    await render({ id: "s1", n: 1 });
+    await act(async () => vi.advanceTimersByTimeAsync(40));
+    expect(scrollTo).toHaveBeenLastCalledWith({ top: 44, behavior: "smooth" });
+  });
 });
