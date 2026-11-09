@@ -48,7 +48,7 @@ class AnthropicChat:
         import anthropic
 
         try:
-            r = await self._client.messages.create(
+            r = await self._client.with_options(max_retries=opts.transport_retries).messages.create(
                 system=system, messages=[{"role": "user", "content": user}], **self.request_kwargs(opts)
             )
         except anthropic.AuthenticationError as e:
@@ -58,11 +58,15 @@ class AnthropicChat:
         except anthropic.NotFoundError as e:
             raise ChatError("翻译服务找不到这个模型，请检查模型名与接口地址") from e
         except anthropic.RateLimitError as e:
-            raise ChatError("翻译服务请求过于频繁或余额不足，请稍后再试") from e
+            body = e.body if isinstance(e.body, dict) else {}
+            error = body.get("error", body)
+            limited = isinstance(error, dict) and error.get("type") == "rate_limit_error"
+            raise ChatError("翻译服务请求过于频繁或余额不足，请稍后再试", retryable=limited) from e
         except anthropic.APIConnectionError as e:
-            raise ChatError("无法连接翻译服务，请检查接口地址与网络") from e
+            raise ChatError("无法连接翻译服务，请检查接口地址与网络", retryable=True) from e
         except anthropic.APIStatusError as e:
-            raise ChatError(f"翻译服务返回错误：HTTP {e.status_code}") from e
+            retryable = e.status_code in (408, 409, 425) or e.status_code >= 500
+            raise ChatError(f"翻译服务返回错误：HTTP {e.status_code}", retryable=retryable) from e
         # 模型拒绝（stop_reason=refusal）时没有正文，这批段落按格式错误处理、标为失败，不影响整个任务
         text = "".join(b.text for b in r.content if b.type == "text")
         u = r.usage

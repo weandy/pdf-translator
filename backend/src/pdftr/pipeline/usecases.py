@@ -345,6 +345,7 @@ def edit_segment(pipeline: Pipeline, segment_id: str, target: str) -> Segment:
         raise UserError("译文里的公式不对：" + "；".join(problems) + "。每个公式占位符要各保留一次")
     before = seg.model_copy()
     seg.target, seg.status = target.strip(), SegmentStatus.EDITED
+    seg.failure_reason = ""
     pipeline.deps.store.save_segments([seg])
     _record(pipeline, before, seg, "edit")
     return seg
@@ -439,7 +440,7 @@ async def retranslate_segment(
     return out
 
 
-MAX_RETRANSLATE = 20  # 一次重翻的段数上限：请求要在网关超时（约 100 秒）前返回
+MAX_RETRANSLATE = 20  # 单次最多 20 段；整次调用含排队、重试最多 45 秒，先于网关返回
 
 
 async def retranslate_segments(
@@ -467,8 +468,17 @@ async def retranslate_segments(
     outs, report = await translate(
         segs, chat=deps.chat_factory(secrets), cache=deps.cache, ctx=load_context(deps, job_id, terms),
         lookup_terms=combine(terms, deps.term_matcher()),
-        opts=TranslateOptions(quality=quality, use_cache=False),
+        opts=TranslateOptions(quality=quality, use_cache=False, total_timeout_s=45),
     )  # fmt: skip
+    for out in outs:
+        before = befores[out.id]
+        if (
+            out.status is SegmentStatus.FAILED
+            and before.target
+            and before.status in (SegmentStatus.DONE, SegmentStatus.EDITED)
+        ):
+            # 重翻未成功时保留上一份可用译文，不能把已翻好的段落退回原文。
+            out.target, out.status, out.quality = before.target, before.status, before.quality
     deps.store.save_segments(outs)
     for out in outs:
         _record(pipeline, befores[out.id], out, "careful" if quality == "careful" else "retranslate")

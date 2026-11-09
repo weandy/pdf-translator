@@ -19,7 +19,7 @@ interface Props {
 const STATUS: Record<SegmentData["status"], string> = {
   pending: "未翻译",
   done: "已翻译",
-  failed: "翻译失败",
+  failed: "未完成翻译",
   edited: "已手动修改",
 };
 
@@ -28,6 +28,8 @@ export function SegmentEditor({ segment, onChange, onClose, history, navigation 
   const [draft, setDraft] = useState(segment.target ?? "");
   const [busy, setBusy] = useState<"save" | Quality | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retryFailed, setRetryFailed] = useState(false);
+  const inFlight = useRef(false);
   const [copied, setCopied] = useState<"source" | "target" | null>(null);
   const box = useRef<HTMLTextAreaElement>(null);
   const formulaKeys = Object.keys(segment.formulas).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
@@ -92,18 +94,26 @@ export function SegmentEditor({ segment, onChange, onClose, history, navigation 
   };
 
   const run = async (kind: "save" | Quality) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(kind);
     setError(null);
+    setRetryFailed(false);
     try {
       const seg =
         kind === "save" ? await api.editSegment(segment.id, draft) : await api.retranslate(segment.id, kind, termMap());
       onChange(seg);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      setRetryFailed(kind !== "save");
     } finally {
+      inFlight.current = false;
       setBusy(null);
     }
   };
+  const failure = error ?? (busy === null ? segment.failure_reason : "");
+  const attempts = segment.translation_attempts ?? 0;
+  const keptTranslation = Boolean(segment.target) && (segment.status === "done" || segment.status === "edited");
 
   return (
     <aside className="editor" aria-label="段落编辑">
@@ -118,6 +128,18 @@ export function SegmentEditor({ segment, onChange, onClose, history, navigation 
         </button>
       </header>
       {navigation}
+      {busy !== null && busy !== "save" && (
+        <p className="hint" role="status">
+          正在翻译，失败时会自动重试，单段最多尝试 10 次，本次最多等待 45 秒，请勿重复操作。
+        </p>
+      )}
+      {busy === null && attempts > 0 && <p className="hint">最近一次翻译实际尝试 {attempts} 次（最多 10 次）。</p>}
+      {failure && (
+        <div className="error" role="alert">
+          {keptTranslation && (segment.failure_reason || retryFailed) && <p>本次重翻未成功，已保留上次译文。</p>}
+          <p>{failure}</p>
+        </div>
+      )}
       {/* 原文与译文用同样大小的框，原文只读 */}
       <div className="panes">
         <h3>
@@ -193,7 +215,6 @@ export function SegmentEditor({ segment, onChange, onClose, history, navigation 
           </p>
         </div>
       )}
-      {error && <p className="error">{error}</p>}
       <div className="actions">
         <button type="button" disabled={busy !== null} onClick={() => void run("default")}>
           {busy === "default" ? "重翻中…" : "重翻"}

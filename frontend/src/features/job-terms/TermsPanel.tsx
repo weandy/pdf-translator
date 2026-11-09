@@ -3,7 +3,7 @@
  * 点一个术语逐段查看；改译法后保存到我的术语库，并可分批重翻用到它的段落（手动改过的段落不动）。
  */
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { termMap, upsertTerms, useTerms } from "@/entities/glossary/model";
 import { api, type DocumentData, type SegmentData } from "@/shared/api/client";
@@ -134,6 +134,8 @@ function TermDetail({
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [hasFailures, setHasFailures] = useState(false);
+  const inFlight = useRef(false);
 
   const ids = row.segmentIds;
   const go = (i: number) => {
@@ -149,23 +151,50 @@ function TermDetail({
 
   const save = () => {
     upsertTerms([{ source: row.source, target, note: "" }]);
+    setHasFailures(false);
     setMessage(`已保存到我的术语库：${row.source} = ${target.trim()}`);
   };
 
   const retranslate = async (list: string[]) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setError(null);
     setMessage(null);
+    setHasFailures(false);
     if (target.trim() && target.trim() !== row.target) upsertTerms([{ source: row.source, target, note: "" }]); // 先保存改好的译法
     const terms = termMap();
+    let succeeded = 0;
+    let failed = 0;
+    let processed = 0;
     try {
       for (let i = 0; i < list.length; i += CHUNK) {
         setBusy(`正在重翻 ${i}/${list.length} 段…`);
-        for (const seg of await api.retranslateMany(jobId, list.slice(i, i + CHUNK), terms)) onChange(seg);
+        const batch = list.slice(i, i + CHUNK);
+        const results = new Map((await api.retranslateMany(jobId, batch, terms)).map((seg) => [seg.id, seg]));
+        for (const id of batch) {
+          const seg = results.get(id);
+          // 失败也会更新尝试次数与费用，必须交给页面刷新，不能只处理成功段。
+          if (seg) onChange(seg);
+          if (seg && !seg.failure_reason && (seg.status === "done" || seg.status === "edited") && seg.target)
+            succeeded++;
+          else failed++;
+        }
+        processed += batch.length;
       }
-      setMessage(`已重翻 ${list.length} 段，可以在修改记录里逐段撤回。`);
+      setHasFailures(failed > 0);
+      setMessage(
+        `重翻完成：${succeeded} 段成功，${failed} 段未成功${failed > 0 ? "，请定位段落查看原因。" : "，可以在修改记录里逐段撤回。"}`,
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      if (processed > 0) {
+        setHasFailures(true);
+        setMessage(
+          `已处理 ${processed} 段：${succeeded} 段成功，${failed} 段未成功；另有 ${list.length - processed} 段未处理。`,
+        );
+      }
     } finally {
+      inFlight.current = false;
       setBusy(null);
     }
   };
@@ -214,8 +243,16 @@ function TermDetail({
         </div>
       )}
       <p className="hint">重翻按我的术语库里最新的译法{skipped > 0 ? `；${skipped} 段手动改过，不会重翻` : ""}。</p>
-      {busy && <p className="muted">{busy}</p>}
-      {message && <p className="check-ok">{message}</p>}
+      {busy && (
+        <p className="muted" role="status">
+          {busy}未完成的段落会自动重试，单段最多尝试 10 次，每批最多等待 45 秒。
+        </p>
+      )}
+      {message && (
+        <p className={hasFailures ? "error" : "check-ok"} role="status">
+          {message}
+        </p>
+      )}
       {error && <p className="error">{error}</p>}
     </div>
   );

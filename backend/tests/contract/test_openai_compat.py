@@ -6,6 +6,7 @@ import json
 import httpx2
 import pytest
 from openai import AsyncOpenAI
+from pydantic import ValidationError
 
 from pdftr.domain.llm import ChatError, ChatOptions
 from pdftr.translation.openai_compat import OpenAICompatChat, guess_dialect
@@ -20,13 +21,13 @@ USAGE_DEEPSEEK = {
 }
 
 
-def _chat(dialect, status: int = 200) -> tuple[OpenAICompatChat, list[dict]]:
+def _chat(dialect, status: int = 200, error: dict | None = None) -> tuple[OpenAICompatChat, list[dict]]:
     seen: list[dict] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         seen.append(json.loads(request.content))
         if status != 200:
-            return httpx2.Response(status, json={"error": {"message": "x"}})
+            return httpx2.Response(status, json={"error": error or {"message": "x"}}, headers={"retry-after-ms": "1"})
         return httpx2.Response(200, json={
             "id": "c1", "object": "chat.completion", "created": 0, "model": "m",
             "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "1|译文"}}],
@@ -34,7 +35,7 @@ def _chat(dialect, status: int = 200) -> tuple[OpenAICompatChat, list[dict]]:
         })  # fmt: skip
 
     client = AsyncOpenAI(
-        base_url="https://api.example/v1", api_key="k", max_retries=0,
+        base_url="https://api.example/v1", api_key="k", max_retries=3,
         http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
     )  # fmt: skip
     return OpenAICompatChat(
@@ -75,7 +76,72 @@ def test_request_body(dialect, thinking, expect, absent):
 def test_errors(status, message):
     chat, _ = _chat("deepseek", status=status)
     with pytest.raises(ChatError, match=message):
+        asyncio.run(chat.complete("s", "u", ChatOptions(transport_retries=0)))
+
+
+@pytest.mark.parametrize(
+    ("status", "retryable"),
+    [
+        (400, False),
+        (401, False),
+        (403, False),
+        (404, False),
+        (408, True),
+        (409, True),
+        (425, True),
+        (500, True),
+        (503, True),
+    ],
+)
+def test_one_transport_request_and_status_classification(status, retryable):
+    chat, seen = _chat("generic", status=status)
+    with pytest.raises(ChatError) as error:
+        asyncio.run(chat.complete("s", "u", ChatOptions(transport_retries=0)))
+    assert len(seen) == 1  # 底层客户端默认 3 次重试，调用级 0 必须覆盖它。
+    assert error.value.retryable is retryable
+
+
+@pytest.mark.parametrize(
+    ("code", "retryable"), [(None, False), ("insufficient_quota", False), ("rate_limit_exceeded", True)]
+)
+def test_429_only_retries_explicit_rate_limits(code, retryable):
+    chat, seen = _chat("generic", status=429, error={"message": "x", "code": code})
+    with pytest.raises(ChatError) as error:
+        asyncio.run(chat.complete("s", "u", ChatOptions(transport_retries=0)))
+    assert len(seen) == 1 and error.value.retryable is retryable
+
+
+@pytest.mark.parametrize("failure", [httpx2.ConnectError, httpx2.ReadTimeout])
+def test_network_failures_are_retryable_without_hidden_retries(failure):
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        raise failure("synthetic failure", request=request)
+
+    client = AsyncOpenAI(
+        base_url="https://api.example/v1",
+        api_key="k",
+        max_retries=3,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+    chat = OpenAICompatChat(base_url="https://api.example/v1", api_key="k", model="m", client=client)
+    with pytest.raises(ChatError) as error:
+        asyncio.run(chat.complete("s", "u", ChatOptions(transport_retries=0)))
+    assert len(seen) == 1 and error.value.retryable
+
+
+def test_default_transport_retries_and_legacy_chat_error():
+    assert ChatOptions().transport_retries == 3
+    chat, seen = _chat("generic", status=503)
+    with pytest.raises(ChatError):
         asyncio.run(chat.complete("s", "u", ChatOptions()))
+    assert len(seen) == 4
+    error = ChatError("合成错误")
+    assert str(error) == "合成错误" and not error.retryable
+    for value in (-1, 4):
+        with pytest.raises(ValidationError):
+            ChatOptions(transport_retries=value)
 
 
 def test_missing_key():

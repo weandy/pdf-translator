@@ -11,13 +11,17 @@ from pdftr.domain.llm import ChatError, ChatOptions
 from pdftr.translation.anthropic_compat import AnthropicChat
 
 
-def _chat(model: str, status: int = 200) -> tuple[AnthropicChat, list[httpx2.Request]]:
+def _chat(model: str, status: int = 200, error: dict | None = None) -> tuple[AnthropicChat, list[httpx2.Request]]:
     seen: list[httpx2.Request] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         seen.append(request)
         if status != 200:
-            return httpx2.Response(status, json={"type": "error", "error": {"type": "x", "message": "x"}})
+            return httpx2.Response(
+                status,
+                json={"type": "error", "error": error or {"type": "x", "message": "x"}},
+                headers={"retry-after-ms": "1"},
+            )
         if request.url.path.endswith("/models"):
             return httpx2.Response(200, json={
                 "data": [{"type": "model", "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5",
@@ -33,7 +37,7 @@ def _chat(model: str, status: int = 200) -> tuple[AnthropicChat, list[httpx2.Req
         })  # fmt: skip
 
     client = AsyncAnthropic(
-        base_url="https://api.example", api_key="k", max_retries=0, default_headers={"x-api-key": "k"},
+        base_url="https://api.example", api_key="k", max_retries=3, default_headers={"x-api-key": "k"},
         http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
     )  # fmt: skip
     return AnthropicChat(base_url="https://api.example", api_key="k", model=model, client=client), seen
@@ -69,3 +73,61 @@ def test_list_models_and_errors():
         asyncio.run(_chat("m", status=401)[0].complete("s", "u", ChatOptions()))
     with pytest.raises(ChatError, match="手动填写模型名"):
         asyncio.run(_chat("m", status=404)[0].list_models())
+
+
+@pytest.mark.parametrize(
+    ("status", "retryable"),
+    [
+        (400, False),
+        (401, False),
+        (403, False),
+        (404, False),
+        (408, True),
+        (409, True),
+        (425, True),
+        (500, True),
+        (529, True),
+    ],
+)
+def test_one_transport_request_and_status_classification(status, retryable):
+    chat, seen = _chat("m", status=status)
+    with pytest.raises(ChatError) as error:
+        asyncio.run(chat.complete("s", "u", ChatOptions(transport_retries=0)))
+    assert len(seen) == 1 and error.value.retryable is retryable
+
+
+@pytest.mark.parametrize(
+    ("kind", "retryable"), [("x", False), ("insufficient_quota", False), ("rate_limit_error", True)]
+)
+def test_429_only_retries_explicit_rate_limits(kind, retryable):
+    chat, seen = _chat("m", status=429, error={"type": kind, "message": "x"})
+    with pytest.raises(ChatError) as error:
+        asyncio.run(chat.complete("s", "u", ChatOptions(transport_retries=0)))
+    assert len(seen) == 1 and error.value.retryable is retryable
+
+
+@pytest.mark.parametrize("failure", [httpx2.ConnectError, httpx2.ReadTimeout])
+def test_network_failures_are_retryable_without_hidden_retries(failure):
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        raise failure("synthetic failure", request=request)
+
+    client = AsyncAnthropic(
+        base_url="https://api.example",
+        api_key="k",
+        max_retries=3,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+    chat = AnthropicChat(base_url="https://api.example", api_key="k", model="m", client=client)
+    with pytest.raises(ChatError) as error:
+        asyncio.run(chat.complete("s", "u", ChatOptions(transport_retries=0)))
+    assert len(seen) == 1 and error.value.retryable
+
+
+def test_default_transport_retries_remain_enabled():
+    chat, seen = _chat("m", status=503)
+    with pytest.raises(ChatError):
+        asyncio.run(chat.complete("s", "u", ChatOptions()))
+    assert len(seen) == 4

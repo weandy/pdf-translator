@@ -10,7 +10,7 @@ const block = (id: string, page: number) => ({
 
 const seg = (over: Partial<SegmentData>): SegmentData => ({
   id: "s", block_ids: ["p0-b0"], parts: [{ block_id: "p0-b0", chars: 10 }], source: "src", target: "译文",
-  status: "done", quality: "default", formulas: {}, ...over,
+  status: "done", quality: "default", formulas: {}, translation_attempts: 0, failure_reason: "", ...over,
 });  // prettier-ignore
 
 const doc = (segments: SegmentData[]): DocumentData => ({

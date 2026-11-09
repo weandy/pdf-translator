@@ -60,18 +60,23 @@ class OpenAICompatChat:
 
     async def complete(self, system: str, user: str, opts: ChatOptions) -> ChatResult:
         try:
-            r = await self._client.chat.completions.create(
+            r = await self._client.with_options(max_retries=opts.transport_retries).chat.completions.create(
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
                 **self.request_kwargs(opts),
             )
         except openai.AuthenticationError as e:
             raise ChatError("翻译服务的 API Key 无效") from e
         except openai.RateLimitError as e:
-            raise ChatError("翻译服务请求过于频繁或余额不足，请稍后再试") from e
+            # 兼容服务也会用 429 表示欠费；只有明确的限流代码才允许自动重试。
+            body = e.body if isinstance(e.body, dict) else {}
+            error = body.get("error", body)
+            limited = isinstance(error, dict) and error.get("code") == "rate_limit_exceeded"
+            raise ChatError("翻译服务请求过于频繁或余额不足，请稍后再试", retryable=limited) from e
         except openai.APIConnectionError as e:
-            raise ChatError("无法连接翻译服务，请检查 Base URL 与网络") from e
+            raise ChatError("无法连接翻译服务，请检查 Base URL 与网络", retryable=True) from e
         except openai.APIStatusError as e:
-            raise ChatError(f"翻译服务返回错误：HTTP {e.status_code}") from e
+            retryable = e.status_code in (408, 409, 425) or e.status_code >= 500
+            raise ChatError(f"翻译服务返回错误：HTTP {e.status_code}", retryable=retryable) from e
         return ChatResult(text=r.choices[0].message.content or "", usage=_usage(r.usage))
 
     async def list_models(self) -> list[str]:

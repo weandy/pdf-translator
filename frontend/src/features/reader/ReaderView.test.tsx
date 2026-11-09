@@ -45,6 +45,8 @@ const doc: DocumentData = {
       status: "failed",
       quality: "default",
       formulas: {},
+      translation_attempts: 0,
+      failure_reason: "",
     },
   ],
 };

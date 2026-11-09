@@ -100,14 +100,14 @@ def test_persistent_failure_and_edited_untouched():
     edited = _seg(5, "User edited.").model_copy(update={"target": "用户的译文", "status": SegmentStatus.EDITED})
     out, report = asyncio.run(
         translate([bad, edited], chat=AlwaysBreak(), cache=DictCache(), ctx=DocContext(),
-                  opts=TranslateOptions(max_retries=2))
+                  opts=TranslateOptions(max_attempts=3))
     )  # fmt: skip
     assert out[0].status is SegmentStatus.FAILED and out[0].target is None
     assert out[1].target == "用户的译文" and out[1].status is SegmentStatus.EDITED
     assert report.failed == 1 and report.requests == 3  # 一次批量 + 两次重试
 
 
-def test_retries_are_batched_and_last_one_thinks():
+def test_retries_are_individual_and_third_attempt_thinks():
     class BreakTwice(FakeChat):
         """前两轮都丢占位符，第三轮（开了思考）才答对。"""
 
@@ -121,9 +121,10 @@ def test_retries_are_batched_and_last_one_thinks():
     chat = BreakTwice()
     out, report = asyncio.run(translate(segs, chat=chat, cache=DictCache(), ctx=DocContext()))
     assert all(s.status is SegmentStatus.DONE for s in out)
-    # 首轮 1 批；第一轮重试成批 1 次；最后一轮逐段开思考 5 次
-    assert report.requests == 7
-    assert [o.thinking for _, o in chat.calls] == ["off", "off"] + ["low"] * 5
+    # 首轮 1 批；失败后每段单独重试；第三次起开启低强度思考。
+    assert report.requests == 11
+    assert [o.thinking for _, o in chat.calls] == ["off"] * 6 + ["low"] * 5
+    assert all(o.transport_retries == 0 for _, o in chat.calls)
 
 
 def test_careful_quality_turns_on_thinking_and_terms_are_looked_up():
@@ -168,7 +169,7 @@ def test_add_cost_prices_each_request_at_its_own_time(monkeypatch):
     assert cost.add_cost(None, "unknown-model", usage) is None
 
 
-def test_final_round_is_time_boxed_and_reported():
+def test_each_request_is_time_boxed_and_reported():
     class StuckWhenThinking(FakeChat):
         """前几轮丢占位符；最后一轮（开思考）一直不返回。"""
 
@@ -182,7 +183,220 @@ def test_final_round_is_time_boxed_and_reported():
     segs = [_seg(0, "Hard <m1/> one.", {"m1": "x"}), _seg(1, "Easy sentence.")]
     out, report = asyncio.run(
         translate(segs, chat=StuckWhenThinking(), cache=DictCache(), ctx=DocContext(),
-                  opts=TranslateOptions(final_round_timeout_s=0.05), on_progress=lambda d, t, n: notes.append(n))
+                  opts=TranslateOptions(max_attempts=3, request_timeout_s=0.05),
+                  on_progress=lambda d, t, n: notes.append(n))
     )  # fmt: skip
     assert out[0].status is SegmentStatus.FAILED and out[1].status is SegmentStatus.DONE  # 超时的段落标灰，其余照常
-    assert report.failed == 1 and "还有 1 段较难，正在开思考重翻" in notes
+    assert report.failed == 1 and "还有 1 段待完成，正在单段重试（第 3/3 次）" in notes
+    assert report.attempts[out[0].id] == 3
+    assert "翻译请求超时" in report.failures[out[0].id]
+
+
+class RepeatedFailures(FakeChat):
+    def __init__(self, failures: int, text: str = "没有编号的合成响应") -> None:
+        super().__init__()
+        self.failures = failures
+        self.text = text
+
+    async def complete(self, system, user, opts):
+        result = await super().complete(system, user, opts)
+        if len(self.calls) <= self.failures:
+            return ChatResult(text=self.text, usage=result.usage)
+        return result
+
+
+@pytest.mark.parametrize(
+    "failures,expected_calls,success", [(0, 1, True), (1, 2, True), (9, 10, True), (10, 10, False)]
+)
+def test_tenth_attempt_can_succeed_and_no_eleventh_request(failures, expected_calls, success):
+    chat = RepeatedFailures(failures)
+    out, report = asyncio.run(translate(SEGS[:1], chat=chat, cache=DictCache(), ctx=DocContext()))
+    assert len(chat.calls) == expected_calls == report.requests
+    assert report.attempts[out[0].id] == expected_calls == out[0].translation_attempts
+    assert out[0].status is (SegmentStatus.DONE if success else SegmentStatus.FAILED)
+    assert bool(out[0].failure_reason) is not success
+    assert report.usage.prompt_tokens == expected_calls * 100
+    assert report.usage.completion_tokens == expected_calls * 50
+    assert report.cost_cny is not None
+    if not success:
+        assert "已尝试 10/10 次" in out[0].failure_reason
+        assert "返回编号缺失或译文为空" in out[0].failure_reason
+
+
+@pytest.mark.parametrize("target", ["1|合成译文", "1|合成 <m1/><m1/>", "1|合成 <m1/><m2/>"])
+def test_incomplete_or_repeated_formulas_never_count_as_success(target):
+    out, report = asyncio.run(
+        translate(SEGS[:1], chat=RepeatedFailures(10, target), cache=DictCache(), ctx=DocContext())
+    )
+    assert report.failed == 1 and report.translated == 0 and report.requests == 10
+    assert out[0].target is None
+    assert "公式占位符不一致" in out[0].failure_reason
+
+
+def test_valid_cached_translation_needs_no_attempt_but_bad_cache_is_retranslated():
+    chat, cache = FakeChat(), DictCache()
+    asyncio.run(translate(SEGS[:1], chat=chat, cache=cache, ctx=DocContext()))
+    key = next(iter(cache.data))
+    cache.data[key] = "缓存缺少公式"
+    chat2 = FakeChat()
+    out, report = asyncio.run(translate(SEGS[:1], chat=chat2, cache=cache, ctx=DocContext()))
+    assert report.cached == 0 and report.attempts[out[0].id] == 1
+    assert out[0].target == "译:Let <m1/> be a function."
+    cached, report2 = asyncio.run(translate(SEGS[:1], chat=FakeChat(), cache=cache, ctx=DocContext()))
+    assert report2.cached == 1 and cached[0].translation_attempts == 0 and cached[0].failure_reason == ""
+
+
+def test_only_failed_segments_are_retried_and_deduplicated_attempts_match():
+    chat = FakeChat(break_once={"Let <m1/> be a function."})
+    segs = [SEGS[0], SEGS[0].model_copy(update={"id": "duplicate"}), SEGS[1]]
+    out, report = asyncio.run(translate(segs, chat=chat, cache=DictCache(), ctx=DocContext()))
+    assert len(chat.calls) == 2
+    assert "A repeated sentence here." not in chat.calls[1][0]
+    assert report.attempts == {segs[0].id: 2, "duplicate": 2, segs[2].id: 1}
+    assert all(s.status is SegmentStatus.DONE for s in out)
+
+
+def test_concurrency_limit_applies_to_initial_batches_and_retries():
+    class ConcurrentChat(FakeChat):
+        active = 0
+        peak = 0
+
+        async def complete(self, system, user, opts):
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            try:
+                await asyncio.sleep(0.01)
+                return await super().complete(system, user, opts)
+            finally:
+                self.active -= 1
+
+    segs = [_seg(i, f"Synthetic sentence {i} with <m1/>.", {"m1": "x"}) for i in range(6)]
+    chat = ConcurrentChat(break_once={s.source for s in segs})
+    out, report = asyncio.run(
+        translate(
+            segs, chat=chat, cache=DictCache(), ctx=DocContext(), opts=TranslateOptions(concurrency=2, batch_tokens=1)
+        )
+    )
+    assert chat.peak == 2 and all(s.status is SegmentStatus.DONE for s in out)
+    assert report.requests == 12
+
+
+def test_shared_retry_deadline_includes_queue_and_does_not_charge_queued_attempts():
+    class StuckRetry(FakeChat):
+        async def complete(self, system, user, opts):
+            if self.calls:
+                await asyncio.sleep(10)
+            result = await super().complete(system, user, opts)
+            return ChatResult(text="", usage=result.usage)
+
+    segs = [_seg(i, f"Synthetic sentence {i}.") for i in range(3)]
+    out, report = asyncio.run(
+        translate(segs, chat=StuckRetry(), cache=DictCache(), ctx=DocContext(),
+                  opts=TranslateOptions(concurrency=1, retry_timeout_s=0.05))
+    )  # fmt: skip
+    assert report.requests == 2 and report.failed == 3
+    assert sorted(report.attempts.values()) == [1, 1, 2]
+    assert all("补救总时限耗尽" in s.failure_reason for s in out)
+
+
+def test_total_deadline_covers_initial_requests_and_waiting_for_slots():
+    class StuckChat(FakeChat):
+        async def complete(self, system, user, opts):
+            await asyncio.sleep(10)
+            return await super().complete(system, user, opts)
+
+    segs = [_seg(i, f"Synthetic sentence {i}.") for i in range(3)]
+    out, report = asyncio.run(
+        translate(segs, chat=StuckChat(), cache=DictCache(), ctx=DocContext(),
+                  opts=TranslateOptions(concurrency=1, batch_tokens=1, total_timeout_s=0.05))
+    )  # fmt: skip
+    assert report.requests == 1 and report.failed == 3
+    assert sorted(report.attempts.values()) == [0, 0, 1]
+    assert all("本次翻译总时限耗尽" in s.failure_reason for s in out)
+
+
+def test_transient_chat_error_is_retried_but_auth_error_is_not():
+    class TransientChat(FakeChat):
+        first = True
+
+        async def complete(self, system, user, opts):
+            if self.first:
+                self.first = False
+                raise ChatError("临时连接失败", retryable=True)
+            return await super().complete(system, user, opts)
+
+    out, report = asyncio.run(translate(SEGS[:1], chat=TransientChat(), cache=DictCache(), ctx=DocContext()))
+    assert out[0].status is SegmentStatus.DONE and report.attempts[out[0].id] == 2
+    assert report.requests == 2
+
+
+def test_persistent_transient_error_stops_at_ten_and_reports_reason():
+    out, report = asyncio.run(
+        translate(
+            SEGS[:1],
+            chat=FakeChat(error=ChatError("临时连接失败", retryable=True)),
+            cache=DictCache(),
+            ctx=DocContext(),
+        )
+    )
+    assert report.requests == 10 and out[0].translation_attempts == 10
+    assert out[0].status is SegmentStatus.FAILED
+    assert "临时连接失败" in out[0].failure_reason
+
+
+def test_fatal_error_cancels_other_requests_in_same_round():
+    async def scenario():
+        other_started, other_cancelled = asyncio.Event(), asyncio.Event()
+
+        class FatalChat(FakeChat):
+            async def complete(self, system, user, opts):
+                if "Sentence zero" in user:
+                    await other_started.wait()
+                    raise ChatError("API Key 无效")
+                other_started.set()
+                try:
+                    await asyncio.sleep(10)
+                finally:
+                    other_cancelled.set()
+                return await super().complete(system, user, opts)
+
+        with pytest.raises(ChatError, match="API Key 无效"):
+            await translate(
+                [_seg(0, "Sentence zero."), _seg(1, "Sentence one.")],
+                chat=FatalChat(),
+                cache=DictCache(),
+                ctx=DocContext(),
+                opts=TranslateOptions(batch_tokens=1),
+            )
+        assert other_cancelled.is_set()
+
+    asyncio.run(scenario())
+
+
+def test_cancellation_propagates_and_stops_all_model_requests():
+    async def scenario():
+        started, cancelled = asyncio.Event(), asyncio.Event()
+
+        class StuckChat(FakeChat):
+            async def complete(self, system, user, opts):
+                started.set()
+                try:
+                    await asyncio.sleep(10)
+                finally:
+                    cancelled.set()
+                return await super().complete(system, user, opts)
+
+        task = asyncio.create_task(translate(SEGS, chat=StuckChat(), cache=DictCache(), ctx=DocContext()))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert cancelled.is_set()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("attempts", [0, 11])
+def test_attempt_limit_cannot_exceed_ten(attempts):
+    with pytest.raises(ValueError):
+        TranslateOptions(max_attempts=attempts)

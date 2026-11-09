@@ -870,6 +870,16 @@ export interface components {
             formulas: {
                 [key: string]: components["schemas"]["FormulaOut"];
             };
+            /**
+             * Translation Attempts
+             * @default 0
+             */
+            translation_attempts: number;
+            /**
+             * Failure Reason
+             * @default
+             */
+            failure_reason: string;
         };
         /** StatsCounts */
         StatsCounts: {

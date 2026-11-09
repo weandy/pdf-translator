@@ -66,6 +66,7 @@ export function GuidePage() {
             <li>开始前会显示费用和用时预估，首次上传需要确认文件会发送到 MinerU 云端。</li>
             <li>多篇任务会组成一个批次，解析并行、翻译排队；首页“我的批次”显示每篇状态。</li>
             <li>任务可以取消。失败或取消后点“重试/重新开始”，会从中断阶段继续，已完成内容不重复计费。</li>
+            <li>未成功的段落会自动单独重试，每段最多尝试 10 次；补救阶段最多 2 分钟，先达到次数或时限就停止并提示原因。</li>
           </ul>
         </section>
 
@@ -85,8 +86,9 @@ export function GuidePage() {
             <li>点击译文段落，或用 Tab 选中后按回车，打开编辑面板。</li>
             <li>原文只读，译文可直接修改；公式占位符如 <code>&lt;m1/&gt;</code> 必须各保留一次，面板会实时检查。</li>
             <li>可以复制原文或译文，也可以“重翻”或“精修”；所有修改都记录在“修改记录”里，可逐步撤回。</li>
-            <li>点击顶部“未通过校验 · 点击定位”，会定位并高亮问题段落；在编辑面板用“上一处/下一处”逐段检查。</li>
-            <li><span className="swatch untranslated" aria-hidden="true" />灰色虚线表示校验失败，<span className="swatch overflow" aria-hidden="true" />黄色点线表示译文过长。</li>
+            <li>点击顶部“未完成翻译 · 点击定位”，会定位并高亮问题段落；在编辑面板用“上一处/下一处”逐段检查。</li>
+            <li>手动重翻也会自动重试，每次操作最多等待 45 秒；未成功时会显示原因，已有的可用译文继续保留。</li>
+            <li><span className="swatch untranslated" aria-hidden="true" />灰色虚线表示尚无可用译文，<span className="swatch overflow" aria-hidden="true" />黄色点线表示译文过长。</li>
           </ul>
         </section>
 

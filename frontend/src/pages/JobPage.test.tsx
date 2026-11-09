@@ -67,6 +67,8 @@ function failedDoc(): DocumentData {
       status: "failed",
       quality: "default",
       formulas: {},
+      translation_attempts: 0,
+      failure_reason: "",
     })),
   };
 }
@@ -166,7 +168,7 @@ describe("任务完成后的阅读数据等待", () => {
 
   it("点击校验提示打开问题段落，支持循环前后定位与重复定位同一段", async () => {
     await renderFailed();
-    await click("3 段未通过校验 · 点击定位");
+    await click("3 段未完成翻译 · 点击定位");
     expect(host.querySelector('[aria-label="原文"]')?.textContent).toBe("Synthetic first");
     expect(host.querySelector("[data-spot]")?.getAttribute("data-spot")).toBe("first");
     expect(host.textContent).toContain("待处理 1 / 3");
@@ -176,18 +178,18 @@ describe("任务完成后的阅读数据等待", () => {
     await click("下一处");
     expect(host.textContent).toContain("待处理 1 / 3");
     const n = Number(host.querySelector("[data-spot]")?.getAttribute("data-spot-count"));
-    await click("3 段未通过校验 · 点击定位");
+    await click("3 段未完成翻译 · 点击定位");
     expect(Number(host.querySelector("[data-spot]")?.getAttribute("data-spot-count"))).toBe(n + 1);
   });
 
   it("中间段重翻成功后更新数量，保留当前译文，继续检查时不跳过后一段", async () => {
     const doc = await renderFailed();
     vi.spyOn(api, "retranslate").mockResolvedValue({ ...doc.segments[1]!, target: "合成译文", status: "done" });
-    await click("3 段未通过校验 · 点击定位");
+    await click("3 段未完成翻译 · 点击定位");
     await click("下一处");
     await click("重翻");
     await act(async () => vi.advanceTimersByTimeAsync(1));
-    expect(host.textContent).toContain("2 段未通过校验");
+    expect(host.textContent).toContain("2 段未完成翻译");
     expect(host.textContent).toContain("本段已处理，还剩 2 段");
     expect(host.querySelector('[aria-label="译文"]')?.textContent).toBe("合成译文");
     expect(host.querySelector("[data-spot]")?.getAttribute("data-spot")).toBe("middle");
@@ -202,7 +204,7 @@ describe("任务完成后的阅读数据等待", () => {
     vi.spyOn(api, "document").mockResolvedValue(doc);
     const retranslate = vi.spyOn(api, "retranslate").mockRejectedValueOnce(new Error("合成服务失败"));
     await render();
-    await click("1 段未通过校验 · 点击定位");
+    await click("1 段未完成翻译 · 点击定位");
     expect(host.textContent).not.toContain("下一处");
     await click("重翻");
     expect(host.textContent).toContain("合成服务失败");
@@ -210,7 +212,7 @@ describe("任务完成后的阅读数据等待", () => {
     retranslate.mockResolvedValue({ ...doc.segments[0]!, target: "合成译文", status: "done" });
     await click("重翻");
     await act(async () => vi.advanceTimersByTimeAsync(1));
-    expect(host.textContent).not.toContain("未通过校验");
+    expect(host.textContent).not.toContain("未完成翻译");
     expect(host.textContent).toContain("待处理段落已全部处理");
     expect(host.textContent).toContain("已翻译 1/1 段");
   });

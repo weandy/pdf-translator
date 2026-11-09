@@ -2868,6 +2868,16 @@
       },
       "type": "object",
       "title": "Formulas"
+     },
+     "translation_attempts": {
+      "type": "integer",
+      "title": "Translation Attempts",
+      "default": 0
+     },
+     "failure_reason": {
+      "type": "string",
+      "title": "Failure Reason",
+      "default": ""
      }
     },
     "type": "object",

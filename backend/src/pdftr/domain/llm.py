@@ -6,7 +6,7 @@ OpenAI 兼容接口、Anthropic 协议与各家思考开关的差异由适配器
 
 from typing import Literal, Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 Thinking = Literal["off", "low"]  # S8–S11：默认不思考，“精翻”用 low
 
@@ -15,6 +15,8 @@ class ChatOptions(BaseModel):
     temperature: float = 0.3  # S9：学术公式文本用 0.3 比官方建议的 1.3 更稳
     max_tokens: int = 16000
     thinking: Thinking = "off"
+    # 翻译服务统一控制尝试次数时传 0，避免 SDK 内部重试把次数放大。
+    transport_retries: int = Field(default=3, ge=0, le=3)
 
 
 class ChatUsage(BaseModel):
@@ -43,6 +45,10 @@ class ChatResult(BaseModel):
 
 class ChatError(RuntimeError):
     """调用大模型失败（鉴权、额度、网络等），消息面向用户。"""
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class ChatModel(Protocol):

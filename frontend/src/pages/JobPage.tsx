@@ -150,7 +150,7 @@ export function JobPage() {
               onClick={() => locateFailed(failedSegments[failedIndex >= 0 ? failedIndex : 0]!.id)}
               title="定位问题段落并打开编辑面板，可重翻或手动修改"
             >
-              {stats.failed} 段未通过校验 · 点击定位
+              {stats.failed} 段未完成翻译 · 点击定位
             </button>
           )}
           {job.cost_cny !== null && <span>花费 ¥{job.cost_cny.toFixed(3)}</span>}

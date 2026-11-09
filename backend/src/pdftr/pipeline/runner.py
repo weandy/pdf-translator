@@ -309,8 +309,14 @@ class Pipeline:
         self.deps.store.save_segments(out)
         cost = report.cost_cny
         total = None if cost is None and job.cost_cny is None else (job.cost_cny or 0) + (cost or 0)
-        failed = f"，{report.failed} 段未通过校验，可在阅读器中重试" if report.failed else ""
-        self._update(job, model=chat.model, cost_cny=total, message=f"已翻译 {report.translated} 段{failed}")
+        translated = sum(s.status in (SegmentStatus.DONE, SegmentStatus.EDITED) for s in out)
+        self._update(job, model=chat.model, cost_cny=total, message=f"已翻译 {translated}/{len(out)} 段")
+        if report.failed:
+            reasons = "；".join(list(dict.fromkeys(report.failures.values()))[:3])
+            raise StageError(
+                f"还有 {report.failed} 段未完成翻译，已达到尝试次数或时间上限。"
+                f"{reasons}。已成功的译文已保留，点击重试只继续处理未完成段落"
+            )
 
     def _concurrency(self, secrets: Secrets) -> int:
         return self.deps.llm_concurrency or default_concurrency(secrets.llm_base_url)

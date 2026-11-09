@@ -103,6 +103,8 @@ class SegmentOut(BaseModel):
     status: Literal["pending", "done", "failed", "edited"]
     quality: Literal["default", "careful"]
     formulas: dict[str, FormulaOut]
+    translation_attempts: int = 0
+    failure_reason: str = ""
 
     @classmethod
     def of(cls, s: Segment) -> "SegmentOut":
@@ -116,6 +118,7 @@ class SegmentOut(BaseModel):
         return cls(
             id=s.id, block_ids=s.block_ids, parts=[PartOut(**p.model_dump()) for p in s.parts], source=s.source,
             target=s.target, status=s.status.value, quality=s.quality, formulas=formulas,
+            translation_attempts=s.translation_attempts, failure_reason=s.failure_reason,
         )  # fmt: skip
 
 

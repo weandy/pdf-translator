@@ -157,6 +157,8 @@ class Segment(BaseModel):
     target: str | None = None
     status: SegmentStatus = SegmentStatus.PENDING
     quality: Quality = "default"
+    translation_attempts: int = Field(default=0, ge=0)  # 最近一次翻译操作的实际调用次数
+    failure_reason: str = ""  # 最近一次翻译操作未成功的原因；成功后清空
 
 
 RevisionAction = Literal["edit", "retranslate", "careful", "revert"]
