@@ -26,6 +26,7 @@ from pdftr.domain.ir import (
 )
 from pdftr.domain.layout import LayoutBlock, LayoutResult
 from pdftr.fusion.align import align
+from pdftr.fusion.emphasis import bold_ranges
 from pdftr.fusion.formula_align import refine_block
 from pdftr.fusion.relocate import relocate
 from pdftr.fusion.style import block_style
@@ -142,12 +143,22 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], links: dict, report
                 spans.append(Span(kind="formula", formula=key, line=li, bbox=s.bbox, size=style.font_size))
                 continue
             report.text_spans += 1
-            pdf_text = text_of(chars_in(chars, s.bbox, exclude=formula_boxes)) if cp.kind is PageKind.NATIVE else ""
+            span_chars = chars_in(chars, s.bbox, exclude=formula_boxes) if cp.kind is PageKind.NATIVE else []
+            pdf_text = text_of(span_chars)
             text, replaced = choose(s.content, pdf_text)
             report.text_replaced += replaced
             if text:
+                bold, ranges = bold_ranges(text, span_chars)
                 spans.append(
-                    Span(text=text, line=li, bbox=s.bbox, size=style.font_size, bold=style.bold, italic=style.italic)
+                    Span(
+                        text=text,
+                        line=li,
+                        bbox=s.bbox,
+                        size=style.font_size,
+                        bold=bold,
+                        bold_ranges=ranges,
+                        italic=style.italic,
+                    )
                 )
     report.formulas += len(formulas)
     prev = links.get((cp.index, lb.order))
@@ -183,6 +194,7 @@ def _orphan_blocks(cp: CharPage, orphans: list[Char], start: int, report: Fusion
             y1=max(c.bbox.y1 for c in chars),
         )
         style = block_style(chars)
+        bold, ranges = bold_ranges(text, chars)
         order = start + len(blocks)
         blocks.append(
             Block(
@@ -191,7 +203,9 @@ def _orphan_blocks(cp: CharPage, orphans: list[Char], start: int, report: Fusion
                 type=BlockType.TEXT,
                 bbox=box,
                 order=order,
-                spans=[Span(text=text, bbox=box, size=style.font_size, bold=style.bold, italic=style.italic)],
+                spans=[
+                    Span(text=text, bbox=box, size=style.font_size, bold=bold, bold_ranges=ranges, italic=style.italic)
+                ],
                 style=style,
                 translatable=True,
                 orphan=True,
@@ -238,6 +252,7 @@ def _figure_labels(cp: CharPage, chars: list[Char], start: int, report: FusionRe
             y1=max(c.bbox.y1 for c in visible),
         )
         style = block_style(visible)
+        bold, ranges = bold_ranges(text, run)
         order = start + len(blocks)
         blocks.append(
             Block(
@@ -246,7 +261,9 @@ def _figure_labels(cp: CharPage, chars: list[Char], start: int, report: FusionRe
                 type=BlockType.FIGURE_TEXT,
                 bbox=box,
                 order=order,
-                spans=[Span(text=text, bbox=box, size=style.font_size, bold=style.bold, italic=style.italic)],
+                spans=[
+                    Span(text=text, bbox=box, size=style.font_size, bold=bold, bold_ranges=ranges, italic=style.italic)
+                ],
                 style=style,
                 translatable=True,
             )

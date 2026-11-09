@@ -17,6 +17,8 @@ FILES = {
     "hei": "NotoSansSC-Medium.ttf",
     "times": "Tinos-Regular.ttf",
     "times-bold": "Tinos-Bold.ttf",
+    "song-bold": "NotoSerifSC-Bold.ttf",
+    "hei-bold": "NotoSansSC-Bold.ttf",
 }
 
 # 用中文字体排的字符：汉字、全角标点、中文引号与破折号、省略号（与前端 shared/text/script.ts 一致）。

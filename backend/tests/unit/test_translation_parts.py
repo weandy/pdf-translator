@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from pdftr.domain.llm import ChatUsage
-from pdftr.translation.batching import estimate_tokens, make_batches, parse_numbered, placeholders_match
+from pdftr.translation.batching import bold_problems, estimate_tokens, make_batches, parse_numbered, placeholders_match
 from pdftr.translation.cost import cost_cny, is_deepseek_peak
 from pdftr.translation.prompt import DocContext, expand_formulas, system_prompt, user_prompt
 
@@ -26,6 +26,20 @@ def test_placeholders_match():
     assert placeholders_match("a <m1/> b <m2/>", "乙<m2/>甲<m1/>")
     assert not placeholders_match("a <m1/> b <m2/>", "甲<m1/>")
     assert not placeholders_match("a <m1/>", "甲<m1/><m1/>")
+
+
+def test_bold_structure_is_checked_only_when_the_source_has_emphasis():
+    source = "An <b>important</b> detail."
+    assert bold_problems(source, "一个<b>重要</b>细节。") == []
+    assert bold_problems(source, "一个<b><sup>重要</sup></b>细节。") == []
+    assert "丢失" in bold_problems(source, "一个重要细节。")[0]
+    assert "配对" in bold_problems(source, "一个<b>重要细节。")[0]
+    assert "多出" in bold_problems(source, "一个<b>重要</b><b>细节</b>。")[0]
+    assert "嵌套" in bold_problems(source, "一个</b>重要<b>细节。")[0]
+    assert "嵌套" in bold_problems(source, "一个<b><sup>重要</b></sup>细节。")[0]
+    assert "没有内容" in bold_problems(source, "<b> </b>一个重要细节。")[0]
+    assert bold_problems("No emphasis.", "保持原有<b>自然格式和<sup>行为。") == []
+    assert bold_problems(source, "<sup>不新增上下标校验</sub>一个<b>重要</b>细节。") == []
 
 
 def test_prompts():

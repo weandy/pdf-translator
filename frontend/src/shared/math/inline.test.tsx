@@ -1,34 +1,66 @@
-import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { InlineMathText, renderLatex } from "@/shared/math/inline";
+import { InlineMathText } from "@/shared/math/inline";
 
-describe("InlineMathText", () => {
-  it("公式用 KaTeX 渲染，无效公式回退为裁剪图", () => {
-    const html = renderToStaticMarkup(
-      <InlineMathText
-        text="设<m1/>，且<m2/>。"
-        formulas={{ m1: { latex: "f(x)" }, m2: { latex: "\\frac{1}{" } }}
-        fallbackUrl={(k) => `/crop/${k}.png`}
-      />,
+describe("行内公式两侧的富文本样式", () => {
+  let host: HTMLDivElement;
+  let root: Root;
+  beforeAll(() => Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }));
+  afterAll(() => Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT"));
+  beforeEach(() => {
+    host = document.createElement("div");
+    root = createRoot(host);
+  });
+  afterEach(async () => act(async () => root.unmount()));
+
+  it("公式后的中文和西文保留粗体，格式结束后普通正文不被加粗", async () => {
+    await act(async () =>
+      root.render(
+        <InlineMathText
+          text="<b>前文Before<m1/>后文After</b>普通"
+          formulas={{ m1: { latex: "x^2" } }}
+          fallbackUrl={() => ""}
+        />,
+      ),
     );
-    expect(html).toContain('class="katex"');
-    expect(html).toContain('src="/crop/m2.png"');
-    expect(html).toMatch(/<span class="zh">设<\/span><span class="math">/); // 文字与公式按原顺序排列，中文用中文字体
+    expect([...host.querySelectorAll("b")].map((b) => b.textContent)).toEqual(["前文Before", "后文After"]);
+    expect(host.querySelectorAll("b .zh")).toHaveLength(2);
+    expect(host.querySelectorAll(".math .katex")).toHaveLength(1);
+    expect(host.querySelector(".math")?.closest("b")).toBeNull();
+    expect(host.textContent?.endsWith("普通")).toBe(true);
   });
 
-  it("上下标渲染为真实元素", () => {
-    const html = renderToStaticMarkup(<InlineMathText text="作者<sup>∗</sup>" formulas={{}} fallbackUrl={() => ""} />);
-    expect(html).toBe('<span class="zh">作者</span><sup>∗</sup>');
+  it("跨公式嵌套样式与链接定位仍正确，未知HTML不会生成元素", async () => {
+    const activate = vi.fn();
+    await act(async () =>
+      root.render(
+        <InlineMathText
+          text="<b><i>开始<m1/>见[12]</i>结束</b><script>合成</script>"
+          formulas={{ m1: { latex: "x" } }}
+          fallbackUrl={() => ""}
+          links={[{ text: "[12]", nth: 0, onActivate: activate }]}
+        />,
+      ),
+    );
+    const link = host.querySelector("a");
+    expect(link?.textContent).toBe("[12]");
+    expect(link?.closest("i")?.closest("b")).not.toBeNull();
+    await act(async () => link?.click());
+    expect(activate).toHaveBeenCalledTimes(1);
+    expect(host.querySelector("script")).toBeNull();
+    expect(host.textContent).toContain("<script>合成</script>");
   });
 
-  it("长词在 / 之后可以断行", () => {
-    const html = renderToStaticMarkup(<InlineMathText text="Python/OR-Tools" formulas={{}} fallbackUrl={() => ""} />);
-    expect(html).toBe("Python/<wbr/>OR-Tools");
-  });
-
-  it("渲染结果有缓存", () => {
-    expect(renderLatex("x^2")).toBe(renderLatex("x^2"));
-    expect(renderLatex("\\notacommand{")).toBeNull();
+  it("只包裹公式的样式不泄漏到后文，公式裁剪兜底保持可用", async () => {
+    await act(async () =>
+      root.render(
+        <InlineMathText text="<b><m1/></b>普通" formulas={{}} fallbackUrl={(key) => `/synthetic/${key}.png`} />,
+      ),
+    );
+    expect(host.querySelector("img")?.getAttribute("src")).toBe("/synthetic/m1.png");
+    expect(host.querySelector("b")).toBeNull();
+    expect(host.textContent).toBe("普通");
   });
 });

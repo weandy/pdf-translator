@@ -9,6 +9,7 @@ from collections.abc import Sequence
 
 BATCH_TOKENS = 1500
 _PLACEHOLDER = re.compile(r"<m\d+/>")
+_RICH_TAG = re.compile(r"<(/?)(b|i|sup|sub)>")
 
 
 def estimate_tokens(text: str) -> int:
@@ -64,3 +65,36 @@ def placeholder_problems(source: str, target: str) -> list[str]:
         elif got[tag] > want[tag]:
             problems.append(f"公式 {n}（{tag}）出现了 {got[tag]} 次" if want[tag] else f"多了不存在的公式占位 {tag}")
     return problems
+
+
+def bold_problems(source: str, target: str) -> list[str]:
+    """原文含局部粗体时，译文必须保留同样数量、成对且正确嵌套的非空强调。
+
+    无源粗体时不限制模型原有的排版行为，也不新增上下标校验。
+    这里只能保证标记结构，强调内容的语义对应仍由翻译模型负责。
+    """
+    expected = source.count("<b>")
+    if not expected:
+        return []
+    opened, closed = target.count("<b>"), target.count("</b>")
+    if opened != closed:
+        return ["粗体标记未完整配对"]
+    if opened < expected:
+        return [f"粗体标记丢失：需要 {expected} 对，实际 {opened} 对"]
+    if opened > expected:
+        return [f"粗体标记多出：需要 {expected} 对，实际 {opened} 对"]
+    stack: list[tuple[str, int]] = []
+    for match in _RICH_TAG.finditer(target):
+        closing, tag = match.group(1), match.group(2)
+        if not closing:
+            stack.append((tag, match.end()))
+            continue
+        if stack and stack[-1][0] == tag:
+            _, start = stack.pop()
+            if tag == "b" and not _RICH_TAG.sub("", target[start : match.start()]).strip():
+                return ["粗体标记内没有内容"]
+        elif tag == "b" or any(t == "b" for t, _ in stack):
+            return ["粗体标记嵌套错误"]
+    if any(t == "b" for t, _ in stack):
+        return ["粗体标记未完整配对"]
+    return []

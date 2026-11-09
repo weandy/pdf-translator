@@ -23,7 +23,8 @@ def block_style(chars: Sequence[Char], fallback_size: float = 10.0) -> BlockStyl
     colors = Counter(c.color for c in visible)
     return BlockStyle(
         font_size=round(statistics.median(c.size for c in visible), 2),
-        bold=sum(c.bold for c in visible) > n / 2,
+        # 混合正文不能按多数票整块加粗，否则少数常规字重丢失；局部强调由 Span 范围保留。
+        bold=all(c.bold for c in visible),
         italic=sum(c.italic for c in visible) > n / 2,
         serif=is_serif(fonts.most_common(1)[0][0]),
         color=colors.most_common(1)[0][0],

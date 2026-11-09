@@ -1178,7 +1178,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                name: "NotoSerifSC-Regular.woff2" | "NotoSansSC-Medium.woff2" | "Tinos-Regular.woff2" | "Tinos-Bold.woff2";
+                name: "NotoSerifSC-Regular.woff2" | "NotoSerifSC-Bold.woff2" | "NotoSansSC-Medium.woff2" | "NotoSansSC-Bold.woff2" | "Tinos-Regular.woff2" | "Tinos-Bold.woff2";
             };
             cookie?: never;
         };

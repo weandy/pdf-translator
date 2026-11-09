@@ -7,7 +7,7 @@ import { memo, type ReactNode } from "react";
 
 import { linkRanges, type LinkTarget } from "@/shared/text/links";
 import { splitScript } from "@/shared/text/script";
-import { parseRich, tokenize, type RichNode } from "@/shared/text/split";
+import { balanceRichParts, parseRich, tokenize, type RichNode } from "@/shared/text/split";
 
 const cache = new Map<string, string | null>();
 
@@ -88,7 +88,8 @@ function rich(nodes: RichNode[], key: string, leaf: Leaf = scripts): ReactNode[]
   return nodes.flatMap((n, i) => {
     if (typeof n === "string") return leaf(n, `${key}.${i}`);
     const Tag = n.tag;
-    return <Tag key={`${key}.${i}`}>{rich(n.children, `${key}.${i}`, leaf)}</Tag>;
+    const children = rich(n.children, `${key}.${i}`, leaf);
+    return children.length ? <Tag key={`${key}.${i}`}>{children}</Tag> : [];
   });
 }
 
@@ -100,7 +101,14 @@ function collect(nodes: RichNode[], out: string[]): void {
 }
 
 export const InlineMathText = memo(function InlineMathText({ text, formulas, fallbackUrl, links }: Props) {
-  const pieces = tokenize(text).map((piece) => ({ piece, rich: piece.kind === "text" ? parseRich(piece.text) : [] }));
+  const raw = tokenize(text);
+  // 公式不参与文字格式解析，但两侧文字需要沿用同一个格式栈。
+  const textParts = balanceRichParts(raw.flatMap((piece) => (piece.kind === "text" ? [piece.text] : [])));
+  let textIndex = 0;
+  const pieces = raw.map((piece) => ({
+    piece,
+    rich: piece.kind === "text" ? parseRich(textParts[textIndex++] ?? "") : [],
+  }));
   // 先按渲染顺序收集文字叶子，算出链接落在哪几段文字的哪几个字上，再逐段渲染
   const leaves: string[] = [];
   pieces.forEach((p) => collect(p.rich, leaves));

@@ -70,7 +70,10 @@ def config(request: Request) -> ConfigOut:
 
 
 # 阅读器与导出 PDF 用同一套字体（GB/T 7713.2：正文宋体、标题黑体、西文 Times 类），见 rendering/fonts.py
-WebFont = Literal["NotoSerifSC-Regular.woff2", "NotoSansSC-Medium.woff2", "Tinos-Regular.woff2", "Tinos-Bold.woff2"]
+WebFont = Literal[
+    "NotoSerifSC-Regular.woff2", "NotoSerifSC-Bold.woff2", "NotoSansSC-Medium.woff2",
+    "NotoSansSC-Bold.woff2", "Tinos-Regular.woff2", "Tinos-Bold.woff2",
+]  # fmt: skip
 
 
 @router.get("/fonts/{name}")

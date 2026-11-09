@@ -22,7 +22,9 @@ from pathlib import Path
 GOOGLE_FONTS = "https://github.com/google/fonts/raw/main/ofl"
 VARIABLE = [  # （可变字体地址, 字重, 输出文件名）
     (f"{GOOGLE_FONTS}/notoserifsc/NotoSerifSC%5Bwght%5D.ttf", 400, "NotoSerifSC-Regular.ttf"),
+    (f"{GOOGLE_FONTS}/notoserifsc/NotoSerifSC%5Bwght%5D.ttf", 700, "NotoSerifSC-Bold.ttf"),
     (f"{GOOGLE_FONTS}/notosanssc/NotoSansSC%5Bwght%5D.ttf", 500, "NotoSansSC-Medium.ttf"),
+    (f"{GOOGLE_FONTS}/notosanssc/NotoSansSC%5Bwght%5D.ttf", 700, "NotoSansSC-Bold.ttf"),
 ]
 STATIC = [
     (f"{GOOGLE_FONTS}/tinos/Tinos-Regular.ttf", "Tinos-Regular.ttf"),
@@ -63,12 +65,16 @@ def save_subset(src: Path, target: Path, unicodes: set[int] | None) -> None:
         opts.name_IDs = ["*"]
         opts.notdef_outline = True
         font = subset.load_font(src, opts)
-        subsetter = subset.Subsetter(opts)
-        # 去掉不间断空格：它与空格共用字形，导出 PDF 里的空格会被记成 U+00A0，复制、搜索时出问题
-        keep = set(font.getBestCmap()) if unicodes is None else unicodes
-        subsetter.populate(unicodes=keep - {0xA0})
-        subsetter.subset(font)
-        subset.save_font(font, target / (src.stem + suffix), opts)
+        try:
+            subsetter = subset.Subsetter(opts)
+            # 去掉不间断空格：它与空格共用字形，导出 PDF 里的空格会被记成 U+00A0，复制、搜索时出问题
+            keep = set(font.getBestCmap()) if unicodes is None else unicodes
+            subsetter.populate(unicodes=keep - {0xA0})
+            subsetter.subset(font)
+            subset.save_font(font, target / (src.stem + suffix), opts)
+        finally:
+            # Windows 下未关闭的字体句柄会使临时文件清理失败。
+            font.close()
 
 
 def download(url: str, out: Path, attempts: int = 5) -> None:
@@ -101,11 +107,17 @@ def main(target: Path) -> None:
             save_subset(out, target, None)
     cjk = gb2312() | EXTRA
     for url, weight, name in VARIABLE:
-        variable = work / f"{name}.variable"
+        # 同一家族的常规/粗体共用一次下载，固定字重分别实例化。
+        variable = work / url.rsplit("/", 1)[-1]
         if not variable.exists():
             download(url, variable)
         static = work / name
-        instantiateVariableFont(TTFont(variable), {"wght": weight}, updateFontNames=True).save(static)
+        with TTFont(variable) as source_font:
+            instance = instantiateVariableFont(source_font, {"wght": weight}, updateFontNames=True)
+            try:
+                instance.save(static)
+            finally:
+                instance.close()
         save_subset(static, target, cjk)
     for p in work.iterdir():
         p.unlink()

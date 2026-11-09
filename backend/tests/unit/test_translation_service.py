@@ -87,6 +87,45 @@ def test_translate_dedup_retry_and_cache():
     assert report2.cached == 4 and chat2.calls == []
 
 
+def test_missing_bold_is_retried_and_bad_cached_format_is_not_reused():
+    emphasized = _seg(0, "An <b>important</b> detail.")
+    cache = DictCache()
+    good_chat = FakeChat()
+    asyncio.run(translate([emphasized], chat=good_chat, cache=cache, ctx=DocContext()))
+    assert len(cache.data) == 1
+    for key in cache.data:
+        cache.data[key] = "一个重要细节。"
+
+    class DropOnce(FakeChat):
+        async def complete(self, system, user, opts):
+            result = await super().complete(system, user, opts)
+            if len(self.calls) == 1:
+                return ChatResult(text=result.text.replace("<b>", "").replace("</b>", ""), usage=result.usage)
+            return result
+
+    chat = DropOnce()
+    (out,), report = asyncio.run(translate([emphasized], chat=chat, cache=cache, ctx=DocContext()))
+    assert out.status is SegmentStatus.DONE and "<b>important</b>" in (out.target or "")
+    assert report.cached == 0 and report.requests == 2 and out.translation_attempts == 2
+    assert not out.failure_reason
+    assert report.usage.prompt_tokens == 200
+
+
+def test_persistent_bold_loss_reaches_the_existing_bound_with_explicit_reason():
+    class DropBold(FakeChat):
+        async def complete(self, system, user, opts):
+            result = await super().complete(system, user, opts)
+            return ChatResult(text=result.text.replace("<b>", "").replace("</b>", ""), usage=result.usage)
+
+    chat = DropBold()
+    (out,), report = asyncio.run(
+        translate([_seg(0, "An <b>important</b> detail.")], chat=chat, cache=DictCache(), ctx=DocContext())
+    )
+    assert out.status is SegmentStatus.FAILED and out.translation_attempts == 10
+    assert report.requests == 10 and report.failed == 1 and "粗体标记丢失" in out.failure_reason
+    assert report.cost_cny is not None and report.usage.prompt_tokens == 1000
+
+
 def test_persistent_failure_and_edited_untouched():
     chat = FakeChat(break_once={"Some other text."})
     chat.break_once = set()  # 下面用一个总是丢占位符的段落

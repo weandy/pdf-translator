@@ -35,15 +35,18 @@ class FontSet:
     hei: pymupdf.Font
     times: pymupdf.Font
     times_bold: pymupdf.Font
+    song_bold: pymupdf.Font
+    hei_bold: pymupdf.Font
     fallback: pymupdf.Font = field(default_factory=lambda: pymupdf.Font("cjk"))
 
     @classmethod
     def load(cls, font_dir: Path | None) -> "FontSet":
         if font_dir is not None and fonts.available(font_dir):
             f = fonts.FILES
-            return cls(*(pymupdf.Font(fontfile=str(font_dir / f[k])) for k in ("song", "hei", "times", "times-bold")))
+            return cls(*(pymupdf.Font(fontfile=str(font_dir / f[k]))
+                         for k in ("song", "hei", "times", "times-bold", "song-bold", "hei-bold")))  # fmt: skip
         cjk = pymupdf.Font("cjk")  # 没有字体文件时（开发环境）用内置字体，排版规则不变
-        return cls(cjk, cjk, pymupdf.Font("tiro"), pymupdf.Font("tibo"), cjk)
+        return cls(cjk, cjk, pymupdf.Font("tiro"), pymupdf.Font("tibo"), cjk, cjk, cjk)
 
 
 @dataclass
@@ -115,9 +118,10 @@ class Typesetter:
     def _font_for(self, ch: str, style: Style) -> pymupdf.Font:
         cjk = bool(_CJK.fullmatch(ch))
         if style.role == "label":
-            first = self.f.hei
+            first = self.f.hei_bold if style.bold else self.f.hei
         elif cjk:
-            first = self.f.hei if style.role == "heading" or style.no else self.f.song
+            first = (self.f.hei_bold if style.role == "heading" or style.no
+                     else self.f.song_bold if style.bold else self.f.song)  # fmt: skip
         else:
             first = self.f.times_bold if style.role == "heading" or style.no or style.bold else self.f.times
         for font in (first, self.f.song, self.f.times, self.f.fallback):

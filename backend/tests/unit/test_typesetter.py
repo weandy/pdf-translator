@@ -1,5 +1,7 @@
 """导出 PDF 的中文排版器（clreq）：两端对齐、中西文间距、行首行尾禁则、长词断行。用内置字体，不依赖字体文件。"""
 
+import pymupdf
+
 from pdftr.rendering.typeset import drop_fake_scripts
 from pdftr.rendering.typesetter import FontSet, Typesetter
 
@@ -55,3 +57,24 @@ def test_fake_subscript_is_plain_text():
         == "• A synthetic first line of a list item continues"
     )
     assert drop_fake_scripts("d<sub>model</sub>") == "d<sub>model</sub>"
+
+
+def test_inline_bold_selects_both_chinese_and_latin_bold_fonts_without_leaking():
+    # 用不同字体实例辨认选中的角色，不依赖本机安装思源字体。
+    f = FontSet(
+        song=pymupdf.Font("cjk"), hei=pymupdf.Font("cjk"),
+        times=pymupdf.Font("tiro"), times_bold=pymupdf.Font("tibo"),
+        song_bold=pymupdf.Font("cjk"), hei_bold=pymupdf.Font("cjk"),
+    )  # fmt: skip
+    ts = Typesetter(f)
+    tokens = ts.tokenize("普<b>粗 Bold</b>通", "body", SIZE, lambda _: None)
+    runs = [r for t in tokens for r in t.runs]
+    assert [(r.text, r.font is f.song_bold, r.font is f.times_bold) for r in runs] == [
+        ("普", False, False), ("粗", True, False), (" ", False, True),
+        ("Bold", False, True), ("通", False, False),
+    ]  # fmt: skip
+    assert runs[0].font is f.song and runs[-1].font is f.song
+    heading = ts.tokenize("标题", "heading", SIZE, lambda _: None)
+    assert all(r.font is f.hei_bold for t in heading for r in t.runs)
+    caption = ts.tokenize("图 1. 普通图注", "caption", SIZE, lambda _: None, "图 1.")
+    assert caption[0].runs[0].font is f.hei_bold

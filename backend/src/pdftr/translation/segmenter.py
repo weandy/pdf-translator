@@ -10,13 +10,18 @@ import re
 from collections.abc import Iterable
 
 from pdftr.domain.ids import segment_id
-from pdftr.domain.ir import Block, BlockType, Document, FormulaRef, Segment, SegmentPart
+from pdftr.domain.ir import Block, BlockType, Document, FormulaRef, Segment, SegmentPart, Span
 
 # MinerU 会把序数词的上标（如 1^{st}、2^{nd}）识别成公式；模型会正确地把它译成“一阶”“二阶”，
 # 占位符随之“消失”导致校验失败（M3 实测）。这类公式还原成普通文字再翻译。
 _ORDINAL = re.compile(r"^(\d+)(st|nd|rd|th)$")
 
 MIN_WORDS = 1  # 没有英文单词（纯数字、符号）的块不翻译；单词标题如 “Introduction” 要翻
+_FORMAT = re.compile(r"</?(?:b|i|sup|sub)>")
+
+
+def _merge_bold(text: str) -> str:
+    return re.sub(r"</b>(\s*)<b>", r"\1", text)
 
 
 def _join(prev: str, nxt: str) -> str:
@@ -25,13 +30,34 @@ def _join(prev: str, nxt: str) -> str:
         return nxt
     if not nxt:
         return prev
-    m = re.search(r"([A-Za-z][\w-]*)-$", prev)
-    if m and nxt[0].islower():
+    plain_prev, plain_next = _FORMAT.sub("", prev), _FORMAT.sub("", nxt)
+    m = re.search(r"([A-Za-z][\w-]*)-$", plain_prev)
+    if m and plain_next and plain_next[0].islower():
         word = m.group(1)
         if "-" in word:  # 复合词在连字符处换行：保留连字符
-            return prev + nxt
-        return prev[:-1] + nxt
-    return f"{prev} {nxt}"
+            return _merge_bold(prev + nxt)
+        # 粗体结束标签可能位于断词连字符后面，删字符时保留样式标签。
+        return _merge_bold(re.sub(r"-((?:</(?:b|i|sup|sub)>)*$)", r"\1", prev) + nxt)
+    return _merge_bold(f"{prev} {nxt}")
+
+
+def _span_source(span: Span, *, inline_bold: bool) -> str:
+    text = span.text
+    if not inline_bold:
+        return text.strip()
+    if span.bold:
+        return f"<b>{text.strip()}</b>" if text.strip() else ""
+    pieces: list[str] = []
+    offset = len(text) - len(text.lstrip())
+    end = len(text.rstrip())
+    for start, stop in span.bold_ranges:
+        start, stop = max(start, offset), min(stop, end)
+        if stop <= start:
+            continue
+        pieces.extend([text[offset:start], f"<b>{text[start:stop]}</b>"])
+        offset = stop
+    pieces.append(text[offset:end])
+    return "".join(pieces)
 
 
 def textual_formula(latex: str) -> str | None:
@@ -44,17 +70,18 @@ def block_source(block: Block, key_map: dict[str, str]) -> str:
     """块内片段按行拼成一段文字；行内公式换成重排后的占位符（能写成文字的直接写文字）。"""
     latex = {f.key: f.latex for f in block.formulas}
     lines: dict[int, list[str]] = {}
+    inline_bold = not block.style.bold and block.type is not BlockType.TITLE
     for s in block.spans:
         if s.kind == "formula" and s.formula:
             key = key_map.get(s.formula)
             piece = f"<{key}/>" if key else (textual_formula(latex.get(s.formula, "")) or "")
         else:
-            piece = s.text.strip()
+            piece = _span_source(s, inline_bold=inline_bold)
         if piece:
             lines.setdefault(s.line, []).append(piece)
     text = ""
     for li in sorted(lines):
-        text = _join(text, " ".join(lines[li]))
+        text = _join(text, _merge_bold(" ".join(lines[li])))
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -132,9 +159,9 @@ def segment(
                 if f.located:  # 扫描页的公式没有精确位置，KaTeX 渲染失败时不裁原图
                     refs[key] = FormulaRef(page=b.page, bbox=f.bbox)
             piece = block_source(b, key_map)
-            parts.append(SegmentPart(block_id=b.id, chars=len(piece)))
+            parts.append(SegmentPart(block_id=b.id, chars=len(_FORMAT.sub("", piece))))
             text = _join(text, piece)
-        if len(re.findall(r"[A-Za-z]{2,}", re.sub(r"<m\d+/>", " ", text))) < MIN_WORDS:
+        if len(re.findall(r"[A-Za-z]{2,}", re.sub(r"<m\d+/>", " ", _FORMAT.sub("", text)))) < MIN_WORDS:
             continue
         segments.append(
             Segment(

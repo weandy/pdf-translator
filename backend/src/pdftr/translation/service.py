@@ -18,6 +18,7 @@ from pdftr.domain.ir import Segment, SegmentStatus
 from pdftr.domain.llm import ChatError, ChatModel, ChatOptions, ChatUsage
 from pdftr.translation.batching import (
     BATCH_TOKENS,
+    bold_problems,
     estimate_tokens,
     make_batches,
     parse_numbered,
@@ -116,7 +117,12 @@ async def translate(
         # 本段命中的词库与用户术语也算进缓存键：用户改了术语后不会拿到旧译文
         hits = lookup_terms(seg.source) if lookup_terms else {}
         key = cache_key(seg, chat.model, ctx.terms | hits, o.quality)
-        if o.use_cache and (hit := cache.get(key)) and placeholders_match(seg.source, hit):
+        if (
+            o.use_cache
+            and (hit := cache.get(key))
+            and placeholders_match(seg.source, hit)
+            and not bold_problems(seg.source, hit)
+        ):
             seg.target, seg.status = hit, SegmentStatus.DONE
             report.cached += 1
             continue
@@ -199,17 +205,20 @@ async def translate(
         retry = []
         for n, u in enumerate(batch, start=1):
             target = got.get(n, "")
-            if target and placeholders_match(u.source, target):
+            formula_errors = placeholder_problems(u.source, target)
+            bold_errors = bold_problems(u.source, target)
+            if target and not formula_errors and not bold_errors:
                 cache.put(u.key, target)
                 for i in u.seg_indexes:
                     out[i].target, out[i].status = target, SegmentStatus.DONE
                 done += 1
             else:
-                reasons[u.key] = (
-                    "返回编号缺失或译文为空"
-                    if not target
-                    else "公式占位符不一致：" + "；".join(placeholder_problems(u.source, target))
-                )
+                errors = []
+                if formula_errors:
+                    errors.append("公式占位符不一致：" + "；".join(formula_errors))
+                if bold_errors:
+                    errors.append("粗体标记不一致：" + "；".join(bold_errors))
+                reasons[u.key] = "；".join(errors) if target else "返回编号缺失或译文为空"
                 retry.append(u)
         if on_progress:
             on_progress(done, total_units, note)

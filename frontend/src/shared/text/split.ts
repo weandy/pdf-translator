@@ -40,7 +40,30 @@ export function splitByParts(text: string, partChars: number[]): string[] {
     start = cut;
   }
   pieces.push(text.slice(start));
-  return pieces;
+  return balanceRichParts(pieces);
+}
+
+/** 每个分片各自关闭/重开白名单样式，既保留跨页样式，也不把样式泄漏到下一段。 */
+export function balanceRichParts(parts: string[]): string[] {
+  const active: string[] = [];
+  return parts.map((part) => {
+    const prefix = active.map((tag) => `<${tag}>`).join("");
+    for (const match of part.matchAll(/<(\/?)(sup|sub|b|i)>/g)) {
+      const tag = match[2]!;
+      if (!match[1]) active.push(tag);
+      else if (active[active.length - 1] === tag) active.pop();
+    }
+    // 纯标签片段只改变后续样式栈，不制造没有文字的粗体节点。
+    if (!part.replace(/<\/?(?:sup|sub|b|i)>/g, "")) return "";
+    return (
+      prefix +
+      part +
+      [...active]
+        .reverse()
+        .map((tag) => `</${tag}>`)
+        .join("")
+    );
+  });
 }
 
 /** 把含 <mN/> 占位符的文字切成文字片段与公式片段。 */

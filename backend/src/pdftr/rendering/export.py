@@ -58,7 +58,26 @@ def split_by_parts(text: str, part_chars: list[int]) -> list[str]:
         pieces.append(text[start:cut])
         start = cut
     pieces.append(text[start:])
-    return pieces
+    return _balance_rich_parts(pieces)
+
+
+def _balance_rich_parts(parts: list[str]) -> list[str]:
+    """跨块样式在每块末尾关闭、下块开头重开；未知标签继续作为普通文字。"""
+    active: list[str] = []
+    out: list[str] = []
+    for part in parts:
+        prefix = "".join(f"<{tag}>" for tag in active)
+        for match in re.finditer(r"<(/?)(sup|sub|b|i)>", part):
+            close, tag = match.groups()
+            if not close:
+                active.append(tag)
+            elif active and active[-1] == tag:
+                active.pop()
+        if not re.sub(r"</?(?:sup|sub|b|i)>", "", part):
+            out.append("")
+        else:
+            out.append(prefix + part + "".join(f"</{tag}>" for tag in reversed(active)))
+    return out
 
 
 def role(block: Block) -> str:

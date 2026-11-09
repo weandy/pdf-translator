@@ -50,6 +50,7 @@ class Span(BaseModel):
     size: float
     color: int = 0
     bold: bool = False
+    bold_ranges: list[tuple[int, int]] = Field(default_factory=list)  # 混合字重片段内的粗体范围，按 text 索引，右侧不含
     italic: bool = False
 
 
