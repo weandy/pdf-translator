@@ -99,6 +99,7 @@ export function ReaderView({
   const scroller = useRef<HTMLDivElement>(null);
   const frame = useRef(0);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const restoreTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const restored = useRef(false);
 
   // 只加载当前显示方式用得到的 PDF
@@ -218,7 +219,9 @@ export function ReaderView({
     if (restored.current) return;
     restored.current = true;
     const page = savedPage(jobId);
-    if (page > 0 && page < doc.pages.length) setTimeout(() => goToRef.current(page, 0, false), 400);
+    if (page > 0 && page < doc.pages.length)
+      restoreTimer.current = setTimeout(() => goToRef.current(page, 0, false), 400);
+    return () => clearTimeout(restoreTimer.current);
   }, [jobId, doc.pages.length]);
 
   // 从术语面板逐段查看：滚到那一段所在位置并短暂高亮（只在 spot 变化时跳；段落内容更新不触发）
@@ -232,6 +235,8 @@ export function ReaderView({
     const seg = d.segments.find((s) => s.id === spot.id);
     const block = d.pages.flatMap((p) => p.blocks).find((b) => b.id === seg?.block_ids[0]);
     if (!block) return;
+    // 用户手动定位优先于打开页面时尚未执行的阅读位置恢复。
+    clearTimeout(restoreTimer.current);
     // 打开编辑侧栏会触发 ResizeObserver 和自适应缩放，等布局更新后再用最新比例定位。
     let nextFrame = 0;
     const frame = requestAnimationFrame(() => {
