@@ -5,18 +5,49 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { JobPage } from "@/pages/JobPage";
-import { api } from "@/shared/api/client";
+import { api, type DocumentData, type Job } from "@/shared/api/client";
+
+const job: Job = {
+  id: "synthetic",
+  status: "done",
+  filename: "synthetic.pdf",
+  stage: "render",
+  progress: 1,
+  message: "",
+  error: "",
+  page_count: 1,
+  model: "synthetic",
+  cost_cny: null,
+  created_at: "2026-01-01T00:00:00Z",
+  stage_started_at: null,
+  expires_at: null,
+  options: {
+    parser: "mineru-cloud",
+    quality: "default",
+    include_references: false,
+    translate_figures: false,
+    cloud_consent: true,
+  },
+};
 
 vi.mock("@/entities/job/model", () => ({
   useJob: () => ({
-    job: { id: "synthetic", status: "done", filename: "synthetic.pdf" },
+    job,
     error: null,
     refresh: vi.fn(),
   }),
   STAGE_LABELS: {},
 }));
 vi.mock("@/entities/settings/model", () => ({ useSettings: () => ({ translationSide: "left" }) }));
-vi.mock("@/features/reader/ReaderView", () => ({ ReaderView: () => <p>阅读器</p> }));
+vi.mock("@/features/reader/ReaderView", () => ({
+  ReaderView: ({ heading, actions }: { heading: React.ReactNode; actions: React.ReactNode }) => (
+    <div>
+      {heading}
+      <p>阅读器</p>
+      {actions}
+    </div>
+  ),
+}));
 vi.mock("@/features/job-terms/TermsPanel", () => ({ TermsPanel: () => null }));
 vi.mock("@/features/segment-edit/SegmentEditor", () => ({ SegmentEditor: () => null }));
 
@@ -85,5 +116,17 @@ describe("任务完成后的阅读数据等待", () => {
     checkDownloads();
     await act(async () => host.querySelector("button")!.click());
     expect(document).toHaveBeenCalledTimes(2);
+  });
+
+  it("阅读数据就绪后直接展示阅读器，仅保留工具栏中的下载入口", async () => {
+    const doc: DocumentData = { job, title: "合成文档", pages: [], segments: [], links: [], outline: [] };
+    client.setQueryData(["document", "synthetic"], doc);
+    vi.spyOn(api, "document").mockResolvedValue(doc);
+    await render();
+    expect(host.textContent).toContain("阅读器");
+    expect(host.textContent).toContain("已翻译 0/0 段");
+    expect(host.textContent).toContain("下载 PDF");
+    expect(host.textContent).not.toContain("开始阅读");
+    expect(host.querySelector(".completion-bar")).toBeNull();
   });
 });
