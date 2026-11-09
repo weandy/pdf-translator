@@ -67,6 +67,28 @@ export interface Health {
   data_dir_writable: boolean;
 }
 
+async function documentRequest(id: string, signal?: AbortSignal): Promise<DocumentData> {
+  const controller = new AbortController();
+  const cancel = () => controller.abort(signal?.reason);
+  if (signal?.aborted) cancel();
+  else signal?.addEventListener("abort", cancel, { once: true });
+  let timedOut = false;
+  // 阅读数据不是翻译任务；及时结束等待，让用户能重试或下载已完成的结果。
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, 30000);
+  try {
+    return await request<DocumentData>(`/api/jobs/${id}/document`, { signal: controller.signal });
+  } catch (error) {
+    if (timedOut) throw new ApiError(408, "读取译文超时，请稍后重新打开，或尝试下载 PDF。");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", cancel);
+  }
+}
+
 export const api = {
   // 匿名统计无需模型凭据，避免将个人 Key 附带在统计请求中。
   stats: (days = 30, signal?: AbortSignal) => request<SiteStats>(`/api/stats?days=${days}`, { signal }, false),
@@ -88,7 +110,7 @@ export const api = {
   },
   retryJob: (id: string) => request<Job>(`/api/jobs/${id}/retry`, { method: "POST" }),
   cancelJob: (id: string) => request<Job>(`/api/jobs/${id}/cancel`, { method: "POST" }),
-  document: (id: string) => request<DocumentData>(`/api/jobs/${id}/document`),
+  document: documentRequest,
   editSegment: (id: string, target: string) =>
     request<SegmentData>(`/api/segments/${id}`, { method: "PATCH", ...json({ target }) }),
   /** userTerms：浏览器里最新的用户术语库 */

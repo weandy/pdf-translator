@@ -238,6 +238,21 @@ input[type="radio"] {
   padding: 96px 16px;
   text-align: center;
 }
+.document-opening {
+  width: min(100%, 680px);
+  margin: 0 auto;
+}
+.document-opening h1 {
+  margin-top: 20px;
+  font-size: 24px;
+}
+.document-opening-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 24px;
+}
 .num {
   font-variant-numeric: tabular-nums;
 }

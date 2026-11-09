@@ -14,7 +14,15 @@ import { JobProgress } from "@/features/job-progress/JobProgress";
 import { ReaderView } from "@/features/reader/ReaderView";
 import { RevisionList } from "@/features/revisions/RevisionList";
 import { SegmentEditor } from "@/features/segment-edit/SegmentEditor";
-import { api, exportUrl, type DocumentData, type Job, type Revision, type SegmentData } from "@/shared/api/client";
+import {
+  api,
+  exportUrl,
+  fileUrl,
+  type DocumentData,
+  type Job,
+  type Revision,
+  type SegmentData,
+} from "@/shared/api/client";
 import { APP_TITLE, notify, useVisible } from "@/shared/attention/attention";
 import { ErrorCard } from "@/shared/feedback/ErrorCard";
 import { expiresSoon, formatRemaining } from "@/shared/time/elapsed";
@@ -39,10 +47,16 @@ export function JobPage() {
     return () => document.removeEventListener("keydown", onKey);
   }, [showHistory]);
   const ready = job?.status === "done";
-  const { data: doc, error: docError } = useQuery({
+  const {
+    data: doc,
+    error: docError,
+    isFetching: documentLoading,
+  } = useQuery({
     queryKey: ["document", id],
-    queryFn: () => api.document(id),
+    queryFn: ({ signal }) => api.document(id, signal),
     enabled: ready,
+    // 超时后的自动重试可能与服务端尚未结束的计算重叠，交给用户手动重新打开。
+    retry: false,
   });
   const { data: revisions = [] } = useQuery({
     queryKey: ["revisions", id],
@@ -59,18 +73,16 @@ export function JobPage() {
     );
   if (!job) return <main className="center muted">正在打开…</main>;
   if (!ready) return <JobProgress job={job} onRetried={refresh} />;
-  if (docError)
+  if (!doc)
     return (
-      <main className="center">
-        <ErrorCard
-          title="译文数据加载失败"
-          message={String(docError)}
-          actionLabel="重新加载"
-          onAction={() => void qc.invalidateQueries({ queryKey: ["document", id] })}
-        />
-      </main>
+      <DocumentOpening
+        key={id}
+        jobId={id}
+        side={translationSide}
+        failed={Boolean(docError) && !documentLoading}
+        onRetry={() => void qc.invalidateQueries({ queryKey: ["document", id] })}
+      />
     );
-  if (!doc) return <main className="center muted">正在打开译文…</main>;
 
   const onChange = (seg: SegmentData) => {
     qc.setQueryData<DocumentData>(["document", id], (d) => (d ? withSegment(d, seg) : d));
@@ -143,7 +155,12 @@ export function JobPage() {
             <a className="button" href={exportUrl(id, "mono")} download onClick={() => setShowCompletion(false)}>
               下载中文版
             </a>
-            <a className="button" href={exportUrl(id, "dual", translationSide)} download onClick={() => setShowCompletion(false)}>
+            <a
+              className="button"
+              href={exportUrl(id, "dual", translationSide)}
+              download
+              onClick={() => setShowCompletion(false)}
+            >
               下载双语版
             </a>
             <button type="button" className="quiet" onClick={() => setShowCompletion(false)} aria-label="关闭完成提示">
@@ -234,6 +251,57 @@ export function JobPage() {
           />
         )}
       </div>
+    </main>
+  );
+}
+
+function DocumentOpening({
+  jobId,
+  side,
+  failed,
+  onRetry,
+}: {
+  jobId: string;
+  side: "left" | "right";
+  failed: boolean;
+  onRetry: () => void;
+}) {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (failed) return;
+    const timer = setTimeout(() => setSlow(true), 8000);
+    return () => clearTimeout(timer);
+  }, [failed]);
+  return (
+    <main className="center document-opening">
+      <Link to="/" className="back">
+        返回首页
+      </Link>
+      <h1>翻译已完成</h1>
+      {failed ? (
+        <ErrorCard
+          title="暂时无法打开阅读器"
+          message="阅读数据未能及时加载，翻译任务已经完成。请稍后重新打开，或尝试下载 PDF。"
+          actionLabel="重新打开译文"
+          onAction={onRetry}
+        />
+      ) : (
+        <div role="status" aria-live="polite">
+          <p>正在打开译文…</p>
+          {slow && <p className="hint">首次整理文档链接可能稍慢，你也可以先尝试下载 PDF。</p>}
+        </div>
+      )}
+      <nav className="document-opening-downloads" aria-label="下载已完成的文档">
+        <a className="button" href={exportUrl(jobId, "mono")} download>
+          下载中文版
+        </a>
+        <a className="button" href={exportUrl(jobId, "dual", side)} download>
+          下载双语版
+        </a>
+        <a className="button" href={fileUrl(jobId, "original.pdf")} download>
+          下载原文
+        </a>
+      </nav>
     </main>
   );
 }
