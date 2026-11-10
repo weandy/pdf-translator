@@ -1,6 +1,6 @@
 """与任务共用 SQLite 的匿名计数，调用者负责连接锁和事务。
 
-按北京时间归日。每日汇总和累计访客哈希长期保留；访问事件与每日访客去重明细只保留 7 天。
+按北京时间归日。每日汇总和累计访客哈希长期保留；访问去重明细保留 7 天窗口及一天余量。
 """
 
 import hashlib
@@ -8,7 +8,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta, timezone
 
 from pdftr.domain.job import Job, JobStatus
-from pdftr.domain.stats import StatsCounts, StatsDay, StatsOut
+from pdftr.domain.stats import PUBLIC_STATS_DAYS, StatsCounts, StatsDay, StatsOut, StatsPeriod
 
 STAT_TIMEZONE = timezone(timedelta(hours=8))
 SCHEMA = """
@@ -110,16 +110,16 @@ class SqliteStats:
         self.db.execute("INSERT OR REPLACE INTO analytics_meta (key, value) VALUES ('last_visit_cleanup', ?)", (day,))
 
     def summary(self, days: int, now: datetime) -> StatsOut:
+        if days != PUBLIC_STATS_DAYS:
+            raise ValueError("公开统计仅支持最近 7 天")
         today = now.astimezone(STAT_TIMEZONE).date()
         first = today - timedelta(days=days - 1)
         columns = "page_views, visitors, jobs_submitted, jobs_completed, pages_submitted"
         fields = tuple(StatsCounts.model_fields)
-        totals = self.db.execute(
-            "SELECT COALESCE(SUM(page_views), 0), "
-            "(SELECT COUNT(*) FROM analytics_visitors), "
-            "COALESCE(SUM(jobs_submitted), 0), COALESCE(SUM(jobs_completed), 0), "
-            "COALESCE(SUM(pages_submitted), 0) FROM analytics_daily"
-        ).fetchone()
+        since = datetime.fromisoformat(
+            self.db.execute("SELECT value FROM analytics_meta WHERE key = 'since'").fetchone()[0]
+        )
+        since_day = since.astimezone(STAT_TIMEZONE).date()
         rows = self.db.execute(
             f"SELECT day, {columns} FROM analytics_daily WHERE day >= ? AND day <= ? ORDER BY day",
             (first.isoformat(), today.isoformat()),
@@ -128,14 +128,21 @@ class SqliteStats:
         daily = [
             StatsDay(
                 date=(first + timedelta(days=offset)).isoformat(),
+                available=first + timedelta(days=offset) >= since_day,
                 **by_day.get((first + timedelta(days=offset)).isoformat(), {}),
             )
             for offset in range(days)
         ]
-        since = self.db.execute("SELECT value FROM analytics_meta WHERE key = 'since'").fetchone()[0]
+        counts = {field: sum(getattr(row, field) for row in daily) for field in fields}
+        # 同一个浏览器跨日访问仍只算一次，不能把每日独立浏览器数相加。
+        counts["visitors"] = self.db.execute(
+            "SELECT COUNT(DISTINCT visitor_hash) FROM analytics_visit_days WHERE day >= ? AND day <= ?",
+            (first.isoformat(), today.isoformat()),
+        ).fetchone()[0]
         return StatsOut(
-            since=datetime.fromisoformat(since),
-            total=StatsCounts(**dict(zip(fields, totals, strict=True))),
+            since=since,
+            generated_at=now,
+            period=StatsPeriod(start_date=first.isoformat(), end_date=today.isoformat(), counts=StatsCounts(**counts)),
             today=StatsCounts(**by_day.get(today.isoformat(), {})),
             daily=daily,
         )

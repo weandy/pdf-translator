@@ -938,6 +938,8 @@ export interface components {
             pages_submitted: number;
             /** Date */
             date: string;
+            /** Available */
+            available: boolean;
         };
         /** StatsOut */
         StatsOut: {
@@ -947,15 +949,28 @@ export interface components {
              */
             since: string;
             /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /**
              * Timezone
              * @default Asia/Shanghai
              * @constant
              */
             timezone: "Asia/Shanghai";
-            total: components["schemas"]["StatsCounts"];
+            period: components["schemas"]["StatsPeriod"];
             today: components["schemas"]["StatsCounts"];
             /** Daily */
             daily: components["schemas"]["StatsDay"][];
+        };
+        /** StatsPeriod */
+        StatsPeriod: {
+            /** Start Date */
+            start_date: string;
+            /** End Date */
+            end_date: string;
+            counts: components["schemas"]["StatsCounts"];
         };
         /** StatsVisitIn */
         StatsVisitIn: {

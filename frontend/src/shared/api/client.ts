@@ -91,9 +91,10 @@ async function documentRequest(id: string, signal?: AbortSignal): Promise<Docume
 
 export const api = {
   // 匿名统计无需模型凭据，避免将个人 Key 附带在统计请求中。
-  stats: (days = 30, signal?: AbortSignal) => request<SiteStats>(`/api/stats?days=${days}`, { signal }, false),
+  stats: (days = 7, signal?: AbortSignal) =>
+    request<SiteStats>(`/api/stats?days=${days}`, { signal, credentials: "omit" }, false),
   recordVisit: (body: components["schemas"]["StatsVisitIn"], signal?: AbortSignal) =>
-    request<void>("/api/stats/visits", { method: "POST", ...json(body), signal }, false),
+    request<void>("/api/stats/visits", { method: "POST", ...json(body), signal, credentials: "omit" }, false),
   health: () => request<Health>("/api/health"),
   config: () => request<ServerConfig>("/api/config"),
   estimate: (pages: number, quality: Quality, model?: string) =>

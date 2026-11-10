@@ -15,9 +15,10 @@ describe("最近七天统计页面", () => {
   const empty: SiteStats = {
     since: "2026-10-01T00:00:00Z",
     timezone: "Asia/Shanghai",
-    total: { ...zero, page_views: 987654 },
+    generated_at: "2026-11-07T06:32:10Z",
+    period: { start_date: "2026-11-01", end_date: "2026-11-07", counts: { ...zero, visitors: 2 } },
     today: zero,
-    daily: Array.from({ length: 7 }, (_, index) => ({ ...zero, date: `2026-11-0${index + 1}` })),
+    daily: Array.from({ length: 7 }, (_, index) => ({ ...zero, date: `2026-11-0${index + 1}`, available: true })),
   };
 
   beforeAll(() => Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }));
@@ -56,10 +57,41 @@ describe("最近七天统计页面", () => {
     expect(host.querySelectorAll("svg rect")).toHaveLength(7);
     expect(host.textContent).toContain("最近 7 天");
     expect(host.textContent).toContain("历史汇总数据长期保留");
-    expect(host.textContent).not.toContain("累计");
     expect(host.textContent).not.toContain("987,654");
     expect(host.textContent).not.toContain("30 天");
     expect(host.textContent).toContain("0次");
+    expect(host.textContent).toContain("访问浏览器");
+    expect(host.textContent).toContain("数据更新于 14:32:10");
+    expect(host.querySelectorAll("dd")).toHaveLength(10);
+  });
+
+  it("图表每天直接显示日期数值，点按与方向键可定位完整数据", async () => {
+    vi.spyOn(api, "stats").mockResolvedValue({
+      ...empty,
+      daily: empty.daily.map((day, index) => ({ ...day, page_views: index + 1 })),
+    });
+    await render();
+    expect(host.querySelectorAll("svg text")).toHaveLength(14);
+    const buttons = host.querySelectorAll<HTMLButtonElement>(".stats-day-buttons button");
+    expect(buttons).toHaveLength(7);
+    expect(buttons[6]?.getAttribute("aria-pressed")).toBe("true");
+    await act(async () => buttons[0]?.click());
+    expect(host.querySelector(".stats-selection")?.textContent).toContain("2026-11-01 · 访问次数：1");
+    await act(async () =>
+      buttons[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })),
+    );
+    expect(buttons[1]?.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("启用前的日期显示尚未启用，不伪装成观测到的零", async () => {
+    vi.spyOn(api, "stats").mockResolvedValue({
+      ...empty,
+      daily: empty.daily.map((day, index) => ({ ...day, available: index > 0 })),
+    });
+    await render();
+    const first = host.querySelector<HTMLButtonElement>(".stats-day-buttons button")!;
+    await act(async () => first.click());
+    expect(host.querySelector(".stats-selection")?.textContent).toContain("尚未启用");
   });
 
   it("请求尚未完成时展示加载，不以零代替未知数据", async () => {

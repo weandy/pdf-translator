@@ -1748,9 +1748,9 @@
       "required": false,
       "schema": {
        "type": "integer",
-       "maximum": 90,
-       "minimum": 1,
-       "default": 30,
+       "maximum": 7,
+       "minimum": 7,
+       "default": 7,
        "title": "Days"
       }
      }
@@ -2899,26 +2899,31 @@
     "properties": {
      "page_views": {
       "type": "integer",
+      "minimum": 0.0,
       "title": "Page Views",
       "default": 0
      },
      "visitors": {
       "type": "integer",
+      "minimum": 0.0,
       "title": "Visitors",
       "default": 0
      },
      "jobs_submitted": {
       "type": "integer",
+      "minimum": 0.0,
       "title": "Jobs Submitted",
       "default": 0
      },
      "jobs_completed": {
       "type": "integer",
+      "minimum": 0.0,
       "title": "Jobs Completed",
       "default": 0
      },
      "pages_submitted": {
       "type": "integer",
+      "minimum": 0.0,
       "title": "Pages Submitted",
       "default": 0
      }
@@ -2930,37 +2935,47 @@
     "properties": {
      "page_views": {
       "type": "integer",
+      "minimum": 0.0,
       "title": "Page Views",
       "default": 0
      },
      "visitors": {
       "type": "integer",
+      "minimum": 0.0,
       "title": "Visitors",
       "default": 0
      },
      "jobs_submitted": {
       "type": "integer",
+      "minimum": 0.0,
       "title": "Jobs Submitted",
       "default": 0
      },
      "jobs_completed": {
       "type": "integer",
+      "minimum": 0.0,
       "title": "Jobs Completed",
       "default": 0
      },
      "pages_submitted": {
       "type": "integer",
+      "minimum": 0.0,
       "title": "Pages Submitted",
       "default": 0
      },
      "date": {
       "type": "string",
       "title": "Date"
+     },
+     "available": {
+      "type": "boolean",
+      "title": "Available"
      }
     },
     "type": "object",
     "required": [
-     "date"
+     "date",
+     "available"
     ],
     "title": "StatsDay"
    },
@@ -2971,14 +2986,19 @@
       "format": "date-time",
       "title": "Since"
      },
+     "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Generated At"
+     },
      "timezone": {
       "type": "string",
       "const": "Asia/Shanghai",
       "title": "Timezone",
       "default": "Asia/Shanghai"
      },
-     "total": {
-      "$ref": "#/components/schemas/StatsCounts"
+     "period": {
+      "$ref": "#/components/schemas/StatsPeriod"
      },
      "today": {
       "$ref": "#/components/schemas/StatsCounts"
@@ -2994,11 +3014,34 @@
     "type": "object",
     "required": [
      "since",
-     "total",
+     "generated_at",
+     "period",
      "today",
      "daily"
     ],
     "title": "StatsOut"
+   },
+   "StatsPeriod": {
+    "properties": {
+     "start_date": {
+      "type": "string",
+      "title": "Start Date"
+     },
+     "end_date": {
+      "type": "string",
+      "title": "End Date"
+     },
+     "counts": {
+      "$ref": "#/components/schemas/StatsCounts"
+     }
+    },
+    "type": "object",
+    "required": [
+     "start_date",
+     "end_date",
+     "counts"
+    ],
+    "title": "StatsPeriod"
    },
    "StatsVisitIn": {
     "properties": {

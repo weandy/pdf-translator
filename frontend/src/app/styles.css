@@ -2640,7 +2640,9 @@ input[type="radio"] {
   min-height: 34px;
 }
 .stats-trend {
-  margin: 20px 0 0;
+  position: relative;
+  max-width: 800px;
+  margin: 20px auto 0;
 }
 .stats-trend svg {
   display: block;
@@ -2650,6 +2652,38 @@ input[type="radio"] {
 }
 .stats-trend rect {
   fill: var(--pen);
+  opacity: 0.55;
+}
+.stats-day-selected rect {
+  opacity: 1;
+}
+.stats-day-buttons {
+  position: absolute;
+  inset: 0 0 auto;
+  aspect-ratio: 600 / 180;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+.stats-day-buttons button {
+  min-width: 0;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
+}
+.stats-day-buttons button:hover {
+  background: color-mix(in srgb, var(--pen) 8%, transparent);
+}
+.stats-day-buttons button:focus-visible {
+  outline: 2px solid var(--pen);
+  outline-offset: -2px;
+}
+.stats-selection {
+  min-height: 24px;
+  color: var(--ink-soft);
+  font-size: 13px;
 }
 .stats-trend text {
   fill: var(--ink-soft);

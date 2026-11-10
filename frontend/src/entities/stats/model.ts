@@ -28,11 +28,12 @@ function visitorId(): string {
 }
 
 /** 只发送匿名标识，不发送路径、任务 ID 或任何用户设置；失败不影响主流程。 */
-export function usePageVisit(navigationKey: string): void {
+export function usePageVisit(navigationKey: string, enabled = true): void {
   const queryClient = useQueryClient();
   const last = useRef<{ key: string; eventId: string } | null>(null);
 
   useEffect(() => {
+    if (!enabled) return;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
     try {
@@ -55,7 +56,7 @@ export function usePageVisit(navigationKey: string): void {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [navigationKey, queryClient]);
+  }, [navigationKey, queryClient, enabled]);
 }
 
 export function useSiteStats() {
@@ -63,6 +64,9 @@ export function useSiteStats() {
     queryKey: STATS_QUERY,
     queryFn: ({ signal }) => api.stats(STATS_DAYS, signal),
     staleTime: 30000,
+    refetchInterval: 60000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
     retry: 1,
   });
 }

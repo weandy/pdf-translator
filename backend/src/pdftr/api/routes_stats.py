@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel
 
 from pdftr.api.deps import pipeline
-from pdftr.domain.stats import StatsOut
+from pdftr.domain.stats import PUBLIC_STATS_DAYS, StatsOut
 from pdftr.pipeline.runner import Pipeline
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
@@ -20,7 +20,11 @@ class StatsVisitIn(BaseModel):
 
 
 @router.get("", response_model=StatsOut)
-def stats(p: PipelineDep, response: Response, days: Annotated[int, Query(ge=1, le=90)] = 30) -> StatsOut:
+def stats(
+    p: PipelineDep,
+    response: Response,
+    days: Annotated[int, Query(ge=PUBLIC_STATS_DAYS, le=PUBLIC_STATS_DAYS)] = PUBLIC_STATS_DAYS,
+) -> StatsOut:
     response.headers["Cache-Control"] = "no-store"
     return p.deps.store.stats(days)
 

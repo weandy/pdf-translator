@@ -66,9 +66,13 @@ class SqliteStore:
         with self._lock, self._db:
             self._stats.visit(event_id, visitor_id, utc_now())
 
-    def stats(self, days: int = 30) -> StatsOut:
+    def stats(self, days: int = 7) -> StatsOut:
         with self._lock:
-            return self._stats.summary(days, utc_now())
+            self._db.execute("BEGIN")
+            try:
+                return self._stats.summary(days, utc_now())
+            finally:
+                self._db.rollback()
 
     def get_job(self, job_id: str) -> Job | None:
         with self._lock:
