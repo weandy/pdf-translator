@@ -21,16 +21,12 @@
   --pencil-strong: rgb(118 190 220 / 0.55);
   --red-pen: #b3261e;
   --done: #2f7a4d;
-  --sheet-shadow:
-    0 1px 2px rgb(30 35 40 / 0.12), 0 8px 24px -12px rgb(30 35 40 / 0.25);
+  --sheet-shadow: 0 1px 2px rgb(30 35 40 / 0.12), 0 8px 24px -12px rgb(30 35 40 / 0.25);
   --topbar-h: 52px;
 
   --sans:
-    system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB",
-    "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
-  --serif:
-    "Source Serif 4", "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC",
-    serif;
+    system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  --serif: "Source Serif 4", "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", serif;
 
   font-family: var(--sans);
   font-size: 15px;
@@ -55,8 +51,7 @@
     --pencil-strong: rgb(118 190 220 / 0.45);
     --red-pen: #ff8a80;
     --done: #6fcf97;
-    --sheet-shadow:
-      0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px -12px rgb(0 0 0 / 0.6);
+    --sheet-shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px -12px rgb(0 0 0 / 0.6);
     color-scheme: dark;
   }
 }
@@ -2644,11 +2639,14 @@ input[type="radio"] {
   max-width: 800px;
   margin: 20px auto 0;
 }
+.stats-chart {
+  position: relative;
+  padding: 22px 0 28px;
+}
 .stats-trend svg {
   display: block;
   width: 100%;
   height: auto;
-  max-height: 240px;
 }
 .stats-trend rect {
   fill: var(--pen);
@@ -2659,12 +2657,12 @@ input[type="radio"] {
 }
 .stats-day-buttons {
   position: absolute;
-  inset: 0 0 auto;
-  aspect-ratio: 600 / 180;
+  inset: 22px 0 28px;
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
 }
 .stats-day-buttons button {
+  position: relative;
   min-width: 0;
   min-height: 44px;
   padding: 0;
@@ -2672,6 +2670,22 @@ input[type="radio"] {
   border-radius: 4px;
   background: transparent;
   box-shadow: none;
+}
+.stats-chart-value,
+.stats-chart-date {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 400;
+  white-space: nowrap;
+  text-align: center;
+  pointer-events: none;
+}
+.stats-chart-date {
+  top: calc(100% + 8px);
 }
 .stats-day-buttons button:hover {
   background: color-mix(in srgb, var(--pen) 8%, transparent);
@@ -2683,10 +2697,6 @@ input[type="radio"] {
 .stats-selection {
   min-height: 24px;
   color: var(--ink-soft);
-  font-size: 13px;
-}
-.stats-trend text {
-  fill: var(--ink-soft);
   font-size: 13px;
 }
 .stats-axis {

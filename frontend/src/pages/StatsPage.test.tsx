@@ -71,7 +71,11 @@ describe("最近七天统计页面", () => {
       daily: empty.daily.map((day, index) => ({ ...day, page_views: index + 1 })),
     });
     await render();
-    expect(host.querySelectorAll("svg text")).toHaveLength(14);
+    // 标签使用独立的 HTML 排版，手机缩小图形时仍保持可读字号。
+    expect(host.querySelectorAll(".stats-chart-date")).toHaveLength(7);
+    expect(host.querySelectorAll(".stats-chart-value")).toHaveLength(7);
+    expect(host.querySelector(".stats-chart-date")?.textContent).toBe("11-01");
+    expect(host.querySelector(".stats-chart-value")?.textContent).toBe("1");
     const buttons = host.querySelectorAll<HTMLButtonElement>(".stats-day-buttons button");
     expect(buttons).toHaveLength(7);
     expect(buttons[6]?.getAttribute("aria-pressed")).toBe("true");

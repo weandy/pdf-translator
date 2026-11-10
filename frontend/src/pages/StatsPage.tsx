@@ -27,52 +27,53 @@ function Trend({ daily, metric }: { daily: SiteStats["daily"]; metric: Metric })
   const selected = daily.find((day) => day.date === selectedDate) ?? daily.at(-1);
   return (
     <div className="stats-trend">
-      <svg viewBox="0 0 600 180" aria-hidden="true" focusable="false">
-        <line x1="0" x2="600" y1={chartHeight} y2={chartHeight} className="stats-axis" />
-        {daily.map((day, i) => (
-          <g key={day.date} className={day.date === selected?.date ? "stats-day-selected" : undefined}>
-            <rect
-              x={i * step + step * 0.18}
-              y={chartHeight - (day[metric] / max) * (chartHeight - 12)}
-              width={step * 0.64}
-              height={(day[metric] / max) * (chartHeight - 12)}
-              rx="2"
-            />
-            <text
-              x={(i + 0.5) * step}
-              y={Math.max(12, chartHeight - (day[metric] / max) * (chartHeight - 12) - 6)}
-              textAnchor="middle"
+      <div className="stats-chart">
+        <svg viewBox="0 0 600 140" aria-hidden="true" focusable="false">
+          <line x1="0" x2="600" y1={chartHeight} y2={chartHeight} className="stats-axis" />
+          {daily.map((day, i) => (
+            <g key={day.date} className={day.date === selected?.date ? "stats-day-selected" : undefined}>
+              <rect
+                x={i * step + step * 0.18}
+                y={chartHeight - (day[metric] / max) * (chartHeight - 12)}
+                width={step * 0.64}
+                height={(day[metric] / max) * (chartHeight - 12)}
+                rx="2"
+              />
+            </g>
+          ))}
+        </svg>
+        <div className="stats-day-buttons" aria-label="选择统计日期">
+          {daily.map((day, index) => (
+            <button
+              key={day.date}
+              type="button"
+              ref={(element) => {
+                buttons.current[index] = element;
+              }}
+              aria-pressed={day.date === selected?.date}
+              aria-label={`${day.date}，${label} ${day.available ? number.format(day[metric]) : "尚未启用"}`}
+              onClick={() => setSelectedDate(day.date)}
+              onKeyDown={(event) => {
+                if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                event.preventDefault();
+                const next = (index + (event.key === "ArrowRight" ? 1 : daily.length - 1)) % daily.length;
+                setSelectedDate(daily[next]!.date);
+                buttons.current[next]?.focus();
+              }}
             >
-              {day.available ? compact.format(day[metric]) : "—"}
-            </text>
-            <text x={(i + 0.5) * step} y="166" textAnchor="middle">
-              {day.date.slice(5)}
-            </text>
-          </g>
-        ))}
-      </svg>
-      <div className="stats-day-buttons" aria-label="选择统计日期">
-        {daily.map((day, index) => (
-          <button
-            key={day.date}
-            type="button"
-            ref={(element) => {
-              buttons.current[index] = element;
-            }}
-            aria-pressed={day.date === selected?.date}
-            aria-label={`${day.date}，${label} ${day.available ? number.format(day[metric]) : "尚未启用"}`}
-            onClick={() => setSelectedDate(day.date)}
-            onKeyDown={(event) => {
-              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-              event.preventDefault();
-              const next = (index + (event.key === "ArrowRight" ? 1 : daily.length - 1)) % daily.length;
-              setSelectedDate(daily[next]!.date);
-              buttons.current[next]?.focus();
-            }}
-          >
-            <span className="visually-hidden">选择 {day.date}</span>
-          </button>
-        ))}
+              <span
+                className="stats-chart-value"
+                aria-hidden="true"
+                style={{ bottom: `calc(${(day[metric] / max) * ((chartHeight - 12) / chartHeight) * 100}% + 6px)` }}
+              >
+                {day.available ? compact.format(day[metric]) : "—"}
+              </span>
+              <span className="stats-chart-date" aria-hidden="true">
+                {day.date.slice(5)}
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
       {selected && (
         <p className="stats-selection" aria-live="polite">
