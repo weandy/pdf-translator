@@ -95,13 +95,10 @@ def create_job(
         raise ServiceBusy("服务器正忙，排队的任务太多，请稍后再试")
     if shutil.disk_usage(limits.data_dir).free < limits.min_free_disk_mb * 1024 * 1024:
         raise ServiceBusy("服务器存储空间不足，请稍后再试")
-    with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp:
-        tmp.write(data)
-        tmp.flush()
-        try:
-            pages = page_count(Path(tmp.name))
-        except ValueError as e:
-            raise UserError(str(e)) from e
+    try:
+        pages = page_count(data)
+    except ValueError as e:
+        raise UserError(str(e)) from e
     if pages > limits.max_pages:
         raise UserError(f"PDF 共 {pages} 页，超过上限 {limits.max_pages} 页")
     if options.pages is not None:  # 只翻部分页（0 起页码）：版面仍解析全文，翻译阶段按页筛选
