@@ -17,6 +17,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from pdftr.domain.document_name import download_filename, paper_title, paper_title_blocks
 from pdftr.domain.ids import new_job_id
 from pdftr.domain.ir import (
     BlockType,
@@ -178,8 +179,8 @@ def export_job(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "
     digest = hashlib.sha256(state.encode()).hexdigest()[:16]
     folder = deps.artifacts.job_dir(job_id) / "exports"
     out = folder / f"{mode}-{side}-{digest}.pdf"
+    doc = load_document(deps, job_id)
     if not out.exists():
-        doc = load_document(deps, job_id)
         data = export_pdf(deps.artifacts.path(job_id, "original.pdf"), deps.artifacts.path(job_id, "background.pdf"),
                           doc, segments, mode, deps.font_dir, side,
                           _raw_links(pipeline, job_id, doc, segments))  # fmt: skip
@@ -190,8 +191,8 @@ def export_job(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "
         tmp = out.with_suffix(".part")
         tmp.write_bytes(data)
         tmp.replace(out)
-    suffix = "译文" if mode == "mono" else "双语对照"
-    return f"{Path(job.filename).stem}-{suffix}.pdf", out
+    title = paper_title(doc.pages, fallback=doc.meta.title)
+    return download_filename(title, job.filename, bilingual=mode == "dual"), out
 
 
 def cancel_job(pipeline: Pipeline, job_id: str) -> Job:
@@ -237,11 +238,17 @@ def build_outline(pdf: Path, doc: Document, segments: list[Segment]) -> list[Out
     """目录以原文为准：优先用 PDF 书签；没有书签时用识别出的标题，按编号（“3.1” → 二级）定层级。
     每项尽量配上对应标题段落的译文。"""
     first = {s.block_ids[0]: s for s in segments}
+    paper_blocks = {b.id for b in paper_title_blocks(doc.pages)}
     heads = []
     for block in doc.blocks():
         seg = first.get(block.id)
         text = " ".join(s.text for s in block.spans if s.kind == "text").strip()
-        if block.type is BlockType.TITLE and text and _norm(text) != _norm(doc.meta.title):
+        if (
+            block.type is BlockType.TITLE
+            and block.id not in paper_blocks
+            and text
+            and _norm(text) != _norm(doc.meta.title)
+        ):
             heads.append((block, seg, text))
 
     def translated(seg: Segment | None) -> str:

@@ -165,7 +165,7 @@ def test_full_flow(client: TestClient):
     mono = client.get(f"/api/jobs/{job['id']}/export", params={"mode": "mono"})
     assert (
         mono.status_code == 200
-        and "filename*=UTF-8''paper-%E8%AF%91%E6%96%87.pdf" in mono.headers["content-disposition"]
+        and "filename*=UTF-8''A_Synthetic_Title_%E8%AF%91%E6%96%87.pdf" in mono.headers["content-disposition"]
     )
     with pymupdf.open(stream=mono.content, filetype="pdf") as pdf:
         text = "".join(str(p.get_text()) for p in pdf)

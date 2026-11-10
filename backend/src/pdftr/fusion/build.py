@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from pdftr.domain.chars import Char, CharPage
+from pdftr.domain.document_name import paper_title
 from pdftr.domain.geometry import Rect
 from pdftr.domain.ids import block_id
 from pdftr.domain.ir import (
@@ -278,7 +279,7 @@ def _plain(block: Block) -> str:
 
 def _meta(pages: list[Page], parser: str, used_cloud: bool) -> DocMeta:
     blocks = [b for p in pages for b in p.blocks]
-    title = next((_plain(b) for b in blocks if b.type is BlockType.TITLE and _plain(b)), "")
+    title = paper_title(pages)
     abstract = ""
     for i, b in enumerate(blocks):
         if b.type is BlockType.TITLE and _plain(b).strip().lower().rstrip(":") == "abstract":
