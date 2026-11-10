@@ -360,7 +360,15 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
             : missingKey
               ? "翻译服务的 API Key"
               : `${service} Token`}
-          ，两者都可以免费申请。
+          。
+          {missingToken
+            ? "MinerU Token 在 MinerU API 管理中申请。"
+            : settings.parserKey
+              ? "版面解析将使用你自己的 MinerU Token。"
+              : config?.server_has_parser_token
+                ? "本站已提供 MinerU 版面解析。"
+                : null}
+          {missingKey && "翻译费用由你选择的服务商收取。"}
           <button type="button" className="link" onClick={onNeedSettings}>
             打开设置
           </button>

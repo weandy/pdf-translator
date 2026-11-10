@@ -192,7 +192,7 @@ cd "$INSTALL_DIR"
 if [[ ! -f .env ]]; then
   cp .env.example .env
   chmod 600 .env 2>/dev/null || true
-  log "已创建 .env，请在网页设置中填写翻译服务和 MinerU Token"
+  log "已创建 .env；若配置了共享 MinerU Token，用户在网页只需填写翻译服务 API Key"
 else
   log "保留现有 .env 配置"
 fi
@@ -235,7 +235,7 @@ configure_env_interactive() {
   elif [[ -n "$proxy_input" ]]; then
     set_env_value "PDFTR_MINERU_PROXY" "$proxy_input"
   fi
-  printf 'MinerU 代理只影响版面解析上传、轮询和结果下载；用户的翻译 Key 和 MinerU Token 仍在网页设置中填写。\n\n'
+  printf 'MinerU 代理只影响版面解析上传、轮询和结果下载；翻译 Key 在网页设置中填写，MinerU Token 可由部署者配置共享默认值，也可由用户自行填写覆盖。\n\n'
 }
 
 sync_env_overrides() {
@@ -309,4 +309,4 @@ printf '公网访问请让宿主机反向代理转发到 127.0.0.1:%s\n' "$PORT"
 printf '安装目录：%s\n' "$INSTALL_DIR"
 printf '查看状态：cd %q && docker compose -f deploy/docker-compose.yml ps\n' "$INSTALL_DIR"
 printf '查看日志：cd %q && docker compose -f deploy/docker-compose.yml logs -f app\n' "$INSTALL_DIR"
-printf '\n首次使用请在网页右上角“设置”中填写翻译服务 API Key 和 MinerU Token。\n'
+printf '\n首次使用请在网页右上角“设置”中填写翻译服务 API Key；若服务器未配置共享 MinerU Token，再填写个人 Token。\n'

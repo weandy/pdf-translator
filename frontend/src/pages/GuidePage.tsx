@@ -39,7 +39,10 @@ export function GuidePage() {
 
         <section id="start">
           <h2>开始前</h2>
-          <p>打开右上角“设置”，填好两项即可开始。Key 只保存在浏览器里，翻译时随请求转发给服务商。</p>
+          <p>
+            打开右上角“设置”，填写翻译服务 API Key 即可开始。若本站没有提供版面解析额度，再填写自己的 MinerU Token。Key
+            只保存在浏览器里，翻译时随请求转发给服务商。
+          </p>
           <ol>
             <li>
               <strong>翻译服务 API Key</strong>：默认使用 DeepSeek，也支持 OpenAI 兼容接口和 Anthropic。可在{" "}
@@ -49,11 +52,12 @@ export function GuidePage() {
               创建。
             </li>
             <li>
-              <strong>MinerU Token</strong>：负责识别正文、公式和图表版面，在{" "}
+              <strong>MinerU Token（可选）</strong>：负责识别正文、公式和图表版面。本站已配置共享 Token
+              时可以留空；填写自己的 Token 会优先使用它，在{" "}
               <a href="https://mineru.net/apiManage" target="_blank" rel="noreferrer">
                 mineru.net
               </a>{" "}
-              免费申请。
+              创建。Token 是 MinerU 解析服务凭据，不等同于翻译服务 API Key。
             </li>
           </ol>
         </section>
@@ -62,18 +66,24 @@ export function GuidePage() {
           <h2>上传与翻译</h2>
           <ul>
             <li>首页可以选择或拖入 PDF，一次最多上传 10 篇；扫描版也支持。</li>
-            <li>只选一篇时可填写页码范围，例如 <code>1-10, 15</code>。</li>
+            <li>
+              只选一篇时可填写页码范围，例如 <code>1-10, 15</code>。
+            </li>
             <li>开始前会显示费用和用时预估，首次上传需要确认文件会发送到 MinerU 云端。</li>
             <li>多篇任务会组成一个批次，解析并行、翻译排队；首页“我的批次”显示每篇状态。</li>
             <li>任务可以取消。失败或取消后点“重试/重新开始”，会从中断阶段继续，已完成内容不重复计费。</li>
-            <li>未成功的段落会自动单独重试，每段最多尝试 10 次；补救阶段最多 2 分钟，先达到次数或时限就停止并提示原因。</li>
+            <li>
+              未成功的段落会自动单独重试，每段最多尝试 10 次；补救阶段最多 2 分钟，先达到次数或时限就停止并提示原因。
+            </li>
           </ul>
         </section>
 
         <section id="read">
           <h2>阅读</h2>
           <ul>
-            <li><strong>对照</strong>同时显示原文和译文；也可切换为只看译文或原文，手机默认只看译文。</li>
+            <li>
+              <strong>对照</strong>同时显示原文和译文；也可切换为只看译文或原文，手机默认只看译文。
+            </li>
             <li>使用缩放、页码和目录跳转；重新打开任务会回到上次阅读位置。</li>
             <li>点击“搜索”可以搜索原文和译文，结果会定位到段落；页面文字可以选择、复制。</li>
             <li>引用、图表编号和网址链接可以直接点击；鼠标移到译文段落时，原文对应位置会高亮。</li>
@@ -84,12 +94,21 @@ export function GuidePage() {
           <h2>修改译文</h2>
           <ul>
             <li>点击译文段落，或用 Tab 选中后按回车，打开编辑面板。</li>
-            <li>原文只读，译文可直接修改；公式占位符如 <code>&lt;m1/&gt;</code> 必须各保留一次，面板会实时检查。</li>
+            <li>
+              原文只读，译文可直接修改；公式占位符如 <code>&lt;m1/&gt;</code> 必须各保留一次，面板会实时检查。
+            </li>
             <li>可以复制原文或译文，也可以“重翻”或“精修”；所有修改都记录在“修改记录”里，可逐步撤回。</li>
-            <li>修改记录会突出新增内容、划掉删除内容；默认显示变化附近文字，展开可看完整前后对比，点击页码可定位原段落。</li>
+            <li>
+              修改记录会突出新增内容、划掉删除内容；默认显示变化附近文字，展开可看完整前后对比，点击页码可定位原段落。
+            </li>
             <li>点击顶部“未完成翻译 · 点击定位”，会定位并高亮问题段落；在编辑面板用“上一处/下一处”逐段检查。</li>
             <li>手动重翻也会自动重试，每次操作最多等待 45 秒；未成功时会显示原因，已有的可用译文继续保留。</li>
-            <li><span className="swatch untranslated" aria-hidden="true" />灰色虚线表示尚无可用译文，<span className="swatch overflow" aria-hidden="true" />黄色点线表示译文过长。</li>
+            <li>
+              <span className="swatch untranslated" aria-hidden="true" />
+              灰色虚线表示尚无可用译文，
+              <span className="swatch overflow" aria-hidden="true" />
+              黄色点线表示译文过长。
+            </li>
           </ul>
         </section>
 

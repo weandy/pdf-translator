@@ -41,6 +41,30 @@ export function SettingsPanel({ onClose }: Props) {
   // 用面板里还没保存的值请求；没填 Key 且用的是本站默认服务时，后端用本站的共享 Key
   const headers = () => authHeaders({ ...form, protocol });
   const canAsk = Boolean(form.llmKey || (config?.server_has_llm_key && !form.baseUrl && !form.protocol));
+  const set = <K extends keyof Settings>(key: K, value: Settings[K]) => setForm((f) => ({ ...f, [key]: value }));
+  const sharedParser = Boolean(config?.server_has_parser_token);
+  const parserFields = (
+    <>
+      <label className="field">
+        <span>MinerU Token（版面解析{sharedParser ? "，可选" : "，必填"}）</span>
+        <input
+          type="password"
+          autoComplete="off"
+          value={form.parserKey}
+          onChange={(e) => set("parserKey", e.target.value.trim())}
+          placeholder={sharedParser ? "留空使用本站的版面解析服务" : "在 mineru.net 申请 API Token"}
+        />
+      </label>
+      <p className="hint">
+        在{" "}
+        <a href="https://mineru.net/apiManage" target="_blank" rel="noreferrer">
+          MinerU API 管理
+        </a>{" "}
+        申请解析 API Token，额度与有效期以你的账号为准。
+        {sharedParser && "填写后优先使用你的 Token，清空并保存即可恢复本站额度。"}
+      </p>
+    </>
+  );
 
   const loadModels = async (next?: Settings) => {
     const f = next ?? form;
@@ -71,7 +95,6 @@ export function SettingsPanel({ onClose }: Props) {
     }
   };
 
-  const set = <K extends keyof Settings>(key: K, value: Settings[K]) => setForm((f) => ({ ...f, [key]: value }));
   const submit = (e: SubmitEvent<HTMLFormElement>) => {
     e.preventDefault();
     saveSettings(form);
@@ -94,10 +117,13 @@ export function SettingsPanel({ onClose }: Props) {
             关闭
           </button>
         </div>
-        <p className="hint">Key 只保存在这个浏览器里，翻译时随请求交给本站转发给服务商，本站不保存。</p>
+        <p className="hint">
+          你填写的 Key 只保存在这个浏览器里，使用时随请求交给本站转发给服务商，本站不持久保存。
+          {sharedParser && "本站提供的解析凭据由服务器管理，不会下发到浏览器。"}
+        </p>
 
         <section>
-          <h3>开始使用只需两步</h3>
+          <h3>{sharedParser ? "填写翻译 API Key 即可开始" : "配置翻译与版面解析"}</h3>
           <div className="step">
             <span className="step-no" aria-hidden="true">
               1
@@ -195,32 +221,26 @@ export function SettingsPanel({ onClose }: Props) {
               </details>
             </div>
           </div>
-          <div className="step">
-            <span className="step-no" aria-hidden="true">
-              2
-            </span>
+          {sharedParser ? (
             <div className="step-body">
-              <label className="field">
-                <span>MinerU Token（版面解析）</span>
-                <input
-                  type="password"
-                  autoComplete="off"
-                  value={form.parserKey}
-                  onChange={(e) => set("parserKey", e.target.value.trim())}
-                  placeholder={
-                    config?.server_has_parser_token ? "留空则使用本站提供的 Token" : "在 mineru.net 免费申请"
-                  }
-                />
-              </label>
-              <p className="hint">
-                在{" "}
-                <a href="https://mineru.net/apiManage" target="_blank" rel="noreferrer">
-                  mineru.net
-                </a>{" "}
-                免费申请，每天 1000 页优先额度。
+              <p className="hint" role="status">
+                {form.parserKey
+                  ? "当前选择：使用你自己的 MinerU Token。"
+                  : "本站已提供 MinerU 版面解析，无需再填写 Token。"}
               </p>
+              <details className="more">
+                <summary>使用自己的 MinerU Token（可选）</summary>
+                {parserFields}
+              </details>
             </div>
-          </div>
+          ) : (
+            <div className="step">
+              <span className="step-no" aria-hidden="true">
+                2
+              </span>
+              <div className="step-body">{parserFields}</div>
+            </div>
+          )}
         </section>
 
         <details className="group">

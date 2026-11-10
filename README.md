@@ -24,7 +24,7 @@ PDFTR_PORT=18765 \
 bash <(curl -fsSL https://raw.githubusercontent.com/weandy/pdf-translator/main/deploy/install.sh)
 ```
 
-首次安装时脚本只交互式询问 GitHub 下载加速和可选的 MinerU 网络代理。MinerU 代理地址直接回车表示保持当前值，输入 `direct` 表示直连；代理为空时不会经过代理。翻译服务地址、模型、LLM Key、MinerU Token 等继续由用户在网页设置中保存。已有安装默认保留原配置，可设置 `PDFTR_CONFIGURE_ENV=yes` 再次修改 MinerU 代理。
+首次安装时脚本只交互式询问 GitHub 下载加速和可选的 MinerU 网络代理。MinerU 代理地址直接回车表示保持当前值，输入 `direct` 表示直连；代理为空时不会经过代理。部署者可以在服务器 `.env` 配置共享的 MinerU Token，配置后普通用户只需在网页填写翻译服务 API Key；用户也可以在网页设置中填写自己的 MinerU Token，个人 Token 会优先使用。已有安装默认保留原配置，可设置 `PDFTR_CONFIGURE_ENV=yes` 再次修改 MinerU 代理。
 
 如果没有 Docker，脚本会先询问是否在 Debian/Ubuntu 系统上运行 Docker 官方安装脚本；不支持的发行版会提示手动安装。脚本不会修改系统防火墙。首次启动后，在网页右上角“设置”中仍可以为当前浏览器填写个人 API Key。脚本源码见 [deploy/install.sh](deploy/install.sh)。
 
@@ -171,14 +171,28 @@ PDFTR_MAX_PAGES=200
 PDFTR_RETENTION_HOURS=24
 ```
 
-用户自己的翻译 Key、模型和 MinerU Token 可以在网页“设置”中保存；`.env` 中的同名配置只作为部署者共享的默认值。
+用户自己的翻译 Key、模型和 MinerU Token 可以在网页“设置”中保存；`.env` 中的同名配置只作为部署者共享的默认值。部署者配置 `PDFTR_MINERU_API_TOKEN` 后，普通用户只需提供一个翻译服务 API Key；留空个人 MinerU Token 会使用站点默认值，填写后则覆盖站点默认值。
 
 然后在网页右上角“设置”中填写：
 
 - 翻译服务 API Key、接口地址和模型名
-- MinerU Token
+- MinerU Token（仅当站点未提供共享 Token，或需要使用个人额度时）
 
 也可以在 `.env` 中配置部署者共享的 Key。共享 Key 会由服务器承担调用费用，应配合访问认证和使用限额。
+
+### 让用户只填写一个 API Key
+
+在 [MinerU API 管理](https://mineru.net/apiManage/token) 创建解析 API Token，将它填入服务器 `.env` 的 `PDFTR_MINERU_API_TOKEN`，然后重新创建 `app` 容器使配置生效：
+
+```bash
+docker compose --env-file .env -f deploy/docker-compose.yml up -d app
+```
+
+请先等待进行中的任务结束。共享 Token 只存服务器，网页只获知解析服务是否已配置。用户在网页留空 MinerU Token 时使用共享值；填写个人 Token 时优先使用个人值，清空并保存即可恢复站点默认。用户填写的个人凭据仍按浏览器设置保存。
+
+MinerU 只负责版面解析，翻译服务 API Key 的用量和计费独立。按 [官方 API 文档](https://mineru.net/apiManage/docs)，每个账号每天享有 1000 页最高优先级解析额度，超出部分优先级降低；另有任务数量限制。官网 API 管理页当前说明解析 Token 有效期 90 天，到期需创建新 Token 并更新服务器配置。网页登录 Cookie/JWT 不能代替此配置。
+
+当前未集成剩余额度显示：已实测官网账号页面使用的 `GET /api/v4/extract/status` 可以用解析 API Token 鉴权，返回 `daily.used`、`daily.left`、`daily.allow_file_num` 和 `daily.used_file_num`，无需保存官网登录 Cookie。其中页数剩余表示优先解析额度，不是翻译余额。公开解析 API 文档未列出此查询接口的稳定合同，后续若接入显示，应兼容查询失败或字段变化，并避免据此拦截上传。
 
 ### 公网部署建议
 
