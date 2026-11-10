@@ -350,13 +350,6 @@ export function SettingsPanel({ onClose }: Props) {
           </label>
         </details>
 
-        {config && (
-          <details className="group">
-            <summary>使用的开源组件</summary>
-            <p className="hint">{config.attributions.join("；")}</p>
-          </details>
-        )}
-
         <div className="dialog-actions">
           <button
             type="button"
