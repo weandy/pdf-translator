@@ -456,6 +456,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/submissions/client": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Current Client
+         * @description 仅管理员核验本次连接的可信地址，不记录额外访问或提交。
+         */
+        get: operations["current_client_api_admin_submissions_client_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/submissions/search": {
         parameters: {
             query?: never;
@@ -1045,6 +1065,19 @@ export interface components {
              * Format: uuid
              */
             visitor_id: string;
+        };
+        /** SubmissionContext */
+        SubmissionContext: {
+            /** Submitter Ip */
+            submitter_ip?: string | null;
+            /**
+             * Ip Source
+             * @default unknown
+             * @enum {string}
+             */
+            ip_source: "trusted_proxy" | "direct" | "unknown";
+            /** Notice Version */
+            notice_version?: string | null;
         };
         /** SubmissionPage */
         SubmissionPage: {
@@ -2069,6 +2102,26 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    current_client_api_admin_submissions_client_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubmissionContext"];
+                };
             };
         };
     };

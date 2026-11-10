@@ -1885,6 +1885,28 @@
     }
    }
   },
+  "/api/admin/submissions/client": {
+   "get": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Current Client",
+    "description": "仅管理员核验本次连接的可信地址，不记录额外访问或提交。",
+    "operationId": "current_client_api_admin_submissions_client_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SubmissionContext"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/admin/submissions/search": {
    "post": {
     "tags": [
@@ -3228,6 +3250,45 @@
      "visitor_id"
     ],
     "title": "StatsVisitIn"
+   },
+   "SubmissionContext": {
+    "properties": {
+     "submitter_ip": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Submitter Ip"
+     },
+     "ip_source": {
+      "type": "string",
+      "enum": [
+       "trusted_proxy",
+       "direct",
+       "unknown"
+      ],
+      "title": "Ip Source",
+      "default": "unknown"
+     },
+     "notice_version": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 100
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Notice Version"
+     }
+    },
+    "type": "object",
+    "title": "SubmissionContext"
    },
    "SubmissionPage": {
     "properties": {

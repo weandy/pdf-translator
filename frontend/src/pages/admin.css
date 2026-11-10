@@ -1,0 +1,234 @@
+.admin-page {
+  width: min(1180px, calc(100% - 48px));
+  margin: 40px auto 80px;
+}
+
+.admin-page [hidden] {
+  display: none !important;
+}
+.admin-page button {
+  min-height: 44px;
+}
+.admin-page-head,
+.admin-results-head,
+.admin-pagination,
+.admin-password-field,
+.admin-shortcuts,
+.admin-filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.admin-page-head {
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.admin-page h1 {
+  margin: 0 0 10px;
+  font-family: var(--serif);
+}
+.admin-page-head > button {
+  flex-shrink: 0;
+}
+.admin-results-head {
+  justify-content: space-between;
+  margin-top: 24px;
+}
+.admin-login {
+  max-width: 480px;
+  padding: 28px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+}
+.admin-login h1 {
+  margin-top: 24px;
+}
+.admin-login form > button {
+  margin-top: 20px;
+}
+.admin-password-field {
+  margin-top: 8px;
+}
+.admin-password-field > button {
+  flex-shrink: 0;
+}
+.admin-filters {
+  padding: 20px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  border-radius: 8px;
+}
+.admin-filters fieldset {
+  display: grid;
+  grid-template-columns: 1.5fr 1.5fr 1fr 1fr;
+  gap: 16px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  min-width: 0;
+}
+.admin-filters label,
+.admin-pagination label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.admin-filters input {
+  min-width: 0;
+  min-height: 44px;
+}
+.admin-filter-actions {
+  grid-column: 1 / -1;
+}
+.admin-shortcuts {
+  flex-wrap: wrap;
+  padding-top: 16px;
+  margin-top: 16px;
+  border-top: 1px solid var(--rule);
+}
+.admin-error,
+.admin-field-error {
+  color: var(--red-pen);
+}
+.admin-field-error {
+  font-size: 13px;
+}
+.admin-notice {
+  padding: 12px 16px;
+  border: 1px solid var(--red-pen);
+  border-radius: 6px;
+  margin: 16px 0;
+}
+.admin-table-head,
+.admin-record {
+  display: grid;
+  grid-template-columns: 1.1fr 2fr 1.5fr 0.5fr 1.2fr;
+  gap: 20px;
+}
+.admin-table-head {
+  padding: 12px 20px;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+.admin-records {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.admin-record {
+  padding: 20px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  margin-bottom: 12px;
+  border-radius: 8px;
+}
+.admin-record > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.admin-record small {
+  display: block;
+  color: var(--ink-soft);
+  font-size: 12px;
+  margin-top: 8px;
+}
+.admin-record time {
+  font-variant-numeric: tabular-nums;
+}
+.admin-record details summary {
+  cursor: pointer;
+}
+.admin-record-title p {
+  margin-bottom: 0;
+}
+.admin-title-preview {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+.admin-record-title .hint {
+  display: block;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.admin-ip {
+  display: block;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  margin-bottom: 8px;
+}
+.admin-cell-label {
+  display: none;
+}
+.admin-copy-message {
+  display: block;
+  font-size: 12px;
+  margin-top: 4px;
+  color: var(--ink-soft);
+}
+.admin-empty {
+  padding: 32px 20px;
+  border: 1px dashed var(--rule);
+  text-align: center;
+}
+.admin-pagination {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  margin-top: 24px;
+}
+.admin-pagination label {
+  flex-direction: row;
+  align-items: center;
+}
+.admin-pagination select {
+  width: auto;
+  min-height: 44px;
+}
+
+@media (max-width: 760px) {
+  .admin-page {
+    width: calc(100% - 32px);
+    margin-top: 24px;
+  }
+  .admin-page-head {
+    gap: 12px;
+  }
+  .admin-page-head h1 {
+    font-size: 26px;
+  }
+  .admin-filters fieldset {
+    grid-template-columns: 1fr;
+  }
+  .admin-filters {
+    padding: 16px;
+  }
+  .admin-table-head {
+    display: none;
+  }
+  .admin-record {
+    grid-template-columns: 1fr;
+    gap: 16px;
+    padding: 16px;
+  }
+  .admin-cell-label {
+    display: block;
+    color: var(--ink-soft);
+    font-size: 12px;
+    margin-bottom: 4px;
+  }
+  .admin-pagination {
+    justify-content: flex-start;
+    gap: 12px;
+  }
+  .admin-pagination > span {
+    flex-basis: 100%;
+  }
+  .admin-login {
+    padding: 24px;
+  }
+}

@@ -1,5 +1,9 @@
 {
 	admin off
+	servers {
+		trusted_proxies static {$PDFTR_WEB_TRUSTED_PROXIES:127.0.0.1/32}
+		trusted_proxies_strict
+	}
 }
 
 # 监听地址与后端地址可用环境变量覆盖（主机网络模式见 deploy/docker-compose.hostnet.yml）
@@ -24,6 +28,9 @@
 	}
 
 	# 前端不加载任何第三方资源；KaTeX 需要内联样式，pdf.js 需要 blob worker
+	@admin_pages path /admin /admin/*
+	header @admin_pages Cache-Control "no-store"
+
 	header {
 		Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 		X-Content-Type-Options nosniff

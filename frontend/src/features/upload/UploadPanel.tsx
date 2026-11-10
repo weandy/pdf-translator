@@ -382,6 +382,12 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
           `原文与译文在服务器上只保留 ${config.retention_hours} 小时，之后自动删除，请及时下载。`}
         版面解析在高峰时可能要排队 10 分钟以上。
       </p>
+      {config?.submission_audit_enabled && (
+        <p className="notice" role="note">
+          本站长期保存论文标题、提交时间、提交 IP、页数及任务状态，仅供管理员查看；公开统计只展示聚合数量。
+          正文和文件按上述保留期清理，正在运行的任务可能延后。<a href="/guide#privacy">数据保留说明</a>
+        </p>
+      )}
 
       <label className="consent">
         <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />

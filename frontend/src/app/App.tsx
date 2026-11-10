@@ -16,6 +16,8 @@ setAuthHeaders(() => authHeaders());
 
 // 阅读器连同 pdf.js、KaTeX 按需加载，首页不用下载它们
 const JobPage = lazy(() => import("@/pages/JobPage").then((m) => ({ default: m.JobPage })));
+const AdminLoginPage = lazy(() => import("@/pages/AdminPage").then((m) => ({ default: m.AdminLoginPage })));
+const AdminSubmissionsPage = lazy(() => import("@/pages/AdminPage").then((m) => ({ default: m.AdminSubmissionsPage })));
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
@@ -70,6 +72,22 @@ function Home() {
 }
 
 const router = createBrowserRouter([
+  {
+    path: "/admin/login",
+    element: (
+      <Suspense fallback={<main className="center muted">加载管理页面…</main>}>
+        <AdminLoginPage />
+      </Suspense>
+    ),
+  },
+  {
+    path: "/admin/submissions",
+    element: (
+      <Suspense fallback={<main className="center muted">加载管理页面…</main>}>
+        <AdminSubmissionsPage />
+      </Suspense>
+    ),
+  },
   {
     element: <Layout />,
     children: [

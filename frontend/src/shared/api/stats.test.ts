@@ -20,14 +20,17 @@ describe("统计请求的数据范围", () => {
     const [url, init] = fetch.mock.calls[0]!;
     expect(url).toBe("/api/stats/visits");
     expect(init.headers).toEqual({ Accept: "application/json", "Content-Type": "application/json" });
+    expect(init.credentials).toBe("omit");
     expect(JSON.parse(init.body)).toEqual(body);
   });
 
   it("公开汇总查询也不发送个人模型凭据", async () => {
     setAuthHeaders(() => ({ "X-LLM-Key": "synthetic-key" }));
-    const fetch = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ total: {} }) });
+    const fetch = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ period: {} }) });
     vi.stubGlobal("fetch", fetch);
     await api.stats();
     expect(fetch.mock.calls[0]![1].headers).toEqual({ Accept: "application/json" });
+    expect(fetch.mock.calls[0]![1].credentials).toBe("omit");
+    expect(fetch.mock.calls[0]![0]).toBe("/api/stats?days=7");
   });
 });

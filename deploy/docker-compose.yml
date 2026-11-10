@@ -19,6 +19,9 @@ services:
 
   web:
     build: ../frontend
+    environment:
+      # 仅在宿主机反代来源已核验后设置，不信任全部私网或任意地址。
+      PDFTR_WEB_TRUSTED_PROXIES: ${PDFTR_WEB_TRUSTED_PROXIES:-127.0.0.1/32}
     ports:
       - "127.0.0.1:${PDFTR_PORT:-18765}:80"
     depends_on:

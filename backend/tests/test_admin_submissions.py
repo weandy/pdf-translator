@@ -33,9 +33,14 @@ def test_private_search_requires_session_csrf_and_keeps_public_stats_clean(tmp_p
         )
         with TestClient(create_app(c), base_url=origin) as client:
             headers = {"Origin": origin}
+            assert client.get("/api/admin/submissions/client").status_code == 401
             assert client.post("/api/admin/submissions/search", json={}, headers=headers).status_code == 401
             login = client.post("/api/admin/session", json={"password": password}, headers=headers)
             assert login.status_code == 200
+            network = client.get("/api/admin/submissions/client")
+            assert network.status_code == 200
+            assert network.headers["Cache-Control"] == "no-store"
+            assert set(network.json()) == {"submitter_ip", "ip_source", "notice_version"}
             assert client.post("/api/admin/submissions/search", json={}, headers=headers).status_code == 403
             headers["X-CSRF-Token"] = login.json()["csrf_token"]
             response = client.post(

@@ -41,7 +41,7 @@ describe("共享 MinerU 上传流程", () => {
     vi.restoreAllMocks();
   });
 
-  async function render(shared: boolean) {
+  async function render(shared: boolean, audit = false) {
     const config: ServerConfig = {
       version: "test",
       default_base_url: "https://example.invalid",
@@ -53,7 +53,7 @@ describe("共享 MinerU 上传流程", () => {
       max_upload_mb: 50,
       max_pages: 200,
       retention_hours: 24,
-      submission_audit_enabled: false,
+      submission_audit_enabled: audit,
       attributions: [],
     };
     client.setQueryData(["config"], config);
@@ -75,6 +75,17 @@ describe("共享 MinerU 上传流程", () => {
     });
   }
   const startButton = () => [...host.querySelectorAll("button")].find((button) => button.textContent === "开始翻译")!;
+
+  it("只有明确开启提交账本时展示标题与提交IP长期留存告知", async () => {
+    await render(true);
+    expect(host.textContent).not.toContain("本站长期保存论文标题");
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await render(true, true);
+    expect(host.querySelector('[role="note"]')?.textContent).toContain("提交 IP");
+    expect(host.querySelector('[role="note"]')?.textContent).toContain("仅供管理员查看");
+    expect(host.querySelector('a[href="/guide#privacy"]')).not.toBeNull();
+  });
 
   it("共享 Token 可用时只填写翻译 Key 即可提交 PDF", async () => {
     const job = { id: "synthetic-job" } as Job;

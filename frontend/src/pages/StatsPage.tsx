@@ -204,7 +204,10 @@ export function StatsPage() {
                 {new Date(data.since).toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai" })}{" "}
                 启用，启用当天可能只包含部分时段。
               </li>
-              <li>统计不保存论文内容、文件名、API Key 或原始 IP，也不向第三方发送统计数据。</li>
+              <li>
+                公开统计不包含论文标题、IP 或 API Key，也不向第三方发送统计数据。若本站开启提交明细，论文标题、提交 IP
+                等元数据会长期保存，仅供管理员查看；正文和文件按保留期清理。
+              </li>
             </ul>
             <Link to="/admin/login">管理登录</Link>
           </aside>
