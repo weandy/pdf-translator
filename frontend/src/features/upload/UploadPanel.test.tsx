@@ -53,6 +53,7 @@ describe("共享 MinerU 上传流程", () => {
       max_upload_mb: 50,
       max_pages: 200,
       retention_hours: 24,
+      submission_audit_enabled: false,
       attributions: [],
     };
     client.setQueryData(["config"], config);

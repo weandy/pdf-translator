@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from pdftr.domain.document_name import paper_title
 from pdftr.domain.ir import BlockType, Document, PageKind, SegmentStatus
 from pdftr.domain.job import STAGES, Job, JobStatus
 from pdftr.domain.layout import LayoutResult
@@ -252,12 +253,16 @@ class Pipeline:
     async def _fuse(self, job: Job, _: Secrets) -> None:
         out = self.deps.artifacts.path(job.id, "ir.json")
         if out.exists():
+            doc = load_document(self.deps, job.id)
+            self.deps.store.update_submission_title(job.id, paper_title(doc.pages, fallback=doc.meta.title))
             return
         layout = LayoutResult.model_validate_json(self.deps.artifacts.path(job.id, "layout.json").read_text("utf-8"))
         pdf = self.deps.artifacts.path(job.id, "original.pdf")
         chars = await asyncio.to_thread(extract, pdf)
         doc, report = await asyncio.to_thread(fuse, job.id, layout, chars, used_cloud=True)
         out.write_text(doc.model_dump_json(), encoding="utf-8")
+        # IR 先落盘，恢复分支也会补写；标题持久化成功后才进入后续阶段。
+        self.deps.store.update_submission_title(job.id, paper_title(doc.pages, fallback=doc.meta.title))
         skipped = [p.index + 1 for p in doc.pages if p.kind not in TRANSLATED_KINDS]
         note = f"第 {', '.join(map(str, skipped))} 页的文字无法提取（乱码），暂不翻译" if skipped else ""
         self._update(job, page_count=report.pages, message=note)

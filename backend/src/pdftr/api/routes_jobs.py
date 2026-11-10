@@ -12,9 +12,11 @@ from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFil
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import ValidationError
 
+from pdftr.api.client_ip import resolve_client_ip
 from pdftr.api.deps import pipeline, secrets
 from pdftr.api.schemas import DocumentOut, JobOut, RetranslateManyIn, RevisionOut, SegmentOut
 from pdftr.domain.job import JobOptions, JobStatus
+from pdftr.domain.submissions import NOTICE_VERSION, SubmissionContext
 from pdftr.pipeline import usecases
 from pdftr.pipeline.runner import Pipeline
 from pdftr.pipeline.secrets import Secrets
@@ -47,7 +49,13 @@ async def create_job(
         data_dir=settings.data_dir,
         retention_hours=settings.retention_hours,
     )
-    job = usecases.create_job(p, data, file.filename or "document.pdf", opts, sec, limits)
+    context = None
+    if settings.submission_audit_enabled:
+        client_ip = resolve_client_ip(request, settings)
+        context = SubmissionContext(
+            submitter_ip=client_ip.address, ip_source=client_ip.source, notice_version=NOTICE_VERSION
+        )
+    job = usecases.create_job(p, data, file.filename or "document.pdf", opts, sec, limits, context)
     return JobOut.of(job)
 
 

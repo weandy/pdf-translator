@@ -9,11 +9,14 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from pdftr import __version__
-from pdftr.api import routes_jobs, routes_meta, routes_segments, routes_stats
+from pdftr.api import routes_admin, routes_admin_submissions, routes_jobs, routes_meta, routes_segments, routes_stats
+from pdftr.api.admin_deps import AdminSecurityMiddleware
 from pdftr.container import Container, build_container
 from pdftr.domain.llm import ChatError
 from pdftr.pipeline.usecases import NotFound, ServiceBusy, UserError, purge_expired
@@ -35,6 +38,11 @@ async def _purge_periodically(c: Container, interval_s: float = 600) -> None:
             await asyncio.to_thread(purge_expired, c.pipeline, c.settings.retention_hours)
         except Exception:
             log.exception("清理过期任务失败")
+        if c.admin is not None:
+            try:
+                await asyncio.to_thread(c.admin.purge)
+            except Exception:
+                log.exception("清理过期管理会话失败")
         await asyncio.sleep(interval_s)
 
 
@@ -68,6 +76,23 @@ def create_app(container: Container | None = None) -> FastAPI:
             allow_methods=["*"],
             allow_headers=["*"],
         )
+    app.add_middleware(AdminSecurityMiddleware, auth=c.admin)
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation(request: Request, e: RequestValidationError) -> Response:
+        if request.url.path == "/api/admin" or request.url.path.startswith("/api/admin/"):
+            # FastAPI 默认会回显 input；密码、标题及 IP 筛选都不能出现在错误正文里。
+            allowed_fields = {"body", "password", "title_query", "ip", "date_from", "date_to", "page", "page_size"}
+            detail = [
+                {
+                    "type": error.get("type", "value_error"),
+                    "loc": [part for part in error.get("loc", ()) if part in allowed_fields] or ["body"],
+                    "msg": "管理请求参数无效",
+                }
+                for error in e.errors()
+            ]
+            return JSONResponse({"detail": detail}, status_code=422)
+        return await request_validation_exception_handler(request, e)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next) -> Response:
@@ -96,4 +121,6 @@ def create_app(container: Container | None = None) -> FastAPI:
     app.include_router(routes_jobs.router)
     app.include_router(routes_segments.router)
     app.include_router(routes_stats.router)
+    app.include_router(routes_admin.router)
+    app.include_router(routes_admin_submissions.router)
     return app

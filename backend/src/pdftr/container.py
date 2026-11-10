@@ -10,9 +10,11 @@ from pdftr.glossary import sources as glossary_sources
 from pdftr.glossary.matcher import TermMatcher
 from pdftr.parsing.mineru_cloud import MinerUCloudParser
 from pdftr.parsing.paddle_vl import PaddleVLParser
+from pdftr.pipeline.admin import AdminAuth
 from pdftr.pipeline.events import EventBus
 from pdftr.pipeline.runner import Pipeline, PipelineDeps
 from pdftr.pipeline.secrets import Secrets, SecretStore
+from pdftr.storage.admin import SqliteAdminSessionStore
 from pdftr.storage.cache import SqliteTranslationCache
 from pdftr.storage.files import FileArtifactStore
 from pdftr.storage.sqlite import SqliteStore
@@ -54,6 +56,7 @@ class GlossaryLoader:
 class Container:
     settings: Settings
     pipeline: Pipeline
+    admin: AdminAuth | None = None
 
     def secrets(
         self,
@@ -88,7 +91,7 @@ def build_container(settings: Settings | None = None, deps_override: dict | None
     db = s.data_dir / "app.db"
     deps = {
         "artifacts": FileArtifactStore(s.data_dir),
-        "store": SqliteStore(db),
+        "store": SqliteStore(db, submission_audit_enabled=s.submission_audit_enabled),
         "cache": SqliteTranslationCache(db),
         "events": EventBus(),
         "secrets": SecretStore(),
@@ -108,4 +111,9 @@ def build_container(settings: Settings | None = None, deps_override: dict | None
         "font_dir": s.font_dir,
         "llm_concurrency": s.llm_concurrency,
     } | (deps_override or {})  # 测试时替换解析器、大模型等
-    return Container(settings=s, pipeline=Pipeline(PipelineDeps(**deps)))
+    admin = (
+        AdminAuth(SqliteAdminSessionStore(db), s.admin_password_hash, s.admin_origin)
+        if s.admin_password_hash and s.admin_origin
+        else None
+    )
+    return Container(settings=s, pipeline=Pipeline(PipelineDeps(**deps)), admin=admin)

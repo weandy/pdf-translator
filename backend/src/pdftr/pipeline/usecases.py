@@ -8,7 +8,6 @@ import json
 import logging
 import re
 import shutil
-import tempfile
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -31,6 +30,7 @@ from pdftr.domain.ir import (
 )
 from pdftr.domain.job import STAGES, Job, JobOptions, JobStatus
 from pdftr.domain.llm import ChatError, ChatOptions
+from pdftr.domain.submissions import SubmissionContext
 from pdftr.extraction.chars import page_count
 from pdftr.extraction.outline import pdf_outline
 from pdftr.glossary.matcher import TermMatcher, combine
@@ -82,7 +82,13 @@ def _require_secrets(secrets: Secrets, *, parser: str | None) -> None:
 
 
 def create_job(
-    pipeline: Pipeline, data: bytes, filename: str, options: JobOptions, secrets: Secrets, limits: Limits
+    pipeline: Pipeline,
+    data: bytes,
+    filename: str,
+    options: JobOptions,
+    secrets: Secrets,
+    limits: Limits,
+    submission_context: SubmissionContext | None = None,
 ) -> Job:
     if len(data) > limits.max_upload_mb * 1024 * 1024:
         raise UserError(f"文件超过 {limits.max_upload_mb} MB")
@@ -110,9 +116,25 @@ def create_job(
     expires = datetime.now(UTC) + timedelta(hours=limits.retention_hours) if limits.retention_hours > 0 else None
     job = Job(id=new_job_id(), filename=Path(filename).name[:200] or "document.pdf", page_count=pages,
               options=options, model=secrets.llm_model, expires_at=expires)  # fmt: skip
-    deps.artifacts.path(job.id, "original.pdf").write_bytes(data)
-    deps.store.save_job(job)
-    pipeline.submit(job, secrets)
+    try:
+        deps.artifacts.path(job.id, "original.pdf").write_bytes(data)
+        deps.store.create_job(job, submission_context)
+    except Exception:
+        # 数据库没有接收成功时不能留下不可追踪的临时正文。
+        try:
+            deps.artifacts.remove(job.id)
+        except (OSError, ValueError):
+            deps.store.queue_artifact_cleanup(job.id)
+            log.warning("未接收任务的临时目录已加入清理重试队列")
+        raise
+    try:
+        pipeline.submit(job, secrets)
+    except Exception:
+        # 接收事务已经提交，调度失败也应返回原任务，供用户重试。
+        log.exception("任务 %s 接收后调度失败", job.id)
+        deps.secrets.drop(job.id)
+        job.status, job.error = JobStatus.FAILED, "任务调度失败，请点击重试"
+        deps.store.save_job(job)
     return job
 
 
@@ -129,7 +151,19 @@ def delete_job(pipeline: Pipeline, job_id: str) -> None:
     if pipeline.is_running(job_id):
         raise UserError("任务进行中，结束后才能删除")
     pipeline.deps.store.delete_job(job_id)
-    pipeline.deps.artifacts.remove(job_id)
+    _cleanup_artifacts(pipeline, job_id)
+
+
+def _cleanup_artifacts(pipeline: Pipeline, job_id: str) -> bool:
+    if pipeline.is_running(job_id) or pipeline.deps.store.get_job(job_id) is not None:
+        return False
+    try:
+        pipeline.deps.artifacts.remove(job_id)
+    except (OSError, ValueError):
+        log.warning("任务 %s 的目录清理失败，将在下轮重试", job_id)
+        return False
+    pipeline.deps.store.complete_artifact_cleanup(job_id)
+    return True
 
 
 def purge_expired(pipeline: Pipeline, retention_hours: int, now: datetime | None = None) -> int:
@@ -137,21 +171,29 @@ def purge_expired(pipeline: Pipeline, retention_hours: int, now: datetime | None
 
     没有到期时间的旧任务（保留期改为 24 小时之前创建的）不立即删除：从现在起再给一个保留期，留出下载时间。
     """
-    if retention_hours <= 0:
-        return 0
     now = now or datetime.now(UTC)
     removed = 0
-    for job in pipeline.deps.store.all_jobs():
+    store = pipeline.deps.store
+    for job in store.all_jobs() if retention_hours > 0 else []:
         if job.expires_at is None:
             job.expires_at = now + timedelta(hours=retention_hours)
             pipeline.deps.store.save_job(job)
             continue
         if job.expires_at > now or pipeline.is_running(job.id):
             continue
-        pipeline.deps.store.delete_job(job.id)
-        pipeline.deps.artifacts.remove(job.id)
+        store.delete_job(job.id)
         removed += 1
-    cached = pipeline.deps.cache.purge_older_than(retention_hours)
+    if retention_hours > 0:
+        known = {job.id for job in store.all_jobs()}
+        cutoff = now - timedelta(hours=retention_hours)
+        for job_id in pipeline.deps.artifacts.orphaned_jobs(known, cutoff):
+            # 扫描和入队之间再次检查，保护同时接收或仍在写文件的任务。
+            if not pipeline.is_running(job_id) and store.get_job(job_id) is None:
+                store.queue_artifact_cleanup(job_id)
+    cleaned = sum(_cleanup_artifacts(pipeline, job_id) for job_id in store.pending_artifact_cleanup())
+    cached = pipeline.deps.cache.purge_older_than(retention_hours) if retention_hours > 0 else 0
+    if removed or cleaned or cached:
+        store.checkpoint_after_purge()
     if removed or cached:
         log.info("已清理过期任务 %d 个、译文缓存 %d 条", removed, cached)
     return removed

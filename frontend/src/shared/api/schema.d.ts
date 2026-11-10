@@ -437,10 +437,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Current Session */
+        get: operations["current_session_api_admin_session_get"];
+        put?: never;
+        /** Login */
+        post: operations["login_api_admin_session_post"];
+        /** Logout */
+        delete: operations["logout_api_admin_session_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/submissions/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Search Submissions */
+        post: operations["search_submissions_api_admin_submissions_search_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AdminLoginIn */
+        AdminLoginIn: {
+            /** Password */
+            password: string;
+        };
+        /** AdminSessionOut */
+        AdminSessionOut: {
+            /** Csrf Token */
+            csrf_token: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+        };
         /** BlockOut */
         BlockOut: {
             /** Id */
@@ -534,6 +585,11 @@ export interface components {
             max_pages: number;
             /** Retention Hours */
             retention_hours: number;
+            /**
+             * Submission Audit Enabled
+             * @default false
+             */
+            submission_audit_enabled: boolean;
             /** Attributions */
             attributions: string[];
         };
@@ -672,6 +728,11 @@ export interface components {
             /** Expires At */
             expires_at: string | null;
         };
+        /**
+         * JobStatus
+         * @enum {string}
+         */
+        JobStatus: "queued" | "running" | "done" | "failed" | "cancelled";
         /**
          * LinkOut
          * @description 一个链接。block_id 为空：在译文块外，原文页与译文页上都在 rect 处；否则在这一块译文里第 nth 处 text 上。
@@ -984,6 +1045,91 @@ export interface components {
              * Format: uuid
              */
             visitor_id: string;
+        };
+        /** SubmissionPage */
+        SubmissionPage: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /**
+             * Page Size
+             * @enum {integer}
+             */
+            page_size: 25 | 50 | 100;
+            /** Items */
+            items: components["schemas"]["SubmissionRecord"][];
+        };
+        /** SubmissionRecord */
+        SubmissionRecord: {
+            /** Job Id */
+            job_id: string;
+            /** Title */
+            title: string;
+            /**
+             * Title Source
+             * @enum {string}
+             */
+            title_source: "parsed" | "filename" | "unknown";
+            /**
+             * Submitted At
+             * Format: date-time
+             */
+            submitted_at: string;
+            /** Submitter Ip */
+            submitter_ip: string | null;
+            /**
+             * Ip Source
+             * @enum {string}
+             */
+            ip_source: "trusted_proxy" | "direct" | "unknown";
+            /** Page Count */
+            page_count: number;
+            status: components["schemas"]["JobStatus"];
+            /** First Completed At */
+            first_completed_at: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /**
+             * Record Source
+             * @enum {string}
+             */
+            record_source: "live" | "backfill";
+            /** Notice Version */
+            notice_version: string | null;
+        };
+        /** SubmissionSearch */
+        SubmissionSearch: {
+            /**
+             * Title Query
+             * @default
+             */
+            title_query: string;
+            /** Ip */
+            ip?: string | null;
+            /** Date From */
+            date_from?: string | null;
+            /** Date To */
+            date_to?: string | null;
+            /**
+             * Page
+             * @default 1
+             */
+            page: number;
+            /**
+             * Page Size
+             * @default 25
+             * @enum {integer}
+             */
+            page_size: 25 | 50 | 100;
         };
         /** TermEntry */
         TermEntry: {
@@ -1843,6 +1989,110 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    current_session_api_admin_session_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminSessionOut"];
+                };
+            };
+        };
+    };
+    login_api_admin_session_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminLoginIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminSessionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    logout_api_admin_session_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    search_submissions_api_admin_submissions_search_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubmissionSearch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubmissionPage"];
+                };
             };
             /** @description Validation Error */
             422: {

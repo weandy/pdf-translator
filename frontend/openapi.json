@@ -1812,10 +1812,158 @@
      }
     }
    }
+  },
+  "/api/admin/session": {
+   "get": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Current Session",
+    "operationId": "current_session_api_admin_session_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AdminSessionOut"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Login",
+    "operationId": "login_api_admin_session_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/AdminLoginIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AdminSessionOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Logout",
+    "operationId": "logout_api_admin_session_delete",
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     }
+    }
+   }
+  },
+  "/api/admin/submissions/search": {
+   "post": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Search Submissions",
+    "operationId": "search_submissions_api_admin_submissions_search_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SubmissionSearch"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SubmissionPage"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
   }
  },
  "components": {
   "schemas": {
+   "AdminLoginIn": {
+    "properties": {
+     "password": {
+      "type": "string",
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Password"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "password"
+    ],
+    "title": "AdminLoginIn"
+   },
+   "AdminSessionOut": {
+    "properties": {
+     "csrf_token": {
+      "type": "string",
+      "title": "Csrf Token"
+     },
+     "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Expires At"
+     }
+    },
+    "type": "object",
+    "required": [
+     "csrf_token",
+     "expires_at"
+    ],
+    "title": "AdminSessionOut"
+   },
    "BlockOut": {
     "properties": {
      "id": {
@@ -1982,6 +2130,11 @@
      "retention_hours": {
       "type": "integer",
       "title": "Retention Hours"
+     },
+     "submission_audit_enabled": {
+      "type": "boolean",
+      "title": "Submission Audit Enabled",
+      "default": false
      },
      "attributions": {
       "items": {
@@ -2360,6 +2513,17 @@
      "expires_at"
     ],
     "title": "JobOut"
+   },
+   "JobStatus": {
+    "type": "string",
+    "enum": [
+     "queued",
+     "running",
+     "done",
+     "failed",
+     "cancelled"
+    ],
+    "title": "JobStatus"
    },
    "LinkOut": {
     "properties": {
@@ -3008,9 +3172,9 @@
        "$ref": "#/components/schemas/StatsDay"
       },
       "type": "array",
-      "title": "Daily",
+      "maxItems": 7,
       "minItems": 7,
-      "maxItems": 7
+      "title": "Daily"
      }
     },
     "type": "object",
@@ -3064,6 +3228,219 @@
      "visitor_id"
     ],
     "title": "StatsVisitIn"
+   },
+   "SubmissionPage": {
+    "properties": {
+     "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Generated At"
+     },
+     "total": {
+      "type": "integer",
+      "title": "Total"
+     },
+     "page": {
+      "type": "integer",
+      "title": "Page"
+     },
+     "page_size": {
+      "type": "integer",
+      "enum": [
+       25,
+       50,
+       100
+      ],
+      "title": "Page Size"
+     },
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/SubmissionRecord"
+      },
+      "type": "array",
+      "title": "Items"
+     }
+    },
+    "type": "object",
+    "required": [
+     "generated_at",
+     "total",
+     "page",
+     "page_size",
+     "items"
+    ],
+    "title": "SubmissionPage"
+   },
+   "SubmissionRecord": {
+    "properties": {
+     "job_id": {
+      "type": "string",
+      "title": "Job Id"
+     },
+     "title": {
+      "type": "string",
+      "title": "Title"
+     },
+     "title_source": {
+      "type": "string",
+      "enum": [
+       "parsed",
+       "filename",
+       "unknown"
+      ],
+      "title": "Title Source"
+     },
+     "submitted_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Submitted At"
+     },
+     "submitter_ip": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Submitter Ip"
+     },
+     "ip_source": {
+      "type": "string",
+      "enum": [
+       "trusted_proxy",
+       "direct",
+       "unknown"
+      ],
+      "title": "Ip Source"
+     },
+     "page_count": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Page Count"
+     },
+     "status": {
+      "$ref": "#/components/schemas/JobStatus"
+     },
+     "first_completed_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "First Completed At"
+     },
+     "updated_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Updated At"
+     },
+     "record_source": {
+      "type": "string",
+      "enum": [
+       "live",
+       "backfill"
+      ],
+      "title": "Record Source"
+     },
+     "notice_version": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Notice Version"
+     }
+    },
+    "type": "object",
+    "required": [
+     "job_id",
+     "title",
+     "title_source",
+     "submitted_at",
+     "submitter_ip",
+     "ip_source",
+     "page_count",
+     "status",
+     "first_completed_at",
+     "updated_at",
+     "record_source",
+     "notice_version"
+    ],
+    "title": "SubmissionRecord"
+   },
+   "SubmissionSearch": {
+    "properties": {
+     "title_query": {
+      "type": "string",
+      "maxLength": 100,
+      "title": "Title Query",
+      "default": ""
+     },
+     "ip": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 64
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ip"
+     },
+     "date_from": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Date From"
+     },
+     "date_to": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Date To"
+     },
+     "page": {
+      "type": "integer",
+      "maximum": 1000000.0,
+      "minimum": 1.0,
+      "title": "Page",
+      "default": 1
+     },
+     "page_size": {
+      "type": "integer",
+      "enum": [
+       25,
+       50,
+       100
+      ],
+      "title": "Page Size",
+      "default": 25
+     }
+    },
+    "type": "object",
+    "title": "SubmissionSearch"
    },
    "TermEntry": {
     "properties": {

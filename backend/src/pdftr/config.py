@@ -1,13 +1,21 @@
 """运行配置：全部来自环境变量（前缀 PDFTR_），见仓库根目录 .env.example。"""
 
-from pathlib import Path
-from typing import Literal
+from __future__ import annotations
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import json
+from ipaddress import ip_network
+from pathlib import Path
+from typing import Annotated, Literal
+from urllib.parse import urlsplit
+
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from pdftr.domain.admin import AdminPassword
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="PDFTR_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="PDFTR_", env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     data_dir: Path = Path("data")
     max_upload_mb: int = 200
@@ -38,3 +46,68 @@ class Settings(BaseSettings):
 
     font_dir: Path = Path("fonts")  # 导出 PDF 与网页阅读器用的字体（scripts/fetch_fonts.py 生成）
     cors_origins: list[str] = []  # 开发时前端单独运行可填 ["http://localhost:5173"]
+
+    # 明细采集必须由部署者显式开启；管理密码摘要不出现在配置接口或对象 repr 中。
+    submission_audit_enabled: bool = False
+    admin_password_hash: str = Field(default="", repr=False)
+    admin_origin: str = ""
+    trusted_proxy_cidrs: Annotated[tuple[str, ...], NoDecode] = ()
+
+    @field_validator("admin_password_hash")
+    @classmethod
+    def validate_admin_password_hash(cls, value: str) -> str:
+        if value:
+            AdminPassword.parse(value)
+        return value
+
+    @field_validator("admin_origin")
+    @classmethod
+    def validate_admin_origin(cls, value: str) -> str:
+        if not value:
+            return value
+        parsed = urlsplit(value)
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("管理 Origin 端口无效") from exc
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+            or any(char.isspace() for char in value)
+            or (port is not None and not 1 <= port <= 65535)
+            or value != f"https://{parsed.netloc}"
+        ):
+            raise ValueError("管理 Origin 必须是无路径、无凭据的精确 HTTPS Origin")
+        return value
+
+    @field_validator("trusted_proxy_cidrs", mode="before")
+    @classmethod
+    def validate_trusted_proxy_cidrs(cls, value: object) -> tuple[str, ...]:
+        if isinstance(value, str):
+            value = json.loads(value) if value.strip().startswith("[") else value.split(",")
+        if not isinstance(value, (tuple, list)):
+            raise ValueError("可信代理 CIDR 必须是逗号分隔文本或数组")
+        result = []
+        for cidr in value:
+            if not isinstance(cidr, str):
+                raise ValueError("可信代理 CIDR 必须是字符串")
+            if not cidr.strip():
+                continue
+            network = ip_network(cidr.strip(), strict=True)
+            if network.prefixlen == 0:
+                raise ValueError("可信代理不得信任全部地址")
+            result.append(str(network))
+        return tuple(dict.fromkeys(result))
+
+    @model_validator(mode="after")
+    def validate_submission_audit(self) -> Settings:
+        if self.submission_audit_enabled and not (
+            self.admin_password_hash and self.admin_origin and self.trusted_proxy_cidrs
+        ):
+            raise ValueError("开启提交明细采集前必须配置管理密码哈希、HTTPS Origin 和可信代理 CIDR")
+        return self

@@ -11,6 +11,8 @@ class SqliteTranslationCache:
         self._lock = threading.Lock()
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.execute("PRAGMA journal_mode=WAL")
+        # 缓存含论文原文/译文，保留期删除也应覆盖主库中释放的单元格。
+        self._db.execute("PRAGMA secure_delete=ON")
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS translation_cache ("
             " key TEXT PRIMARY KEY, target TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
