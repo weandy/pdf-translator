@@ -9,6 +9,7 @@
 anthropic SDK 只在选用这个协议时才导入，默认的 OpenAI 兼容协议不占这部分内存。
 """
 
+import asyncio
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     from anthropic import AsyncAnthropic
 
 _EFFORT_MODELS = re.compile(r"^claude-[a-z]+-(4-[6-9]|[5-9])")  # 支持 output_config.effort 与 adaptive 思考
+MODEL_LIST_TIMEOUT_S = 15
 
 
 class AnthropicChat:
@@ -80,10 +82,30 @@ class AnthropicChat:
         import anthropic
 
         try:
-            return [m.id async for m in self._client.models.list(limit=100)]
+            # 查询模型应快速结束；分页与网络等待共用总预算，且不做 SDK 隐藏重试。
+            async with asyncio.timeout(MODEL_LIST_TIMEOUT_S):
+                client = self._client.with_options(max_retries=0, timeout=MODEL_LIST_TIMEOUT_S)
+                ids: set[str] = set()
+                first = await client.models.list(limit=100)
+                async for page in first.iter_pages():
+                    if not isinstance(page.data, list):
+                        raise ChatError("服务返回的模型列表格式不正确，请手动填写模型名")
+                    for model in page.data:
+                        if not isinstance(model.id, str) or not model.id.strip():
+                            raise ChatError("服务返回的模型列表格式不正确，请手动填写模型名")
+                        ids.add(model.id.strip())
+                return sorted(ids)
+        except (TimeoutError, anthropic.APITimeoutError) as e:
+            raise ChatError("获取模型列表超时，请重试或手动填写模型名") from e
         except anthropic.AuthenticationError as e:
             raise ChatError("翻译服务的 API Key 无效") from e
+        except anthropic.PermissionDeniedError as e:
+            raise ChatError("这个 Key 没有查询模型列表的权限，请手动填写模型名") from e
+        except anthropic.RateLimitError as e:
+            raise ChatError("模型列表请求受限，请稍后重试或手动填写模型名") from e
         except anthropic.APIConnectionError as e:
             raise ChatError("无法连接翻译服务，请检查接口地址与网络") from e
         except anthropic.APIStatusError as e:
             raise ChatError(f"这个服务不提供模型列表（HTTP {e.status_code}），请手动填写模型名") from e
+        except (anthropic.APIResponseValidationError, AttributeError, TypeError, ValueError) as e:
+            raise ChatError("服务返回的模型列表格式不正确，请手动填写模型名") from e

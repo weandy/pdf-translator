@@ -49,7 +49,8 @@ export function GuidePage() {
               <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer">
                 DeepSeek 开放平台
               </a>{" "}
-              创建。
+              创建。 使用其他服务时，展开接口设置，填写地址和 Key
+              后点击“获取模型列表”，选择模型再测试连接；也可以手动填写模型名称。
             </li>
             <li>
               <strong>MinerU Token（可选）</strong>：负责识别正文、公式和图表版面。本站已配置共享 Token

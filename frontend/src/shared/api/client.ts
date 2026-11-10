@@ -133,9 +133,35 @@ export const api = {
     return request<ParsedGlossary>("/api/glossary/parse", { method: "POST", body: form });
   },
   /** 翻译服务的模型列表与连通测试；headers 用设置面板里尚未保存的值 */
-  llmModels: (headers: Record<string, string>) =>
-    request<{ models: string[] }>("/api/llm/models", { headers }).then((r) => r.models),
-  llmCheck: (headers: Record<string, string>) => request<LlmCheck>("/api/llm/check", { method: "POST", headers }),
+  llmModels: async (headers: Record<string, string>, signal?: AbortSignal) => {
+    const controller = new AbortController();
+    const cancel = () => controller.abort(signal?.reason);
+    if (signal?.aborted) cancel();
+    else signal?.addEventListener("abort", cancel, { once: true });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 20000);
+    try {
+      const result = await request<components["schemas"]["ModelsOut"]>(
+        "/api/llm/models",
+        { headers, signal: controller.signal },
+        false,
+      );
+      return result.models;
+    } catch (error) {
+      if (timedOut) {
+        throw new ApiError(408, "获取模型列表超时，请检查接口地址或稍后重试");
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
+    }
+  },
+  llmCheck: (headers: Record<string, string>, signal?: AbortSignal) =>
+    request<LlmCheck>("/api/llm/check", { method: "POST", headers, signal }, false),
   revisions: (jobId: string) => request<Revision[]>(`/api/jobs/${jobId}/revisions`),
   revert: (revisionId: number) =>
     request<SegmentData>(`/api/segments/revisions/${revisionId}/revert`, { method: "POST" }),

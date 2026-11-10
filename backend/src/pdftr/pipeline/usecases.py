@@ -372,7 +372,7 @@ class LlmCheck(BaseModel):
 
 
 async def llm_models(pipeline: Pipeline, secrets: Secrets) -> list[str]:
-    """从翻译服务拉取可用模型（各家都提供 /models）。"""
+    """从翻译服务拉取可用模型；不支持查询的服务仍可手动填写模型名。"""
     _require_secrets(secrets, parser=None)
     return await pipeline.deps.chat_factory(secrets).list_models()
 

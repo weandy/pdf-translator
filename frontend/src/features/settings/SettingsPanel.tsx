@@ -31,17 +31,38 @@ export function SettingsPanel({ onClose }: Props) {
   });
 
   const protocol = form.protocol || config?.default_protocol || "openai";
-  const [models, setModels] = useState<{ list: string[]; error: string | null; busy: boolean }>({
+  const [models, setModels] = useState<{ list: string[]; error: string | null; busy: boolean; loaded?: boolean }>({
     list: [],
     error: null,
     busy: false,
   });
   const [check, setCheck] = useState<LlmCheck | "busy" | null>(null);
-  const fetched = useRef(""); // 上次获取模型列表时的协议、地址与 Key：没变就不重复请求（重复请求会让布局跳动、点不中按钮）
+  const modelRequest = useRef<AbortController | null>(null);
+  const checkRequest = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      modelRequest.current?.abort();
+      checkRequest.current?.abort();
+    },
+    [],
+  );
   // 用面板里还没保存的值请求；没填 Key 且用的是本站默认服务时，后端用本站的共享 Key
-  const headers = () => authHeaders({ ...form, protocol });
+  const headers = () =>
+    Object.fromEntries(Object.entries(authHeaders({ ...form, protocol })).filter(([key]) => key.startsWith("X-LLM-")));
   const canAsk = Boolean(form.llmKey || (config?.server_has_llm_key && !form.baseUrl && !form.protocol));
-  const set = <K extends keyof Settings>(key: K, value: Settings[K]) => setForm((f) => ({ ...f, [key]: value }));
+  const set = <K extends keyof Settings>(key: K, value: Settings[K]) => {
+    if (key === "protocol" || key === "baseUrl" || key === "llmKey") {
+      modelRequest.current?.abort();
+      modelRequest.current = null;
+      setModels({ list: [], error: null, busy: false });
+    }
+    if (key === "protocol" || key === "baseUrl" || key === "llmKey" || key === "model") {
+      checkRequest.current?.abort();
+      checkRequest.current = null;
+      setCheck(null);
+    }
+    setForm((f) => ({ ...f, [key]: value }));
+  };
   const sharedParser = Boolean(config?.server_has_parser_token);
   const parserFields = (
     <>
@@ -66,25 +87,36 @@ export function SettingsPanel({ onClose }: Props) {
     </>
   );
 
-  const loadModels = async (next?: Settings) => {
-    const f = next ?? form;
-    if (!(f.llmKey || (config?.server_has_llm_key && !f.baseUrl && !f.protocol))) return;
-    const signature = [f.protocol || protocol, f.baseUrl, f.llmKey].join("\n");
-    if (signature === fetched.current) return;
-    fetched.current = signature;
-    setModels((m) => ({ ...m, busy: true }));
+  const loadModels = async () => {
+    if (!canAsk) return;
+    modelRequest.current?.abort();
+    const controller = new AbortController();
+    modelRequest.current = controller;
+    setModels({ list: [], error: null, busy: true });
     try {
-      const list = await api.llmModels(authHeaders({ ...f, protocol: f.protocol || protocol }));
-      setModels({ list, error: null, busy: false });
+      const list = await api.llmModels(headers(), controller.signal);
+      // 即使接口已返回，用户也可能刚切换配置，旧服务的模型不能覆盖新配置。
+      if (modelRequest.current !== controller || controller.signal.aborted) return;
+      setModels({ list: [...new Set(list)].sort(), error: null, busy: false, loaded: true });
     } catch (e) {
-      setModels({ list: [], error: e instanceof Error ? e.message : String(e), busy: false });
+      if (modelRequest.current !== controller || controller.signal.aborted) return;
+      setModels({
+        list: [],
+        error: `${e instanceof Error ? e.message : String(e)}。可以重试，或手动填写模型名称。`,
+        busy: false,
+      });
     }
   };
   const runCheck = async () => {
+    checkRequest.current?.abort();
+    const controller = new AbortController();
+    checkRequest.current = controller;
     setCheck("busy");
     try {
-      setCheck(await api.llmCheck(headers()));
+      const result = await api.llmCheck(headers(), controller.signal);
+      if (checkRequest.current === controller && !controller.signal.aborted) setCheck(result);
     } catch (e) {
+      if (checkRequest.current !== controller || controller.signal.aborted) return;
       setCheck({
         ok: false,
         model: form.model,
@@ -136,10 +168,6 @@ export function SettingsPanel({ onClose }: Props) {
                   autoComplete="off"
                   value={form.llmKey}
                   onChange={(e) => set("llmKey", e.target.value.trim())}
-                  onBlur={() => {
-                    void loadModels();
-                    if (form.llmKey && form.llmKey !== saved.llmKey) void runCheck(); // 填完自动测试连接
-                  }}
                   placeholder={config?.server_has_llm_key ? "留空则使用本站提供的 Key" : "sk-..."}
                 />
               </label>
@@ -170,15 +198,7 @@ export function SettingsPanel({ onClose }: Props) {
                 </p>
                 <label className="field">
                   <span>接口协议</span>
-                  <select
-                    value={protocol}
-                    onChange={(e) => {
-                      const next = { ...form, protocol: e.target.value as Settings["protocol"] };
-                      setForm(next);
-                      setCheck(null);
-                      void loadModels(next);
-                    }}
-                  >
+                  <select value={protocol} onChange={(e) => set("protocol", e.target.value as Settings["protocol"])}>
                     <option value="openai">OpenAI 兼容（DeepSeek、通义千问、GLM、Ollama 等）</option>
                     <option value="anthropic">Anthropic（Claude）</option>
                   </select>
@@ -188,7 +208,6 @@ export function SettingsPanel({ onClose }: Props) {
                   <input
                     value={form.baseUrl}
                     onChange={(e) => set("baseUrl", e.target.value.trim())}
-                    onBlur={() => void loadModels()}
                     placeholder={
                       form.protocol && form.protocol !== config?.default_protocol
                         ? BASE_URLS[protocol]
@@ -196,28 +215,57 @@ export function SettingsPanel({ onClose }: Props) {
                     }
                   />
                 </label>
-                <label className="field">
-                  <span>
-                    模型
-                    {models.busy && <small className="muted">正在获取模型列表…</small>}
-                    {!models.busy && models.list.length > 0 && (
-                      <small className="muted">已获取 {models.list.length} 个模型，可直接选择</small>
-                    )}
+                <div className="check-row">
+                  <button type="button" disabled={!canAsk || models.busy} onClick={() => void loadModels()}>
+                    {models.busy ? "获取中…" : models.list.length ? "重新获取模型" : "获取模型列表"}
+                  </button>
+                  <span className="hint" role="status" aria-live="polite">
+                    {models.busy
+                      ? "正在查询当前接口，最多等待 20 秒…"
+                      : models.list.length
+                        ? `已获取 ${models.list.length} 个模型`
+                        : "填写接口地址和 API Key 后获取，无需先保存。"}
                   </span>
+                </div>
+                {models.list.length > 0 && (
+                  <label className="field">
+                    <span>从列表选择模型</span>
+                    <select
+                      value={models.list.includes(form.model) ? form.model : ""}
+                      onChange={(e) => set("model", e.target.value)}
+                    >
+                      <option value="" disabled>
+                        请选择模型
+                      </option>
+                      {models.list.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <label className="field">
+                  <span>模型名称（也可手动填写）</span>
                   <input
                     value={form.model}
-                    list="model-options"
                     onChange={(e) => set("model", e.target.value.trim())}
-                    onFocus={() => models.list.length === 0 && !models.busy && void loadModels()}
                     placeholder={config?.default_model ?? "deepseek-flash"}
                   />
-                  <datalist id="model-options">
-                    {models.list.map((m) => (
-                      <option key={m} value={m} />
-                    ))}
-                  </datalist>
                 </label>
-                {models.error && <p className="hint">{models.error}</p>}
+                {models.error && (
+                  <p className="hint" role="alert">
+                    {models.error}
+                  </p>
+                )}
+                {models.loaded && models.list.length === 0 && (
+                  <p className="hint" role="status">
+                    这个接口没有返回可选模型，请手动填写模型名称。
+                  </p>
+                )}
+                <p className="hint">
+                  列表只代表接口返回的模型，不保证当前 Key 有使用权限；选择后可点击“测试连接”验证。
+                </p>
               </details>
             </div>
           </div>
@@ -315,7 +363,8 @@ export function SettingsPanel({ onClose }: Props) {
             className="quiet danger"
             onClick={() => {
               clearKeys();
-              setForm((f) => ({ ...f, llmKey: "", parserKey: "" }));
+              set("llmKey", "");
+              set("parserKey", "");
             }}
           >
             清除已保存的 Key
