@@ -3008,7 +3008,9 @@
        "$ref": "#/components/schemas/StatsDay"
       },
       "type": "array",
-      "title": "Daily"
+      "title": "Daily",
+      "minItems": 7,
+      "maxItems": 7
      }
     },
     "type": "object",
