@@ -1201,6 +1201,24 @@ input[type="radio"] {
 .tblock.flash {
   animation: flash 2.4s ease-out forwards;
 }
+.term-highlight {
+  color: inherit;
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  border-radius: 2px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+  animation: term-flash 2.4s ease-out forwards;
+}
+@keyframes term-flash {
+  0%,
+  45% {
+    background: color-mix(in srgb, var(--accent) 42%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  100% {
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+}
 @keyframes flash {
   0%,
   45% {
@@ -1215,6 +1233,10 @@ input[type="radio"] {
   .tblock.flash {
     animation: none;
     background: var(--pencil-strong);
+  }
+  .term-highlight {
+    background: color-mix(in srgb, var(--accent) 35%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
   }
 }
 

@@ -41,8 +41,8 @@ interface Props {
   side?: "left" | "right";
   /** 每次变化时，若选中的段落不在视野里就滚过去（从修改记录打开段落时用） */
   revealKey?: number;
-  /** 滚到这一段并短暂高亮（术语面板逐段查看；n 变化时即使是同一段也再跳一次） */
-  spot?: { id: string; n: number } | null;
+  /** 定位到术语所在词；n 变化时即使是同一段也再跳一次。 */
+  spot?: { id: string; n: number; term?: { source: string; target: string } } | null;
   /** 淡淡标出的段落（术语面板里当前术语出现的段落） */
   marked?: ReadonlySet<string>;
 }
@@ -228,7 +228,7 @@ export function ReaderView({
     return () => clearTimeout(restoreTimer.current);
   }, [jobId, doc.pages.length]);
 
-  // 从术语面板逐段查看：滚到那一段所在位置并短暂高亮（只在 spot 变化时跳；段落内容更新不触发）
+  // 从术语面板定位：滚到术语所在位置并只高亮命中的词（只在 spot 变化时跳）。
   const docRef = useRef(doc);
   useEffect(() => {
     docRef.current = doc;
@@ -237,7 +237,21 @@ export function ReaderView({
     if (!spot) return;
     const d = docRef.current;
     const seg = d.segments.find((s) => s.id === spot.id);
-    const block = d.pages.flatMap((p) => p.blocks).find((b) => b.id === seg?.block_ids[0]);
+    if (!seg) return;
+    const blocks = d.pages.flatMap((p) => p.blocks);
+    const block = spot.term
+      ? seg.block_ids
+          .map((id) => ({ block: blocks.find((item) => item.id === id), text: texts.get(id) }))
+          .find(({ text }) => {
+            if (!text) return false;
+            const source = spot.term?.source.trim().toLocaleLowerCase();
+            const target = spot.term?.target.trim().toLocaleLowerCase();
+            return Boolean(
+              (source && text.sourceText.toLocaleLowerCase().includes(source)) ||
+                (target && text.text.toLocaleLowerCase().includes(target)),
+            );
+          })?.block
+      : blocks.find((b) => b.id === seg.block_ids[0]);
     if (!block) return;
     // 用户手动定位优先于打开页面时尚未执行的阅读位置恢复。
     clearTimeout(restoreTimer.current);
@@ -248,7 +262,12 @@ export function ReaderView({
         // 手机底部编辑面板会遮住一部分页面，段落起点靠近可见区顶部。
         goToRef.current(block.page, block.bbox.y0, true, window.innerWidth < NARROW ? 12 : 56);
         clearTimeout(flashTimer.current);
-        setFlash(spot.id);
+        const hasTerm = Boolean(
+          spot.term &&
+            ((spot.term.source && seg.source.toLocaleLowerCase().includes(spot.term.source.toLocaleLowerCase())) ||
+              (spot.term.target && seg.target?.toLocaleLowerCase().includes(spot.term.target.toLocaleLowerCase()))),
+        );
+        setFlash(hasTerm ? null : spot.id);
         flashTimer.current = setTimeout(() => setFlash(null), 2400);
       });
     });
@@ -256,7 +275,7 @@ export function ReaderView({
       cancelAnimationFrame(frame);
       cancelAnimationFrame(nextFrame);
     };
-  }, [spot]);
+  }, [spot, texts]);
 
   const [picked, setPicked] = useState<number | null>(null); // 刚在目录里点的一项（同一页有好几节时高亮它）
   const goOutline = (item: OutlineData) => {
@@ -304,7 +323,12 @@ export function ReaderView({
             <button type="button" className="quiet zoom-label" onClick={() => setZoom(null)} title="适应宽度">
               {Math.round(scale * 100)}%
             </button>
-            <button type="button" className="quiet" onClick={() => setZoom(Math.min(4, scale + 0.15))} aria-label="放大">
+            <button
+              type="button"
+              className="quiet"
+              onClick={() => setZoom(Math.min(4, scale + 0.15))}
+              aria-label="放大"
+            >
               +
             </button>
           </div>
@@ -370,12 +394,28 @@ export function ReaderView({
             />
           </label>
           <span className="reader-search-count" aria-live="polite">
-            {searchQuery.trim() ? (searchResults.length ? `${activeSearchIndex + 1} / ${searchResults.length}` : "没有结果") : "输入关键词"}
+            {searchQuery.trim()
+              ? searchResults.length
+                ? `${activeSearchIndex + 1} / ${searchResults.length}`
+                : "没有结果"
+              : "输入关键词"}
           </span>
-          <button type="button" className="quiet" onClick={() => moveSearch(-1)} disabled={!searchResults.length} aria-label="上一个结果">
+          <button
+            type="button"
+            className="quiet"
+            onClick={() => moveSearch(-1)}
+            disabled={!searchResults.length}
+            aria-label="上一个结果"
+          >
             ↑
           </button>
-          <button type="button" className="quiet" onClick={() => moveSearch(1)} disabled={!searchResults.length} aria-label="下一个结果">
+          <button
+            type="button"
+            className="quiet"
+            onClick={() => moveSearch(1)}
+            disabled={!searchResults.length}
+            aria-label="下一个结果"
+          >
             ↓
           </button>
           <button type="button" className="quiet" onClick={() => setSearchOpen(false)}>
@@ -435,6 +475,7 @@ export function ReaderView({
               pageLinks={byPage.get(page.index)}
               blockLinks={byBlock}
               jumpTarget={jumpTarget?.page === page.index ? jumpTarget : null}
+              term={spot?.term}
               onJump={jump}
             />
           ))}
@@ -464,6 +505,7 @@ interface RowProps {
   pageLinks: LinkData[] | undefined;
   blockLinks: Map<string, LinkData[]>;
   jumpTarget: JumpTarget | null;
+  term: { source: string; target: string } | undefined;
   onJump: (page: number, top: number) => void;
 }
 
@@ -540,6 +582,28 @@ function JumpMarker({ top, scale }: { top: number; scale: number }) {
   );
 }
 
+function highlightPlainText(text: string, needle: string | undefined, key: string): ReactNode {
+  const value = needle?.trim();
+  if (!value) return text;
+  const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(escaped, "gi");
+  const parts: ReactNode[] = [];
+  let at = 0;
+  let match: RegExpExecArray | null;
+  let index = 0;
+  while ((match = re.exec(text))) {
+    if (match.index > at) parts.push(text.slice(at, match.index));
+    parts.push(
+      <mark className="term-highlight" key={`${key}-${index}`}>
+        {match[0]}
+      </mark>,
+    );
+    at = match.index + match[0].length;
+    index += 1;
+  }
+  return at === 0 ? text : [...parts, text.slice(at)];
+}
+
 function PageRow({
   page,
   scale,
@@ -560,6 +624,7 @@ function PageRow({
   pageLinks,
   blockLinks,
   jumpTarget,
+  term,
   onJump,
 }: RowProps) {
   const [ref, near] = useNearViewport<HTMLDivElement>();
@@ -604,7 +669,11 @@ function PageRow({
                     aria-label={t.sourceText}
                     onClick={() => selectSegment(t.segment.id)}
                   >
-                    {t.sourceText.replace(/<m\d+\/>/g, "[公式]").replace(/<\/?(?:sup|sub|b|i)>/g, "")}
+                    {highlightPlainText(
+                      t.sourceText.replace(/<m\d+\/>/g, "[公式]").replace(/<\/?(?:sup|sub|b|i)>/g, ""),
+                      term?.source,
+                      `source-${b.id}`,
+                    )}
                   </div>
                 ) : null;
               })}
@@ -650,6 +719,7 @@ function PageRow({
                     onHover={onHover}
                     onSelect={onSelect}
                     links={blockLinks.get(b.id)}
+                    highlight={term?.target}
                     onJump={onJump}
                   />
                 ) : null;
@@ -686,6 +756,7 @@ function OverlayBlock({
   onHover,
   onSelect,
   links,
+  highlight,
   onJump,
 }: {
   item: BlockText;
@@ -695,6 +766,7 @@ function OverlayBlock({
   onHover: (id: string | null) => void;
   onSelect: (id: string) => void;
   links: LinkData[] | undefined;
+  highlight?: string;
   onJump: (page: number, top: number) => void;
 }) {
   const { block, segment, text, translated, first } = item;
@@ -742,7 +814,7 @@ function OverlayBlock({
       onMouseEnter={() => onHover(segment.id)}
       onMouseLeave={() => onHover(null)}
       onClick={() => {
-            if (!window.getSelection()?.toString()) onSelect(segment.id);
+        if (!window.getSelection()?.toString()) onSelect(segment.id);
       }}
       tabIndex={first ? 0 : -1}
       role="button"
@@ -763,6 +835,7 @@ function OverlayBlock({
           formulas={segment.formulas}
           fallbackUrl={(k) => formulaUrl(segment.id, k)}
           links={inline}
+          highlight={highlight}
         />
       </div>
     </div>

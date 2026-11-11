@@ -38,6 +38,8 @@ interface Props {
   formulas: Record<string, { latex: string; bbox?: unknown }>;
   fallbackUrl: (key: string) => string;
   links?: InlineLink[];
+  /** 术语定位时只标出命中的词，不把整段当作定位目标。 */
+  highlight?: string;
 }
 
 function anchor(link: InlineLink | undefined, children: ReactNode[], key: string): ReactNode {
@@ -64,6 +66,30 @@ function anchor(link: InlineLink | undefined, children: ReactNode[], key: string
 
 /** 长词（如 Python/OR-Tools）在 / 之后允许断行（与导出 PDF 一致；浏览器默认只在连字符后断）。 */
 const SLASH_BREAK = /(?<=[A-Za-z0-9]\/)(?=[A-Za-z0-9])/;
+
+function highlighted(text: string, key: string, needle: string): ReactNode[] {
+  const value = needle.trim();
+  if (!value) return scripts(text, key);
+  const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(escaped, "gi");
+  const out: ReactNode[] = [];
+  let at = 0;
+  let match: RegExpExecArray | null;
+  let index = 0;
+  while ((match = re.exec(text))) {
+    if (match.index > at) out.push(...scripts(text.slice(at, match.index), `${key}p${index}`));
+    out.push(
+      <mark className="term-highlight" key={`${key}h${index}`}>
+        {scripts(match[0], `${key}h${index}`)}
+      </mark>,
+    );
+    at = match.index + match[0].length;
+    index += 1;
+  }
+  if (at === 0) return scripts(text, key);
+  if (at < text.length) out.push(...scripts(text.slice(at), `${key}p${index}`));
+  return out;
+}
 
 function latin(text: string, key: string): ReactNode[] {
   return text.split(SLASH_BREAK).flatMap((piece, i) => (i ? [<wbr key={`${key}w${i}`} />, piece] : [piece]));
@@ -100,7 +126,7 @@ function collect(nodes: RichNode[], out: string[]): void {
   }
 }
 
-export const InlineMathText = memo(function InlineMathText({ text, formulas, fallbackUrl, links }: Props) {
+export const InlineMathText = memo(function InlineMathText({ text, formulas, fallbackUrl, links, highlight }: Props) {
   const raw = tokenize(text);
   // 公式不参与文字格式解析，但两侧文字需要沿用同一个格式栈。
   const textParts = balanceRichParts(raw.flatMap((piece) => (piece.kind === "text" ? [piece.text] : [])));
@@ -114,17 +140,18 @@ export const InlineMathText = memo(function InlineMathText({ text, formulas, fal
   pieces.forEach((p) => collect(p.rich, leaves));
   const ranges = links?.length ? linkRanges(leaves, links) : null;
   let next = 0;
+  const renderLeaf = (s: string, key: string) => (highlight ? highlighted(s, key, highlight) : scripts(s, key));
   const leaf: Leaf = (s, key) => {
     const rs = ranges?.[next++] ?? [];
-    if (!rs.length) return scripts(s, key);
+    if (!rs.length) return renderLeaf(s, key);
     const out: ReactNode[] = [];
     let at = 0;
     rs.forEach((r, j) => {
-      if (r.start > at) out.push(...scripts(s.slice(at, r.start), `${key}t${j}`));
-      out.push(anchor(links?.[r.link], scripts(s.slice(r.start, r.end), `${key}a${j}`), `${key}l${j}`));
+      if (r.start > at) out.push(...renderLeaf(s.slice(at, r.start), `${key}t${j}`));
+      out.push(anchor(links?.[r.link], renderLeaf(s.slice(r.start, r.end), `${key}a${j}`), `${key}l${j}`));
       at = r.end;
     });
-    if (at < s.length) out.push(...scripts(s.slice(at), `${key}t`));
+    if (at < s.length) out.push(...renderLeaf(s.slice(at), `${key}t`));
     return out;
   };
   const nodes: ReactNode[] = pieces.map(({ piece, rich: parsed }, i) => {

@@ -37,7 +37,7 @@ export function JobPage() {
   const [showHistory, setShowHistory] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
   const [reviewingFailed, setReviewingFailed] = useState(false);
-  const [spot, setSpot] = useState<{ id: string; n: number } | null>(null);
+  const [spot, setSpot] = useState<{ id: string; n: number; term?: { source: string; target: string } } | null>(null);
   const [marked, setMarked] = useState<ReadonlySet<string>>(new Set());
   const [revealKey, setRevealKey] = useState(0);
   useEffect(() => {
@@ -188,6 +188,7 @@ export function JobPage() {
                   setShowTerms((v) => !v);
                   setShowHistory(false);
                   setSelected(null);
+                  setSpot(null);
                   setMarked(new Set());
                 }}
                 title="这篇用到的术语，检查译法是否一致"
@@ -201,6 +202,7 @@ export function JobPage() {
                 onClick={() => {
                   setShowHistory((v) => !v);
                   setShowTerms(false);
+                  setSpot(null);
                   setMarked(new Set());
                 }}
                 title="所有手动修改，可按步撤回"
@@ -232,9 +234,13 @@ export function JobPage() {
             jobId={id}
             doc={doc}
             onChange={onChange}
-            onSpot={(segmentId) => setSpot((s) => ({ id: segmentId, n: (s?.n ?? 0) + 1 }))}
+            onSpot={(segmentId, term) => setSpot((s) => ({ id: segmentId, n: (s?.n ?? 0) + 1, term }))}
             onMark={(ids) => setMarked(new Set(ids))}
-            onClose={() => setShowTerms(false)}
+            onClose={() => {
+              setShowTerms(false);
+              setSpot(null);
+              setMarked(new Set());
+            }}
           />
         )}
         {!showHistory && !showTerms && segment && (

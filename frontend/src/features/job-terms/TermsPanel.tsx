@@ -16,7 +16,7 @@ interface Props {
   jobId: string;
   doc: DocumentData;
   onChange: (seg: SegmentData) => void;
-  onSpot: (segmentId: string) => void; // 滚到这一段并短暂高亮
+  onSpot: (segmentId: string, term?: { source: string; target: string }) => void; // 滚到术语所在词并短暂高亮
   onMark: (segmentIds: string[]) => void; // 标出当前术语出现的所有段落
   onClose: () => void;
 }
@@ -45,7 +45,10 @@ export function TermsPanel({ jobId, doc, onChange, onSpot, onMark, onClose }: Pr
     const next = open === row.source ? null : row.source;
     setOpen(next);
     onMark(next ? row.segmentIds : []);
-    if (next && row.segmentIds[0]) onSpot(row.mismatchedIds[0] ?? row.segmentIds[0]);
+    if (next && row.segmentIds[0]) {
+      const id = row.mismatchedIds[0] ?? row.segmentIds[0];
+      onSpot(id, { source: row.source, target: row.target });
+    }
   };
 
   return (
@@ -65,7 +68,9 @@ export function TermsPanel({ jobId, doc, onChange, onSpot, onMark, onClose }: Pr
           关闭
         </button>
       </header>
-      <p className="hint">翻译时用到的术语。红字是译文里可能没用上推荐译法的段落；改了译法可以一键重翻用到它的段落。</p>
+      <p className="hint">
+        翻译时用到的术语。“可能未采用推荐译法”只表示译文里没有找到推荐译法的字面匹配，不代表语义一定错误；同义词或词形变化也可能被标记。点击术语会定位到具体词。
+      </p>
       <div className="terms-filter">
         <input
           type="search"
@@ -76,7 +81,7 @@ export function TermsPanel({ jobId, doc, onChange, onSpot, onMark, onClose }: Pr
         />
         <label className="choice-inline">
           <input type="checkbox" checked={onlyMismatch} onChange={(e) => setOnlyMismatch(e.target.checked)} />
-          只看可能不一致（{mismatchTerms}）
+          只看可能未采用推荐译法（{mismatchTerms}）
         </label>
         {libraryCount > 0 && (
           <label className="choice-inline">
@@ -102,7 +107,7 @@ export function TermsPanel({ jobId, doc, onChange, onSpot, onMark, onClose }: Pr
               <small>
                 {ORIGIN_LABELS[row.origin]} · {row.segmentIds.length} 段
                 {row.mismatchedIds.length > 0 && (
-                  <span className="error"> · {row.mismatchedIds.length} 段可能不一致</span>
+                  <span className="error"> · {row.mismatchedIds.length} 段可能未采用推荐译法</span>
                 )}
               </small>
             </button>
@@ -127,7 +132,7 @@ function TermDetail({
   jobId: string;
   doc: DocumentData;
   onChange: (seg: SegmentData) => void;
-  onSpot: (segmentId: string) => void;
+  onSpot: (segmentId: string, term?: { source: string; target: string }) => void;
 }) {
   const [at, setAt] = useState(0);
   const [target, setTarget] = useState(row.target);
@@ -142,7 +147,7 @@ function TermDetail({
     const n = (i + ids.length) % ids.length;
     setAt(n);
     const id = ids[n];
-    if (id) onSpot(id);
+    if (id) onSpot(id, { source: row.source, target: row.target });
   };
   const edited = new Set(doc.segments.filter((s) => s.status === "edited").map((s) => s.id));
   const redoAll = ids.filter((id) => !edited.has(id));

@@ -15,6 +15,7 @@ const use = (source: string, target: string, ids: string[], origin: TermUse["ori
 describe("本文术语", () => {
   it("译法有多个写法时任一即可，括号与空白不计", () => {
     expect(renders("注意力机制", "我们使用 注意力 机制。")).toBe(true);
+    expect(renders("注意力机制", "我们使用 注意<b>力</b>机制。")).toBe(true);
     expect(renders("随机失活；丢弃法", "加入丢弃法以防过拟合")).toBe(true);
     expect(renders("残差网络（ResNet）", "残差网络的深度")).toBe(true);
     expect(renders("映射", "函数 f 把输入变成输出")).toBe(false);

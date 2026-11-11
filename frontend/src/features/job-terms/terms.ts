@@ -1,5 +1,5 @@
 /**
- * 本文术语：用浏览器里最新的术语库覆盖服务器按建任务时算出的译法，并检查每段译文有没有用上推荐译法。
+ * 本文术语：用浏览器里最新的术语库覆盖服务器按建任务时算出的译法，并检查每段译文是否包含推荐译法的字面文本。
  */
 import { findTerm, type TermEntry } from "@/entities/glossary/model";
 import type { SegmentData, TermUse } from "@/shared/api/client";
@@ -18,12 +18,13 @@ export interface TermRow {
   origin: Origin;
   changed: boolean; // 建任务后在我的术语库里改过译法
   segmentIds: string[];
-  mismatchedIds: string[]; // 已翻译、但译文里没有推荐译法的段落
+  mismatchedIds: string[]; // 已翻译、但译文里没有推荐译法字面文本的段落
 }
 
 const ALTERNATIVES = /[；;/|、，,]/;
 const BRACKETS = /[（(][^）)]*[）)]/g;
-const squash = (s: string) => s.replace(/\s+/g, "").toLowerCase();
+const RICH_MARKUP = /<\/?(?:sup|sub|b|i)>|<m\d+\/>/gi;
+const squash = (s: string) => s.replace(RICH_MARKUP, "").replace(/\s+/g, "").toLowerCase();
 
 /** 译文里有没有用这个译法：译法有多个写法（“A；B”）时任一即可，括号里的注释与空白不计。 */
 export function renders(target: string, translation: string): boolean {
