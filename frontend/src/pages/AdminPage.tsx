@@ -40,9 +40,12 @@ type SubmissionRecordDetails = SubmissionRecord & {
 
 const stageNames: Record<string, string> = {
   parse: "版面解析",
+  fuse: "对齐文字",
+  segment: "切分段落",
+  glossary: "抽取术语",
   translate: "翻译",
   render: "文档生成",
-  export: "导出",
+  done: "已完成",
 };
 
 const titleSourceNames: Record<SubmissionRecord["title_source"], string> = {
