@@ -10,6 +10,7 @@ from pdftr.domain.submissions import (
     SubmissionRecord,
     SubmissionSearch,
     clean_title,
+    failure_details,
 )
 
 SCHEMA = """
@@ -25,15 +26,36 @@ CREATE TABLE IF NOT EXISTS submission_audit (
     first_completed_at TEXT,
     updated_at TEXT NOT NULL,
     record_source TEXT NOT NULL CHECK (record_source IN ('live', 'backfill')),
-    notice_version TEXT
+    notice_version TEXT,
+    current_stage TEXT,
+    failure_code TEXT,
+    failure_reason TEXT,
+    retryable INTEGER,
+    failure_updated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS submission_audit_time ON submission_audit (submitted_at DESC, job_id DESC);
 CREATE INDEX IF NOT EXISTS submission_audit_ip ON submission_audit (submitter_ip, submitted_at DESC, job_id DESC);
 """
 _COLUMNS = (
     "job_id, title, title_source, submitted_at, submitter_ip, ip_source, page_count, status, "
-    "first_completed_at, updated_at, record_source, notice_version"
+    "first_completed_at, updated_at, record_source, notice_version, current_stage, failure_code, "
+    "failure_reason, retryable, failure_updated_at"
 )
+
+_MIGRATION_COLUMNS = {
+    "current_stage": "TEXT",
+    "failure_code": "TEXT",
+    "failure_reason": "TEXT",
+    "retryable": "INTEGER",
+    "failure_updated_at": "TEXT",
+}
+
+
+def ensure_columns(db: sqlite3.Connection) -> None:
+    existing = {row[1] for row in db.execute("PRAGMA table_info(submission_audit)")}
+    for name, kind in _MIGRATION_COLUMNS.items():
+        if name not in existing:
+            db.execute(f"ALTER TABLE submission_audit ADD COLUMN {name} {kind}")
 
 
 def timestamp(value: datetime) -> str:
@@ -49,9 +71,10 @@ class SqliteSubmissions:
         title = clean_title(job.filename, filename=True)
         # 补录没有可靠的首次完成时间，不能用最后更新时间猜测。
         completed = timestamp(now) if job.status is JobStatus.DONE and not backfill else None
+        code, reason, retryable, failure_at = failure_details(job, now)
         return bool(
             self.db.execute(
-                f"INSERT OR IGNORE INTO submission_audit ({_COLUMNS}) VALUES ({', '.join('?' for _ in range(12))})",
+                f"INSERT OR IGNORE INTO submission_audit ({_COLUMNS}) VALUES ({', '.join('?' for _ in range(17))})",
                 (
                     job.id,
                     title or "未知标题",
@@ -65,15 +88,32 @@ class SqliteSubmissions:
                     timestamp(now),
                     "backfill" if backfill else "live",
                     None if backfill else context.notice_version,
+                    job.stage,
+                    code,
+                    reason,
+                    None if retryable is None else int(retryable),
+                    failure_at,
                 ),
             ).rowcount
         )
 
     def job_saved(self, job: Job, now: datetime, *, first_completion: bool) -> None:
+        code, reason, retryable, failure_at = failure_details(job, now)
         self.db.execute(
             "UPDATE submission_audit SET status = ?, updated_at = ?, "
-            "first_completed_at = COALESCE(first_completed_at, ?) WHERE job_id = ?",
-            (job.status, timestamp(now), timestamp(now) if first_completion else None, job.id),
+            "first_completed_at = COALESCE(first_completed_at, ?), current_stage = ?, failure_code = ?, "
+            "failure_reason = ?, retryable = ?, failure_updated_at = ? WHERE job_id = ?",
+            (
+                job.status,
+                timestamp(now),
+                timestamp(now) if first_completion else None,
+                job.stage,
+                code,
+                reason,
+                None if retryable is None else int(retryable),
+                failure_at,
+                job.id,
+            ),
         )
 
     def update_title(self, job_id: str, title: str, now: datetime) -> None:
@@ -107,10 +147,16 @@ class SqliteSubmissions:
             [*params, query.page_size, (query.page - 1) * query.page_size],
         ).fetchall()
         fields = tuple(SubmissionRecord.model_fields)
+        items = []
+        for row in rows:
+            values = dict(zip(fields, row, strict=True))
+            if values["retryable"] is not None:
+                values["retryable"] = bool(values["retryable"])
+            items.append(SubmissionRecord.model_validate(values))
         return SubmissionPage(
             generated_at=now,
             total=total,
             page=query.page,
             page_size=query.page_size,
-            items=[SubmissionRecord.model_validate(dict(zip(fields, row, strict=True))) for row in rows],
+            items=items,
         )

@@ -64,6 +64,44 @@ def test_save_does_not_invent_record_and_first_completion_survives_retries(store
     assert store.search_submissions(SubmissionSearch()).total == 1
 
 
+def test_failed_job_keeps_safe_stage_reason_and_retry_flag(store: SqliteStore):
+    current = job(stage="translate")
+    store.create_job(current, CONTEXT)
+    current.status = JobStatus.FAILED
+    current.error = "翻译结果校验失败，已尝试 10 次"
+    store.save_job(current)
+    record = store.search_submissions(SubmissionSearch()).items[0]
+    assert record.current_stage == "translate"
+    assert record.failure_code == "translation_validation"
+    assert record.failure_reason == "译文校验未通过，已达到尝试次数或时间上限"
+    assert record.retryable is True
+    assert record.failure_updated_at is not None
+
+
+def test_existing_submission_schema_is_migrated(tmp_path: Path):
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as db:
+        db.executescript(
+            """
+            CREATE TABLE submission_audit (
+                job_id TEXT PRIMARY KEY, title TEXT NOT NULL, title_source TEXT NOT NULL,
+                submitted_at TEXT NOT NULL, submitter_ip TEXT, ip_source TEXT NOT NULL,
+                page_count INTEGER NOT NULL, status TEXT NOT NULL, first_completed_at TEXT,
+                updated_at TEXT NOT NULL, record_source TEXT NOT NULL, notice_version TEXT
+            );
+            INSERT INTO submission_audit VALUES
+              ('old', '旧', 'filename', '2026-01-01T00:00:00+00:00', NULL, 'unknown', 1,
+               'failed', NULL, '2026-01-01T00:00:00+00:00', 'live', NULL);
+            """
+        )
+    migrated = SqliteStore(path, submission_audit_enabled=True)
+    try:
+        record = migrated.search_submissions(SubmissionSearch()).items[0]
+        assert record.failure_code is None and record.current_stage is None
+    finally:
+        migrated.close()
+
+
 def test_disabled_collection_never_updates_or_backfills_completion(tmp_path: Path, monkeypatch):
     path = tmp_path / "app.db"
     current = job()

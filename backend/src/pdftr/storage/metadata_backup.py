@@ -22,6 +22,11 @@ TABLE_COLUMNS = {
         "updated_at",
         "record_source",
         "notice_version",
+        "current_stage",
+        "failure_code",
+        "failure_reason",
+        "retryable",
+        "failure_updated_at",
     ),
 }
 INTEGER_COLUMNS = {
@@ -32,6 +37,7 @@ INTEGER_COLUMNS = {
     "pages_submitted",
     "completed",
     "page_count",
+    "retryable",
 }
 
 

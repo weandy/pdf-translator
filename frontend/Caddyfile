@@ -10,6 +10,12 @@
 {$PDFTR_LISTEN::80} {
 	encode zstd gzip
 
+	# 旧管理网页入口不再回退到 SPA，避免误显示登录页或应用壳
+	@legacy_admin path /admin /admin/*
+	handle @legacy_admin {
+		respond 404
+	}
+
 	# 接口转发给后端（默认是同一 Compose 网络里的服务 app）
 	handle /api/* {
 		reverse_proxy {$PDFTR_UPSTREAM:app:8000} {
@@ -42,3 +48,6 @@
 	# 	admin <bcrypt 哈希>
 	# }
 }
+
+# 轻量模式：只起后端 app 和前端 web，本地不跑任何模型（docs/01-tech-stack.md §6）
+# 启动：在仓库根目录执行  docker compose -f deploy/docker-compose.yml up -d --build

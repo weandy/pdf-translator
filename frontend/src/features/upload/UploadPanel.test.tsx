@@ -77,14 +77,14 @@ describe("共享 MinerU 上传流程", () => {
   }
   const startButton = () => [...host.querySelectorAll("button")].find((button) => button.textContent === "开始翻译")!;
 
-  it("只有明确开启提交账本时展示标题与提交IP长期留存告知", async () => {
+  it("只有明确开启提交账本时展示有限性告知", async () => {
     await render(true);
     expect(host.textContent).not.toContain("本站长期保存论文标题");
     await act(async () => root.unmount());
     root = createRoot(host);
     await render(true, true);
-    expect(host.querySelector('[role="note"]')?.textContent).toContain("提交 IP");
-    expect(host.querySelector('[role="note"]')?.textContent).toContain("仅供管理员查看");
+    expect(host.querySelector('[role="note"]')?.textContent).toContain("必要信息");
+    expect(host.querySelector('[role="note"]')?.textContent).toContain("公开统计仅展示聚合数量");
     expect(host.querySelector('a[href="/guide#privacy"]')).not.toBeNull();
   });
 

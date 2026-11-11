@@ -30,6 +30,27 @@ const statusNames: Record<SubmissionRecord["status"], string> = {
   cancelled: "已取消",
 };
 
+type SubmissionRecordDetails = SubmissionRecord & {
+  current_stage?: string | null;
+  failure_code?: string | null;
+  failure_reason?: string | null;
+  retryable?: boolean | null;
+  failure_updated_at?: string | null;
+};
+
+const stageNames: Record<string, string> = {
+  parse: "版面解析",
+  translate: "翻译",
+  render: "文档生成",
+  export: "导出",
+};
+
+const titleSourceNames: Record<SubmissionRecord["title_source"], string> = {
+  parsed: "PDF 识别",
+  filename: "文件名回退",
+  unknown: "未识别",
+};
+
 function range(days: number | null): Pick<SubmissionSearch, "date_from" | "date_to"> {
   if (days === null) return { date_from: null, date_to: null };
   const today = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -167,13 +188,25 @@ export function AdminLoginPage({ adminPath = "/weandy" }: AdminPageProps) {
 }
 
 function SubmissionCard({ record }: { record: SubmissionRecord }) {
+  const details = record as SubmissionRecordDetails;
   const [copyMessage, setCopyMessage] = useState("");
+  const [titleMessage, setTitleMessage] = useState("");
+  const [titleExpanded, setTitleExpanded] = useState(false);
+  const title = record.title || "未记录标题";
   async function copyIp() {
     try {
       await navigator.clipboard.writeText(record.submitter_ip!);
       setCopyMessage("已复制");
     } catch {
       setCopyMessage("复制失败，请手动选择完整 IP。");
+    }
+  }
+  async function copyTitle() {
+    try {
+      await navigator.clipboard.writeText(title);
+      setTitleMessage("已复制");
+    } catch {
+      setTitleMessage("复制失败");
     }
   }
   return (
@@ -186,20 +219,33 @@ function SubmissionCard({ record }: { record: SubmissionRecord }) {
         </div>
         <div className="admin-record-title">
           <span className="admin-cell-label">论文标题</span>
-          <details>
-            <summary>
-              <span className="admin-title-preview">{record.title || "未记录标题"}</span>
-              <span className="hint">展开完整标题</span>
-            </summary>
-            <p>{record.title || "未记录标题"}</p>
-          </details>
-          <small>
-            {record.title_source === "parsed"
-              ? "识别标题"
-              : record.title_source === "filename"
-                ? "上传名回退"
-                : "标题未识别"}
-          </small>
+          <p className="admin-title-preview" title={title}>
+            {title}
+          </p>
+          <div className="admin-title-meta">
+            <span className="admin-title-source">{titleSourceNames[record.title_source]}</span>
+            <button
+              type="button"
+              className="link admin-title-toggle"
+              aria-expanded={titleExpanded}
+              onClick={() => setTitleExpanded((expanded) => !expanded)}
+            >
+              {titleExpanded ? "收起标题" : "查看完整标题"}
+            </button>
+          </div>
+          {titleExpanded && (
+            <div className="admin-title-full">
+              <span>{title}</span>
+              <div className="admin-title-actions">
+                <button type="button" className="link" onClick={() => void copyTitle()}>
+                  复制标题
+                </button>
+                <span className="admin-copy-message" role="status">
+                  {titleMessage}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
         <div>
           <span className="admin-cell-label">提交 IP</span>
@@ -222,11 +268,24 @@ function SubmissionCard({ record }: { record: SubmissionRecord }) {
           {record.page_count}
         </div>
         <div>
-          <span className="admin-cell-label">当前状态</span>
+          <span className="admin-cell-label">任务状态</span>
           <strong>{statusNames[record.status]}</strong>
+          {(details.current_stage || record.status === "running" || record.status === "queued") && (
+            <small>当前阶段：{stageNames[details.current_stage ?? ""] ?? details.current_stage ?? "等待调度"}</small>
+          )}
+          {record.status === "failed" && (
+            <div className="admin-failure">
+              <small>失败原因：{details.failure_reason || "该记录创建时未保存失败原因"}</small>
+              {details.failure_code && <small>失败类型：{details.failure_code}</small>}
+              {details.retryable !== null && details.retryable !== undefined && (
+                <small>{details.retryable ? "可以重试" : "暂不建议重试"}</small>
+              )}
+            </div>
+          )}
           <small>
             首次完成：{record.first_completed_at ? dateTime.format(new Date(record.first_completed_at)) : "未记录"}
           </small>
+          {details.failure_updated_at && <small>失败更新时间：{dateTime.format(new Date(details.failure_updated_at))}</small>}
         </div>
       </article>
     </li>
@@ -570,6 +629,9 @@ export function AdminSubmissionsPage({ adminPath = "/weandy" }: AdminPageProps) 
             <p className="hint">
               更新于 {dateTime.format(new Date(data.generated_at))}。新提交可能改变翻页位置，刷新将回到第一页。
             </p>
+            <p className="admin-status-help">
+              任务状态表示整篇任务的处理进度：排队中等待调度，处理中正在执行，已完成可阅读或导出，失败可查看原因，已取消可重新提交。
+            </p>
             {data.items.length ? (
               <>
                 <div className="admin-table-head" aria-hidden="true">
@@ -577,7 +639,7 @@ export function AdminSubmissionsPage({ adminPath = "/weandy" }: AdminPageProps) 
                   <span>论文标题</span>
                   <span>提交 IP</span>
                   <span>上传页数</span>
-                  <span>当前状态</span>
+                  <span>任务状态</span>
                 </div>
                 <ol className="admin-records" aria-label="提交记录列表">
                   {data.items.map((record) => (

@@ -384,8 +384,8 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
       </p>
       {config?.submission_audit_enabled && (
         <p className="notice" role="note">
-          本站长期保存论文标题、提交时间、提交 IP、页数及任务状态，仅供管理员查看；公开统计只展示聚合数量。
-          正文和文件按上述保留期清理，正在运行的任务可能延后。<a href="/guide#privacy">数据保留说明</a>
+          本服务会按数据保留说明处理使用过程中的必要信息，公开统计仅展示聚合数量；正文和文件按保留期清理，正在运行的任务可能延后。
+          <a href="/guide#privacy">查看数据保留说明</a>
         </p>
       )}
 

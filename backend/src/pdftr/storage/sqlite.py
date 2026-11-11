@@ -17,6 +17,7 @@ from pdftr.storage.stats import SCHEMA as STATS_SCHEMA
 from pdftr.storage.stats import SqliteStats, utc_now
 from pdftr.storage.submissions import SCHEMA as SUBMISSIONS_SCHEMA
 from pdftr.storage.submissions import SqliteSubmissions
+from pdftr.storage.submissions import ensure_columns as ensure_submission_columns
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -58,6 +59,7 @@ class SqliteStore:
         # 覆盖主库逻辑删除的单元格；WAL 和既有备份仍需独立的保留策略。
         self._db.execute("PRAGMA secure_delete=ON")
         self._db.executescript(_SCHEMA + STATS_SCHEMA + SUBMISSIONS_SCHEMA)
+        ensure_submission_columns(self._db)
         self._stats = SqliteStats(self._db)
         self._submissions = SqliteSubmissions(self._db)
         self._submission_audit_enabled = submission_audit_enabled

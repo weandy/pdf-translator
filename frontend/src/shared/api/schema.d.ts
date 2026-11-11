@@ -1140,6 +1140,16 @@ export interface components {
             record_source: "live" | "backfill";
             /** Notice Version */
             notice_version: string | null;
+            /** Current Stage */
+            current_stage?: string | null;
+            /** Failure Code */
+            failure_code?: string | null;
+            /** Failure Reason */
+            failure_reason?: string | null;
+            /** Retryable */
+            retryable?: boolean | null;
+            /** Failure Updated At */
+            failure_updated_at?: string | null;
         };
         /** SubmissionSearch */
         SubmissionSearch: {
