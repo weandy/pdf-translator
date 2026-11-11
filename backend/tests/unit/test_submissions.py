@@ -102,6 +102,38 @@ def test_existing_submission_schema_is_migrated(tmp_path: Path):
         migrated.close()
 
 
+def test_existing_failed_job_gets_reason_backfilled(tmp_path: Path):
+    path = tmp_path / "backfill.db"
+    failed = job(stage="translate", status=JobStatus.FAILED, error="翻译结果校验失败，已尝试 10 次")
+    with sqlite3.connect(path) as db:
+        db.executescript(
+            """
+            CREATE TABLE jobs (id TEXT PRIMARY KEY, status TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL);
+            CREATE TABLE submission_audit (
+                job_id TEXT PRIMARY KEY, title TEXT NOT NULL, title_source TEXT NOT NULL,
+                submitted_at TEXT NOT NULL, submitter_ip TEXT, ip_source TEXT NOT NULL,
+                page_count INTEGER NOT NULL, status TEXT NOT NULL, first_completed_at TEXT,
+                updated_at TEXT NOT NULL, record_source TEXT NOT NULL, notice_version TEXT
+            );
+            """
+        )
+        db.execute(
+            "INSERT INTO jobs VALUES (?, ?, ?, ?)",
+            (failed.id, failed.status, failed.model_dump_json(), NOW.isoformat()),
+        )
+        db.execute(
+            "INSERT INTO submission_audit VALUES (?, ?, ?, ?, NULL, 'unknown', ?, 'failed', NULL, ?, 'live', NULL)",
+            (failed.id, "synthetic", "filename", NOW.isoformat(), failed.page_count, NOW.isoformat()),
+        )
+    migrated = SqliteStore(path, submission_audit_enabled=True)
+    try:
+        record = migrated.search_submissions(SubmissionSearch()).items[0]
+        assert record.failure_code == "translation_validation"
+        assert record.failure_reason is not None
+    finally:
+        migrated.close()
+
+
 def test_disabled_collection_never_updates_or_backfills_completion(tmp_path: Path, monkeypatch):
     path = tmp_path / "app.db"
     current = job()

@@ -16,7 +16,7 @@ from pdftr.domain.submissions import SubmissionContext, SubmissionPage, Submissi
 from pdftr.storage.stats import SCHEMA as STATS_SCHEMA
 from pdftr.storage.stats import SqliteStats, utc_now
 from pdftr.storage.submissions import SCHEMA as SUBMISSIONS_SCHEMA
-from pdftr.storage.submissions import SqliteSubmissions
+from pdftr.storage.submissions import SqliteSubmissions, backfill_failure_details
 from pdftr.storage.submissions import ensure_columns as ensure_submission_columns
 
 _SCHEMA = """
@@ -60,6 +60,8 @@ class SqliteStore:
         self._db.execute("PRAGMA secure_delete=ON")
         self._db.executescript(_SCHEMA + STATS_SCHEMA + SUBMISSIONS_SCHEMA)
         ensure_submission_columns(self._db)
+        with self._db:
+            backfill_failure_details(self._db, utc_now())
         self._stats = SqliteStats(self._db)
         self._submissions = SqliteSubmissions(self._db)
         self._submission_audit_enabled = submission_audit_enabled

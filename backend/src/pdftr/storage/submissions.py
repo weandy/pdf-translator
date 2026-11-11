@@ -58,6 +58,28 @@ def ensure_columns(db: sqlite3.Connection) -> None:
             db.execute(f"ALTER TABLE submission_audit ADD COLUMN {name} {kind}")
 
 
+def backfill_failure_details(db: sqlite3.Connection, now: datetime) -> None:
+    """为升级前仍存在的失败任务补上安全摘要；已清理任务保持未知。"""
+    rows = db.execute(
+        "SELECT a.job_id, j.data FROM submission_audit AS a "
+        "JOIN jobs AS j ON j.id = a.job_id "
+        "WHERE a.status = 'failed' AND a.failure_reason IS NULL"
+    ).fetchall()
+    for job_id, data in rows:
+        try:
+            job = Job.model_validate_json(data)
+        except (TypeError, ValueError):
+            continue
+        code, reason, retryable, failure_at = failure_details(job, job.updated_at or now)
+        if reason is None:
+            continue
+        db.execute(
+            "UPDATE submission_audit SET current_stage = ?, failure_code = ?, failure_reason = ?, "
+            "retryable = ?, failure_updated_at = ? WHERE job_id = ? AND failure_reason IS NULL",
+            (job.stage, code, reason, None if retryable is None else int(retryable), failure_at, job_id),
+        )
+
+
 def timestamp(value: datetime) -> str:
     return value.astimezone(UTC).isoformat(timespec="microseconds")
 
