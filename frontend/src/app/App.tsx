@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { lazy, Suspense, useState } from "react";
 import { createBrowserRouter, Link, Outlet, RouterProvider, useLocation, useOutletContext } from "react-router";
 
@@ -9,7 +9,7 @@ import { GlossaryPage } from "@/pages/GlossaryPage";
 import { GuidePage } from "@/pages/GuidePage";
 import { HomePage } from "@/pages/HomePage";
 import { StatsPage } from "@/pages/StatsPage";
-import { setAuthHeaders } from "@/shared/api/client";
+import { api, setAuthHeaders, type ServerConfig } from "@/shared/api/client";
 
 // 把浏览器里保存的 Key 注入接口客户端（shared 层不依赖 entities，由这里连接）
 setAuthHeaders(() => authHeaders());
@@ -71,23 +71,36 @@ function Home() {
   return <HomePage openSettings={openSettings} />;
 }
 
+function AdminNotFound() {
+  return <main className="center muted">页面不存在</main>;
+}
+
+function ConfiguredAdminRoute() {
+  const location = useLocation();
+  const { data, isPending, isError } = useQuery({
+    queryKey: ["config"],
+    queryFn: api.config,
+    retry: false,
+  });
+  if (isPending) return <main className="center muted">正在读取管理入口…</main>;
+  if (isError || !data) return <main className="center muted">暂时无法读取管理入口配置，请稍后重试。</main>;
+  const adminPath = (data as ServerConfig & { admin_path?: string }).admin_path;
+  const loginPath = `${adminPath}/login`;
+  if (!adminPath || (location.pathname !== loginPath && location.pathname !== `${adminPath}/submissions`)) {
+    return <AdminNotFound />;
+  }
+  return (
+    <Suspense fallback={<main className="center muted">加载管理页面…</main>}>
+      {location.pathname === `${adminPath}/submissions` ? (
+        <AdminSubmissionsPage adminPath={adminPath} />
+      ) : (
+        <AdminLoginPage adminPath={adminPath} />
+      )}
+    </Suspense>
+  );
+}
+
 const router = createBrowserRouter([
-  {
-    path: "/admin/login",
-    element: (
-      <Suspense fallback={<main className="center muted">加载管理页面…</main>}>
-        <AdminLoginPage />
-      </Suspense>
-    ),
-  },
-  {
-    path: "/admin/submissions",
-    element: (
-      <Suspense fallback={<main className="center muted">加载管理页面…</main>}>
-        <AdminSubmissionsPage />
-      </Suspense>
-    ),
-  },
   {
     element: <Layout />,
     children: [
@@ -105,6 +118,8 @@ const router = createBrowserRouter([
       },
     ],
   },
+  // 兜底路由必须放在公共路由之后，避免管理入口抢占 /stats、/guide 等页面。
+  { path: "*", element: <ConfiguredAdminRoute /> },
 ]);
 
 export function App() {

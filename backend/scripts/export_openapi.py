@@ -14,8 +14,14 @@ from pdftr.config import Settings
 from pdftr.container import build_container
 
 with tempfile.TemporaryDirectory() as tmp:
-    app = create_app(build_container(Settings(data_dir=Path(tmp), glossary_sources="")))
-    schema = app.openapi()
+    container = build_container(Settings(data_dir=Path(tmp), glossary_sources=""))
+    try:
+        schema = create_app(container).openapi()
+    finally:
+        container.pipeline.deps.store.close()
+        container.pipeline.deps.cache.close()
+        if container.admin:
+            container.admin.store.close()
 out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("openapi.json")
 out.write_text(json.dumps(schema, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
 print(f"已写入 {out}")

@@ -55,6 +55,36 @@ def test_invalid_management_origin_is_rejected(origin):
         Settings(_env_file=None, admin_origin=origin)  # type: ignore[call-arg]
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "admin",
+        "/",
+        "/api",
+        "/jobs",
+        "/stats",
+        "/guide",
+        "/glossary",
+        "/assets",
+        "/a.b",
+        "/a/b",
+        "/a%2Fb",
+        "/ with-space",
+    ],
+)
+def test_invalid_management_path_is_rejected(path: str):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, admin_path=path)  # type: ignore[call-arg]
+
+
+def test_management_path_and_session_days_are_environment_driven():
+    settings = Settings(_env_file=None, admin_path="/weandy", admin_session_days=30)  # type: ignore[call-arg]
+    assert settings.admin_path == "/weandy"
+    assert settings.admin_session_days == 30
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, admin_session_days=31)  # type: ignore[call-arg]
+
+
 def test_audit_settings_require_all_explicit_configuration(password_hash: str):
     assert not Settings(_env_file=None).submission_audit_enabled  # type: ignore[call-arg]
     with pytest.raises(ValidationError):
@@ -81,12 +111,12 @@ def test_audit_settings_require_all_explicit_configuration(password_hash: str):
 def test_persisted_digest_restart_rotation_expiry_and_logout(tmp_path: Path, password_hash: str):
     path = tmp_path / "app.db"
     first_store = SqliteAdminSessionStore(path)
-    first_auth = AdminAuth(first_store, password_hash, "https://admin.test")
+    first_auth = AdminAuth(first_store, password_hash, "https://admin.test", 30 * 86400)
     token, identity = asyncio.run(first_auth.login(PASSWORD, "192.0.2.1"))
     assert len(token) == 43
     assert identity.token_hash == token_digest(token) == hashlib.sha256(token.encode()).hexdigest()
     assert identity.csrf_token == csrf_for(token)
-    assert identity.expires_at - identity.created_at == timedelta(hours=8)
+    assert identity.expires_at - identity.created_at == timedelta(days=30)
     first_store.close()
     with sqlite3.connect(path) as db:
         row = db.execute("SELECT * FROM admin_sessions").fetchone()
@@ -94,7 +124,7 @@ def test_persisted_digest_restart_rotation_expiry_and_logout(tmp_path: Path, pas
         assert PASSWORD not in str(row)
     store = SqliteAdminSessionStore(path)
     try:
-        auth = AdminAuth(store, password_hash, "https://admin.test")
+        auth = AdminAuth(store, password_hash, "https://admin.test", 30 * 86400)
         assert auth.authenticate(token) == identity
         assert auth.authenticate(token).expires_at == identity.expires_at
         auth.logout(identity)
@@ -108,7 +138,7 @@ def test_persisted_digest_restart_rotation_expiry_and_logout(tmp_path: Path, pas
         auth.purge()
         assert store.get(identity.token_hash) is None
         token, _ = asyncio.run(auth.login(PASSWORD, None))
-        rotated = AdminAuth(store, hash_password(PASSWORD + "-rotated"), "https://admin.test")
+        rotated = AdminAuth(store, hash_password(PASSWORD + "-rotated"), "https://admin.test", 30 * 86400)
         with pytest.raises(InvalidAdminCredentials):
             rotated.authenticate(token)
     finally:
@@ -117,7 +147,7 @@ def test_persisted_digest_restart_rotation_expiry_and_logout(tmp_path: Path, pas
 
 def test_concurrent_failures_only_run_five_expensive_verifications(tmp_path: Path, password_hash: str):
     store = SqliteAdminSessionStore(tmp_path / "app.db")
-    auth = AdminAuth(store, password_hash, "https://admin.test")
+    auth = AdminAuth(store, password_hash, "https://admin.test", 30 * 86400)
     calls = 0
 
     class FakePassword:
@@ -164,7 +194,7 @@ def test_limiter_has_expiry_global_limit_and_bounded_capacity():
 
 def test_cancelled_login_keeps_work_serialized_and_counts_failure(tmp_path: Path, password_hash: str):
     store = SqliteAdminSessionStore(tmp_path / "app.db")
-    auth = AdminAuth(store, password_hash, "https://admin.test")
+    auth = AdminAuth(store, password_hash, "https://admin.test", 30 * 86400)
     started = threading.Event()
     release = threading.Event()
     active = 0

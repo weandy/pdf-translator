@@ -2153,6 +2153,10 @@
       "type": "integer",
       "title": "Retention Hours"
      },
+     "admin_path": {
+      "type": "string",
+      "title": "Admin Path"
+     },
      "submission_audit_enabled": {
       "type": "boolean",
       "title": "Submission Audit Enabled",
@@ -2178,6 +2182,7 @@
      "max_upload_mb",
      "max_pages",
      "retention_hours",
+     "admin_path",
      "attributions"
     ],
     "title": "ConfigOut",

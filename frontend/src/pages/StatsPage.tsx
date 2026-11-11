@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
 
 import { STATS_DAYS, useSiteStats } from "@/entities/stats/model";
 import { StatsMetrics, STATS_METRICS } from "@/features/site-stats/StatsMetrics";
-import type { SiteStats } from "@/shared/api/client";
+import { api, type ServerConfig, type SiteStats } from "@/shared/api/client";
 import { ErrorCard } from "@/shared/feedback/ErrorCard";
 
 type Metric = (typeof STATS_METRICS)[number]["key"];
@@ -86,6 +87,8 @@ function Trend({ daily, metric }: { daily: SiteStats["daily"]; metric: Metric })
 }
 
 export function StatsPage() {
+  const { data: config } = useQuery({ queryKey: ["config"], queryFn: api.config, retry: false });
+  const adminPath = (config as (ServerConfig & { admin_path?: string }) | undefined)?.admin_path;
   const { data, error, isFetching, refetch } = useSiteStats();
   const [metric, setMetric] = useState<Metric>("page_views");
   useEffect(() => {
@@ -210,7 +213,7 @@ export function StatsPage() {
                 等元数据会长期保存，仅供管理员查看；正文和文件按保留期清理。
               </li>
             </ul>
-            <Link to="/admin/login">管理登录</Link>
+            {adminPath && <Link to={`${adminPath}/login`}>管理登录</Link>}
           </aside>
         </>
       )}

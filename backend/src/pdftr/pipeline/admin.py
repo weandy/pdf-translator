@@ -12,7 +12,6 @@ from datetime import UTC, datetime, timedelta
 from math import ceil
 
 from pdftr.domain.admin import (
-    SESSION_SECONDS,
     AdminIdentity,
     AdminPassword,
     AdminSession,
@@ -69,9 +68,10 @@ class WindowLimiter:
 
 
 class AdminAuth:
-    def __init__(self, store: AdminSessionStore, password_hash: str, origin: str) -> None:
+    def __init__(self, store: AdminSessionStore, password_hash: str, origin: str, session_seconds: int) -> None:
         self.store = store
         self.origin = origin
+        self.session_seconds = session_seconds
         self.password = AdminPassword.parse(password_hash)
         self.password_version = hashlib.sha256(password_hash.encode("ascii")).hexdigest()
         self._password_lock = threading.Lock()
@@ -91,7 +91,7 @@ class AdminAuth:
         token = secrets.token_urlsafe(32)
         now = datetime.now(UTC)
         session = AdminSession(
-            token_digest(token), now, now + timedelta(seconds=SESSION_SECONDS), self.password_version
+            token_digest(token), now, now + timedelta(seconds=self.session_seconds), self.password_version
         )
         self.store.save(session)
         return token, self._identity(session, token)

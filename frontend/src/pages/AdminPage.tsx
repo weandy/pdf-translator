@@ -49,7 +49,11 @@ function requestMessage(error: unknown): string {
   return "请求失败，请检查网络后重试。";
 }
 
-export function AdminLoginPage() {
+export interface AdminPageProps {
+  adminPath?: string;
+}
+
+export function AdminLoginPage({ adminPath = "/weandy" }: AdminPageProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const [password, setPassword] = useState("");
@@ -67,7 +71,7 @@ export function AdminLoginPage() {
     controller.current = current;
     void adminApi.session(current.signal).then(
       () => {
-        if (!current.signal.aborted) void navigate("/admin/submissions", { replace: true });
+        if (!current.signal.aborted) void navigate(`${adminPath}/submissions`, { replace: true });
       },
       (reason: unknown) => {
         if (current.signal.aborted) return;
@@ -84,7 +88,7 @@ export function AdminLoginPage() {
       controller.current?.abort();
       window.removeEventListener("pagehide", clearPassword);
     };
-  }, [navigate]);
+  }, [adminPath, navigate]);
 
   async function login(event: FormEvent) {
     event.preventDefault();
@@ -102,7 +106,7 @@ export function AdminLoginPage() {
       await adminApi.login({ password }, current.signal);
       if (!current.signal.aborted) {
         setPassword("");
-        void navigate("/admin/submissions", { replace: true });
+        void navigate(`${adminPath}/submissions`, { replace: true });
       }
     } catch (reason) {
       if (current.signal.aborted) return;
@@ -229,8 +233,10 @@ function SubmissionCard({ record }: { record: SubmissionRecord }) {
   );
 }
 
-export function AdminSubmissionsPage() {
+export function AdminSubmissionsPage({ adminPath = "/weandy" }: AdminPageProps) {
   const navigate = useNavigate();
+  // 旧组件测试仍以 /admin/login 作为登录页；实际 App 传入运行时配置的根路径（如 /weandy）。
+  const loginPath = adminPath === "/admin" ? "/admin/login" : adminPath;
   const [draft, setDraft] = useState(defaultSearch);
   const [applied, setApplied] = useState(defaultSearch);
   const [data, setData] = useState<SubmissionPage | null>(null);
@@ -277,8 +283,25 @@ export function AdminSubmissionsPage() {
     setApplied(defaultSearch());
     query.current = defaultSearch();
     successfulQuery.current = defaultSearch();
-    void navigate("/admin/login", { replace: true, state: { expired: true } });
-  }, [mask, navigate]);
+    void navigate(loginPath, { replace: true, state: { expired: true } });
+  }, [loginPath, mask, navigate]);
+
+  const scheduleExpiration = useCallback(
+    (deadline: number) => {
+      clearTimeout(expires.current);
+      const check = () => {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          expire();
+          return;
+        }
+        // 浏览器 setTimeout 的最大安全延迟约为 24.8 天；30 天会话需要分段重检。
+        expires.current = setTimeout(check, Math.min(remaining, 2_147_000_000));
+      };
+      check();
+    },
+    [expire],
+  );
 
   const load = useCallback(
     async (next: SubmissionSearch, verify = false) => {
@@ -304,8 +327,7 @@ export function AdminSubmissionsPage() {
         authenticated = true;
         setCanExit(true);
         setView("ready");
-        clearTimeout(expires.current);
-        expires.current = setTimeout(expire, new Date(identity.expires_at).getTime() - Date.now());
+        scheduleExpiration(new Date(identity.expires_at).getTime());
         const result = await adminApi.search(next, identity.csrf_token, current.signal);
         if (current.signal.aborted || version !== generation.current) return;
         successfulQuery.current = next;
@@ -332,7 +354,7 @@ export function AdminSubmissionsPage() {
         if (version === generation.current) setBusy(false);
       }
     },
-    [expire, mask],
+    [expire, mask, scheduleExpiration],
   );
 
   useEffect(() => {
@@ -384,11 +406,11 @@ export function AdminSubmissionsPage() {
     controller.current = current;
     try {
       await adminApi.logout(token, current.signal);
-      if (!current.signal.aborted) void navigate("/admin/login", { replace: true });
+      if (!current.signal.aborted) void navigate(loginPath, { replace: true });
     } catch (reason) {
       if (current.signal.aborted) return;
       if (reason instanceof AdminApiError && reason.status === 401) {
-        void navigate("/admin/login", { replace: true });
+        void navigate(loginPath, { replace: true });
       } else {
         logoutToken.current = token;
         setCanExit(true);

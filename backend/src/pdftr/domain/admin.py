@@ -14,7 +14,6 @@ SCRYPT_N = 32768
 SCRYPT_R = 8
 SCRYPT_P = 1
 SESSION_COOKIE = "__Host-pdftr_admin"
-SESSION_SECONDS = 8 * 60 * 60
 
 
 def _encode(value: bytes) -> str:

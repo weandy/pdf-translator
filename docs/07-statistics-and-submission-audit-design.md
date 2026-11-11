@@ -53,8 +53,8 @@
 | 路由 | 使用者 | 内容 | 数据保护 |
 | --- | --- | --- | --- |
 | `/stats` | 所有访问者 | 最近 7 天聚合统计 | 无论文名、IP、任务 ID、浏览器标识 |
-| `/admin/login` | 管理员 | 单一管理密码登录 | 不加载明细，不上报页面访问 |
-| `/admin/submissions` | 已登录管理员 | 标题、IP、提交时间、页数、状态 | 每次 API 请求均验证管理员会话 |
+| `/weandy/login`（可配置） | 管理员 | 单一管理密码登录 | 不加载明细，不上报页面访问 |
+| `/weandy/submissions`（可配置） | 已登录管理员 | 标题、IP、提交时间、页数、状态 | 每次 API 请求均验证管理员会话 |
 
 顶部保留“统计”入口，不在首页增加统计展示。公开统计页底部提供低强调的“管理登录”文字链接；入口本身不构成保护。管理员页面采用独立布局，不展示翻译 Key 设置面板，也不计入公开 PV/浏览器统计。
 
@@ -224,7 +224,7 @@ type PublicStats = {
 - 管理密码至少 16 字符，推荐使用密码管理器生成的随机密码。登录输入限制 256 UTF-8 字节，比较使用恒定时间方法。
 - 登录成功生成至少 256 位随机会话 Token；浏览器只收到 Cookie，SQLite `admin_sessions` 仅保存 Token 的 SHA256、创建/到期时间与密码配置版本摘要。
 - 使用 `__Host-pdftr_admin` Cookie：`HttpOnly; Secure; SameSite=Strict; Path=/`，不设置 Domain；生产必须 HTTPS。本地验收也使用 HTTPS，不在生产配置中自动降级 Cookie 安全属性。
-- 会话固定 8 小时，不自动滑动续期；登录生成新 Token，不把密码或会话写入 localStorage/sessionStorage。刷新页面仍可使用有效 Cookie。
+- 会话默认固定 30 天，可由 `PDFTR_ADMIN_SESSION_DAYS` 设置为 1～30 天，不自动滑动续期；登录生成新 Token，不把密码或会话写入 localStorage/sessionStorage。刷新页面仍可使用有效 Cookie。
 - 更换密码哈希后旧会话全部失效；退出删除对应会话，到期会话定时清理。服务重启不延长会话。
 - 管理 API 使用独立客户端，显式设置 `credentials: "same-origin"`，只发同源 Cookie 和 CSRF Header，绝不附带翻译/解析凭据；退出、401 后清空 React Query 管理数据，不做持久化。
 

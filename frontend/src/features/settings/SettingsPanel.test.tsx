@@ -36,6 +36,7 @@ describe("共享 MinerU 设置引导", () => {
       default_base_url: "https://example.invalid",
       default_model: "synthetic-model",
       default_protocol: "openai",
+      admin_path: "/weandy",
       server_has_llm_key: false,
       server_has_parser_token: shared,
       server_has_paddle_token: false,

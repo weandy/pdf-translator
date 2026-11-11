@@ -60,10 +60,13 @@ describe("管理登录与提交明细真实组件", () => {
       root.render(
         <MemoryRouter initialEntries={[`/admin/${mode}`]}>
           <Routes>
-            <Route path="/admin/login" element={mode === "login" ? <AdminLoginPage /> : <p>管理登录入口</p>} />
+            <Route
+              path="/admin/login"
+              element={mode === "login" ? <AdminLoginPage adminPath="/admin" /> : <p>管理登录入口</p>}
+            />
             <Route
               path="/admin/submissions"
-              element={mode === "submissions" ? <AdminSubmissionsPage /> : <p>提交明细入口</p>}
+              element={mode === "submissions" ? <AdminSubmissionsPage adminPath="/admin" /> : <p>提交明细入口</p>}
             />
           </Routes>
         </MemoryRouter>,

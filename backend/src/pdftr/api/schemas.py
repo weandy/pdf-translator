@@ -29,6 +29,7 @@ class ConfigOut(BaseModel):
     max_upload_mb: int
     max_pages: int
     retention_hours: int
+    admin_path: str
     submission_audit_enabled: bool = False
     attributions: list[str]
 

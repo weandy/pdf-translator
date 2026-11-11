@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pdftr.api.admin_deps import admin_auth, enforce_csrf, rate_error, require_admin
 from pdftr.api.client_ip import resolve_client_ip
 from pdftr.api.deps import container
-from pdftr.domain.admin import SESSION_COOKIE, SESSION_SECONDS
+from pdftr.domain.admin import SESSION_COOKIE
 from pdftr.pipeline.admin import AdminRateLimited, InvalidAdminCredentials
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -44,7 +44,7 @@ async def login(body: AdminLoginIn, request: Request, response: Response) -> Adm
     response.set_cookie(
         SESSION_COOKIE,
         token,
-        max_age=SESSION_SECONDS,
+        max_age=auth.session_seconds,
         expires=identity.expires_at,
         httponly=True,
         secure=True,

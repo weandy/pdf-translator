@@ -96,7 +96,7 @@ export const api = {
   recordVisit: (body: components["schemas"]["StatsVisitIn"], signal?: AbortSignal) =>
     request<void>("/api/stats/visits", { method: "POST", ...json(body), signal, credentials: "omit" }, false),
   health: () => request<Health>("/api/health"),
-  config: () => request<ServerConfig>("/api/config"),
+  config: () => request<ServerConfig>("/api/config", { credentials: "omit", cache: "no-store" }, false),
   estimate: (pages: number, quality: Quality, model?: string) =>
     request<Estimate>(
       `/api/estimate?${new URLSearchParams({ pages: String(pages), quality, ...(model ? { model } : {}) })}`,

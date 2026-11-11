@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from ipaddress import ip_network
 from pathlib import Path
 from typing import Annotated, Literal
@@ -51,7 +52,17 @@ class Settings(BaseSettings):
     submission_audit_enabled: bool = False
     admin_password_hash: str = Field(default="", repr=False)
     admin_origin: str = ""
+    admin_path: str = "/weandy"
+    admin_session_days: int = Field(default=30, ge=1, le=30)
     trusted_proxy_cidrs: Annotated[tuple[str, ...], NoDecode] = ()
+
+    @field_validator("admin_path")
+    @classmethod
+    def validate_admin_path(cls, value: str) -> str:
+        reserved = {"admin", "api", "jobs", "stats", "guide", "glossary", "assets"}
+        if not re.fullmatch(r"/[A-Za-z0-9][A-Za-z0-9_-]{0,63}", value) or value[1:].lower() in reserved:
+            raise ValueError("管理入口必须是未占用的单一路径段")
+        return value
 
     @field_validator("admin_password_hash")
     @classmethod

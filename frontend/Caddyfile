@@ -28,7 +28,7 @@
 	}
 
 	# 前端不加载任何第三方资源；KaTeX 需要内联样式，pdf.js 需要 blob worker
-	@admin_pages path /admin /admin/*
+	@admin_pages path {$PDFTR_ADMIN_PATH:/weandy} {$PDFTR_ADMIN_PATH:/weandy}/*
 	header @admin_pages Cache-Control "no-store"
 
 	header {

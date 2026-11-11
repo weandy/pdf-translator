@@ -112,7 +112,7 @@ def build_container(settings: Settings | None = None, deps_override: dict | None
         "llm_concurrency": s.llm_concurrency,
     } | (deps_override or {})  # 测试时替换解析器、大模型等
     admin = (
-        AdminAuth(SqliteAdminSessionStore(db), s.admin_password_hash, s.admin_origin)
+        AdminAuth(SqliteAdminSessionStore(db), s.admin_password_hash, s.admin_origin, s.admin_session_days * 86400)
         if s.admin_password_hash and s.admin_origin
         else None
     )

@@ -108,9 +108,9 @@ GitHub 加速只作用于仓库和脚本下载，Docker 基础镜像和 Python/N
 
 ### 管理员提交明细（可选）
 
-`/admin/login` 为独立管理入口，登录后可按标题关键词、完整 IP、提交日期筛选记录并分页查看。只有管理 API 验证过的有效会话可查询；普通用户无需登录即可使用翻译。管理功能默认关闭。
+`/weandy/login` 为独立管理入口，登录后可按标题关键词、完整 IP、提交日期筛选记录并分页查看。入口路径可通过 `PDFTR_ADMIN_PATH` 修改，只有管理 API 验证过的有效会话可查询；普通用户无需登录即可使用翻译。管理功能默认关闭。
 
-在 `backend/` 执行 `uv run python scripts/hash_admin_password.py`，交互输入至少 16 字符的管理密码，将输出的哈希用**单引号**包裹后写入部署 `.env` 的 `PDFTR_ADMIN_PASSWORD_HASH`；不要将明文密码写入命令行或仓库。设置 `PDFTR_ADMIN_ORIGIN=https://你的域名`（无尾斜杠或路径）后可启用管理登录。Cookie 仅在 HTTPS 下工作，会话固定 8 小时；退出或更换密码哈希可使会话失效。
+在 `backend/` 执行 `uv run python scripts/hash_admin_password.py`，交互输入至少 16 字符的管理密码，将输出的哈希用**单引号**包裹后写入部署 `.env` 的 `PDFTR_ADMIN_PASSWORD_HASH`；不要将明文密码写入命令行或仓库。设置 `PDFTR_ADMIN_ORIGIN=https://你的域名`（无尾斜杠或路径）后可启用管理登录。Cookie 仅在 HTTPS 下工作，会话默认有效 30 天，可通过 `PDFTR_ADMIN_SESSION_DAYS` 设置为 1～30 天；不会自动滑动续期，退出或更换密码哈希可使会话失效。
 
 采集需额外设置 `PDFTR_SUBMISSION_AUDIT_ENABLED=true`，并按[可信代理与发布方案](docs/07-statistics-and-submission-audit-design.md)核验 OpenResty → Caddy → FastAPI 的地址链，配置 `PDFTR_WEB_TRUSTED_PROXIES` 与 `PDFTR_TRUSTED_PROXY_CIDRS`。不能照抄其他机器的 Docker 地址，也不要信任所有私网或任意 X-Forwarded-For。缺少管理、HTTPS Origin 或可信代理配置时，开启采集将拒绝启动。上传处会明确显示长期留存说明。
 

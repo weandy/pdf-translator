@@ -605,6 +605,8 @@ export interface components {
             max_pages: number;
             /** Retention Hours */
             retention_hours: number;
+            /** Admin Path */
+            admin_path: string;
             /**
              * Submission Audit Enabled
              * @default false

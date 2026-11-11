@@ -60,6 +60,7 @@ def config(request: Request) -> ConfigOut:
         max_upload_mb=s.max_upload_mb,
         max_pages=s.max_pages,
         retention_hours=s.retention_hours,
+        admin_path=s.admin_path,
         submission_audit_enabled=s.submission_audit_enabled,
         attributions=[
             "MinerU (https://github.com/opendatalab/MinerU)",

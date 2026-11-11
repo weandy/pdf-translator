@@ -57,7 +57,7 @@ def test_secure_session_cookie_stable_csrf_and_revocation(system):
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store"
     cookie = response.headers["Set-Cookie"]
-    for required in (SESSION_COOKIE, "HttpOnly", "Secure", "SameSite=strict", "Path=/", "Max-Age=28800"):
+    for required in (SESSION_COOKIE, "HttpOnly", "Secure", "SameSite=strict", "Path=/", "Max-Age=2592000"):
         assert required in cookie
     assert "Domain=" not in cookie
     first = response.json()
