@@ -63,7 +63,7 @@ class InlineFormula(BaseModel):
 
 class BlockStyle(BaseModel):
     font_size: float
-    bold: bool = False
+    bold: bool = False  # 原文整块字重；译文正文不因此切换到标题字体
     italic: bool = False
     serif: bool = True
     color: int = 0

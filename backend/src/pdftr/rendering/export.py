@@ -80,12 +80,15 @@ def _balance_rich_parts(parts: list[str]) -> list[str]:
     return out
 
 
-def role(block: Block) -> str:
-    """排版角色，决定字体（与前端一致）：heading 黑体、caption 编号黑体其余宋体、body 宋体、
-    label（图内文字）黑体居中。"""
+def role(block: Block, *, translated: bool = True) -> str:
+    """排版角色，决定字体（与前端一致）。
+
+    整块粗体是原文的字重信息，不代表译文是标题；只有未翻译的回退文本才沿用它，
+    这样正文译文不会被整块切换成黑体粗体，局部 ``<b>`` 仍由排版器单独处理。
+    """
     if block.type is BlockType.FIGURE_TEXT:
         return "label"
-    if block.type is BlockType.TITLE or block.style.bold:
+    if block.type is BlockType.TITLE or (not translated and block.style.bold):
         return "heading"
     if block.type is BlockType.CAPTION:
         return "caption"
@@ -122,11 +125,12 @@ def _place(
     indent: bool,
     images: dict[str, tuple[bytes, float, float]],
     placed: list[Placed] | None = None,
+    translated: bool = True,
 ) -> None:
     """按原字号依次尝试 1.5→1.2 倍行距，放得下就用；都放不下时用最紧的行距、整体缩小字号。"""
     box = _box(block)
     size = block.style.font_size
-    r = role(block)
+    r = role(block, translated=translated)
     align = {"label": "center", "heading": "left"}.get(r, "justify")
     scale = 1.0
     for line_height in LINE_HEIGHTS:
@@ -180,14 +184,16 @@ def _typeset_all(src: pymupdf.Document, out: pymupdf.Document, doc: Document, se
             block = blocks.get(part.block_id)
             if block is None or not piece.strip() or block.page >= len(out):
                 continue
-            r = role(block)
+            r = role(block, translated=bool(seg.target))
             caption_no = ""
             if r == "caption" and n == 0 and seg.target and (m := CAPTION_NO.match(piece)):
                 caption_no = m.group(0)
             size = lambda key, imgs=images: imgs[key][1:] if key in imgs else None  # noqa: E731
             tokens = ts.tokenize(drop_fake_scripts(piece.strip()), r, block.style.font_size, size, caption_no)
             indent = bool(seg.target) and wants_indent(block, seg, first=n == 0)
-            _place(ts, out[block.page], block, tokens, indent, images, placed.setdefault(block.id, []))
+            _place(
+                ts, out[block.page], block, tokens, indent, images, placed.setdefault(block.id, []), bool(seg.target)
+            )
     return placed
 
 

@@ -16,6 +16,11 @@ def _seg(source: str) -> Segment:
 
 def test_indent_rules():
     assert wants_indent(_block(), _seg("We propose a method."), first=True)
+    assert wants_indent(
+        _block().model_copy(update={"style": BlockStyle(font_size=10, bold=True)}),
+        _seg("We propose a method."),
+        first=True,
+    )
     assert not wants_indent(_block(), _seg("We propose a method."), first=False)  # 跨栏的后半段
     assert not wants_indent(_block(), _seg("where x is the input."), first=True)  # 公式后接着说
     assert not wants_indent(_block(), _seg("• First item"), first=True)

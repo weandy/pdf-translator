@@ -12,7 +12,13 @@ from pdftr.extraction.classify import classify_page
 
 _FLAG_ITALIC = 1 << 1
 _FLAG_BOLD = 1 << 4
-_BOLD_NAMES = ("Bold", "Black", "Heavy", "Semibold", "SemiBold", "Medi")
+# Medium 是常规字重（项目生成的黑体文件也使用这个名字），不能按粗体处理。
+_BOLD_NAMES = ("Bold", "Black", "Heavy", "Semibold", "SemiBold")
+
+
+def _font_is_bold(font: str) -> bool:
+    """按字体名补充 PyMuPDF 可能漏报的粗体标记。"""
+    return any(name in font for name in _BOLD_NAMES)
 
 
 def extract(pdf: Path) -> list[CharPage]:
@@ -34,7 +40,7 @@ def _page(page: pymupdf.Page) -> CharPage:
             upright = abs(dx - 1) < 0.01 and abs(dy) < 0.01
             for span in line["spans"]:
                 font = span["font"]
-                bold = bool(span["flags"] & _FLAG_BOLD) or any(k in font for k in _BOLD_NAMES)
+                bold = bool(span["flags"] & _FLAG_BOLD) or _font_is_bold(font)
                 italic = bool(span["flags"] & _FLAG_ITALIC) or "Italic" in font or "Oblique" in font
                 for ch in span["chars"]:
                     chars.append(

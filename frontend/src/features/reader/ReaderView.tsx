@@ -773,7 +773,7 @@ function OverlayBlock({
   const box = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
   const [overflow, setOverflow] = useState(false);
-  const role = roleOf(block);
+  const role = roleOf(block, translated);
   const rect = layoutBox(block);
   // 排版规则（clreq）：中西文之间加空格、正文段首缩进两字；没有译文时显示原文，不做处理
   const shown = dropFakeScripts(translated ? spaceCjkLatin(text) : text);

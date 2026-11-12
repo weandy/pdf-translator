@@ -200,7 +200,7 @@ def purge_expired(pipeline: Pipeline, retention_hours: int, now: datetime | None
 
 
 # 导出 PDF 的生成方式（排版、字体、链接等）变了就加一，让已缓存的导出文件失效
-EXPORT_CACHE_VERSION = 2  # 中文真实粗体与跨块格式保留，旧导出文件不能继续命中
+EXPORT_CACHE_VERSION = 3  # 整块粗体正文改用普通译文字体，旧导出文件不能继续命中
 
 
 def export_job(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "right") -> tuple[str, Path]:

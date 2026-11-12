@@ -12,7 +12,8 @@ def _block(btype: BlockType, bold: bool = False) -> Block:
 
 def test_roles_follow_gbt_7713():
     assert role(_block(BlockType.TITLE)) == "heading"  # 标题：黑体
-    assert role(_block(BlockType.TEXT, bold=True)) == "heading"
+    assert role(_block(BlockType.TEXT, bold=True)) == "body"  # 整块粗体只属于原文字重，不升级译文角色
+    assert role(_block(BlockType.TEXT, bold=True), translated=False) == "heading"  # 回退原文保留粗体
     assert role(_block(BlockType.CAPTION)) == "caption"  # 编号黑体，其余宋体
     assert role(_block(BlockType.TEXT)) == "body"  # 正文：宋体
 

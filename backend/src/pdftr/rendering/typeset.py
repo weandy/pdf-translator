@@ -26,7 +26,7 @@ def drop_fake_scripts(text: str) -> str:
 
 def wants_indent(block: Block, segment: Segment, first: bool) -> bool:
     """段首缩进两字：正文段落的开头部分；列表项与公式后接着说的半句不缩进。"""
-    if block.type is not BlockType.TEXT or not first or block.style.bold:
+    if block.type is not BlockType.TEXT or not first:
         return False
     source = segment.source.lstrip()
     return not (_LIST_ITEM.match(source) or source[:1].islower())

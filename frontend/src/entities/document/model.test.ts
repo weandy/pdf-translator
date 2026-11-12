@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { blockTexts, progressOf } from "@/entities/document/model";
+import { blockTexts, progressOf, roleOf } from "@/entities/document/model";
 import type { DocumentData, SegmentData } from "@/shared/api/client";
 
 const block = (id: string, page: number) => ({
   id, page, type: "text", bbox: { x0: 0, y0: 0, x1: 100, y1: 20 }, font_size: 10, bold: false, italic: false,
   serif: true, color: 0, translatable: true,
-});  // prettier-ignore
+}); // prettier-ignore
 
 const seg = (over: Partial<SegmentData>): SegmentData => ({
   id: "s", block_ids: ["p0-b0"], parts: [{ block_id: "p0-b0", chars: 10 }], source: "src", target: "译文",
   status: "done", quality: "default", formulas: {}, translation_attempts: 0, failure_reason: "", ...over,
-});  // prettier-ignore
+}); // prettier-ignore
 
 const doc = (segments: SegmentData[]): DocumentData => ({
   job: {} as DocumentData["job"],
@@ -31,7 +31,7 @@ describe("blockTexts", () => {
       id: "a", block_ids: ["p0-b1", "p1-b0"],
       parts: [{ block_id: "p0-b1", chars: 50 }, { block_id: "p1-b0", chars: 50 }],
       target: "前半段的译文内容，后半段的译文内容。",
-    });  // prettier-ignore
+    }); // prettier-ignore
     const map = blockTexts(doc([s]));
     const a = map.get("p0-b1")?.text ?? "";
     const b = map.get("p1-b0")?.text ?? "";
@@ -51,5 +51,14 @@ describe("blockTexts", () => {
       failed: 1,
       total: 3,
     });
+  });
+});
+
+describe("roleOf", () => {
+  it("整块粗体正文的译文使用正文角色，回退原文保留粗体角色", () => {
+    const boldBody = { ...block("p0-b0", 0), bold: true };
+    expect(roleOf(boldBody)).toBe("body");
+    expect(roleOf(boldBody, false)).toBe("heading");
+    expect(roleOf({ ...boldBody, type: "title" })).toBe("heading");
   });
 });

@@ -47,7 +47,7 @@ export function spaceCjkLatin(text: string): string {
 }
 
 export function wantsIndent(block: BlockData, segment: SegmentData, first: boolean): boolean {
-  if (block.type !== "text" || !first || block.bold) return false;
+  if (block.type !== "text" || !first) return false;
   const source = segment.source.trimStart();
   return !(LIST_ITEM.test(source) || /^[a-z]/.test(source));
 }

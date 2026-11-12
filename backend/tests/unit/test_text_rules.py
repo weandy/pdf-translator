@@ -1,6 +1,7 @@
 from pdftr.domain.chars import Char
 from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import PageKind
+from pdftr.extraction.chars import _font_is_bold
 from pdftr.extraction.classify import classify
 from pdftr.fusion.align import align
 from pdftr.fusion.style import block_style, is_serif
@@ -46,6 +47,11 @@ def test_block_style():
     assert block_style([c.model_copy(update={"bold": True}) for c in chars]).bold
     assert not is_serif("Helvetica-Bold")
     assert block_style([]).font_size == 10.0
+
+
+def test_medium_font_name_is_not_bold():
+    assert not _font_is_bold("NotoSansSC-Medium")
+    assert _font_is_bold("NotoSansSC-Bold")
 
 
 def test_classify():
