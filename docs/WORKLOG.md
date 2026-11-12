@@ -95,7 +95,8 @@
 - 后端全量测试：405 passed，6 skipped。
 - 后端 `ruff check`、`ruff format --check`、`pyright`、`lint-imports` 通过。
 - 前端 `npm run lint`、`npm run typecheck`、`npm run build` 通过。
-- 前端 Vitest 在当前 Node `v20.19.2` 启动 worker 时被 `undici` 使用 Node 22 才有的 `zstd` 解压 API 拦截，未执行测试用例。
+- 前端纯逻辑 Vitest（`--environment node`）：6 passed。
+- 默认 jsdom Vitest 在当前 Node `v20.19.2` 启动 worker 时被 `undici` 使用 Node 22 才有的 `zstd` 解压 API 拦截，浏览器环境测试仍待升级 Node 后补跑。
 
 ## 当前已知限制
 
