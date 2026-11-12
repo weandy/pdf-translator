@@ -8,7 +8,8 @@
 
 - 仓库：`D:\\01\\pdf-translator`
 - 分支：`main`
-- 最新提交：`9f405e0`（术语精确定位与字面匹配提示）
+- 功能代码基线：`9f405e0`（术语精确定位与字面匹配提示）
+- 交接文档提交：`5f1caff`
 - GitHub：<https://github.com/weandy/pdf-translator>
 - 线上地址：<https://pdf.667786.xyz/>
 - 线上部署：Docker，宿主机 `127.0.0.1:18765` 反向代理到 web 容器
