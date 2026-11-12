@@ -14,8 +14,8 @@
 
 - 仓库：`D:\\01\\pdf-translator`
 - 分支：`main`
-- 功能代码基线：`9f405e0`（术语精确定位与字面匹配提示）
-- 交接文档提交：`5f1caff`
+- 功能代码基线：`363ac78`（译文整块粗体字体映射修复）
+- 交接文档提交：`363ac78`（本轮代码与交接目标同步更新）
 - GitHub：<https://github.com/weandy/pdf-translator>
 - 线上地址：<https://pdf.667786.xyz/>
 - 线上部署：Docker，宿主机 `127.0.0.1:18765` 反向代理到 web 容器
@@ -42,6 +42,7 @@
 - 失败任务不会带着未翻译正文标记为完成。
 - 已有可用译文重翻失败时保留旧译文。
 - 原文局部粗体完整保留到网页和导出 PDF。
+- 修复 `Medium` 字体被误判为粗体；整块粗体正文的译文使用普通宋体/Times，标题、图表编号和局部 `<b>` 继续按结构或强调使用粗体；网页与导出 PDF 角色一致。
 - 章节、内部链接和搜索跳转会短暂高亮并淡出。
 - 修改记录支持差异突出显示。
 
@@ -88,6 +89,13 @@
 - `npm run build` 通过。
 - GitHub CI run `43023389189` 成功。
 - 线上 web 资源已切换到 `9f405e0`，容器健康，部署时 active jobs 为 0。
+
+本轮字体修复（本地提交 `363ac78`）：
+
+- 后端全量测试：405 passed，6 skipped。
+- 后端 `ruff check`、`ruff format --check`、`pyright`、`lint-imports` 通过。
+- 前端 `npm run lint`、`npm run typecheck`、`npm run build` 通过。
+- 前端 Vitest 在当前 Node `v20.19.2` 启动 worker 时被 `undici` 使用 Node 22 才有的 `zstd` 解压 API 拦截，未执行测试用例。
 
 ## 当前已知限制
 
