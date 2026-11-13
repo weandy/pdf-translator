@@ -81,8 +81,8 @@ def test_full_flow(tmp_path: Path):
     # 排队、逐页解析的状态都转告给用户
     assert seen[0][0] == "正在上传到 MinerU 云端"
     # 上传结果（大小、用时、速度）带进后续状态里一直显示
-    assert seen[1][0].startswith("MinerU 排队中（免费额度高峰时可能要等 10 分钟以上）（已上传 0.0 MB，用时")
-    assert seen[2][0].startswith("MinerU 正在解析，第 1/2 页（已上传")
+    assert seen[1][0].startswith("MinerU 已接收任务，正在等待解析资源（队列中）（已上传 0.0 MB，用时")
+    assert seen[2][0].startswith("MinerU 正在解析，第 1/2 页（50%）（已上传")
     assert seen[2][1] == 0.5
     assert (tmp_path / "raw" / "mineru.zip").exists()
 
@@ -117,6 +117,29 @@ def test_network_errors_are_user_facing(tmp_path: Path):
         parser = MinerUCloudParser("tok", retry_delays=(0, 0), transport=httpx2.MockTransport(handler))
         with pytest.raises(ParseError, match=message):
             asyncio.run(parser.parse(pdf))
+
+
+def test_cloud_timeout_is_retryable_and_reports_resubmission():
+    async def pending(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {"extract_result": [{"state": "pending"}]},
+            },
+        )
+
+    parser = MinerUCloudParser("tok", timeout=0.01, poll_interval=0, transport=httpx2.MockTransport(pending))
+    messages: list[str] = []
+
+    async def run() -> None:
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(pending)) as client:
+            with pytest.raises(ParseError, match="超过 5 分钟") as error:
+                await parser._wait(client, "batch", lambda message, _: messages.append(message))
+            assert error.value.retryable
+
+    asyncio.run(run())
+    assert messages[-1] == "MinerU 云端解析等待超过 5 分钟，准备重新提交"
 
 
 def test_transient_network_error_is_retried(tmp_path: Path):

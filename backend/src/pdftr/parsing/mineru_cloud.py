@@ -37,7 +37,7 @@ class MinerUCloudParser:
         model_version: str = "vlm",
         language: str = "en",
         poll_interval: float = 5.0,
-        timeout: float = 900.0,
+        timeout: float = 300.0,
         retry_delays: tuple[float, ...] = (2.0, 5.0, 10.0),
         stall_timeout: float = 60.0,
         proxy: str | None = None,
@@ -131,7 +131,15 @@ class MinerUCloudParser:
         deadline = time.monotonic() + self._timeout
         last = None
         while time.monotonic() < deadline:
-            r = await self._send(api, "GET", f"{API}/extract-results/batch/{batch_id}")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            r = await self._send(
+                api,
+                "GET",
+                f"{API}/extract-results/batch/{batch_id}",
+                deadline=min(180.0, remaining),
+            )
             body = _check(r, "查询解析进度")
             result = (body.get("data") or {}).get("extract_result") or [{}]
             state = result[0].get("state")
@@ -144,7 +152,8 @@ class MinerUCloudParser:
                 on_progress(*status)
                 last = status
             await asyncio.sleep(self._poll_interval)
-        raise ParseError("MinerU 解析超时")
+        on_progress("MinerU 云端解析等待超过 5 分钟，准备重新提交", None)
+        raise ParseError("MinerU 解析超过 5 分钟，正在自动重试", retryable=True)
 
     async def _send(
         self, client: httpx2.AsyncClient, method: str, url: str, *, deadline: float = 180, **kwargs: Any
@@ -239,13 +248,18 @@ def _describe(state: str | None, progress: dict) -> tuple[str, float | None]:
     if state == "running":
         done, total = progress.get("extracted_pages"), progress.get("total_pages")
         if isinstance(done, int) and isinstance(total, int) and total > 0:
-            return f"MinerU 正在解析，第 {done}/{total} 页", done / total
-        return "MinerU 正在解析", None
+            percent = done / total * 100
+            return f"MinerU 正在解析，第 {done}/{total} 页（{percent:.0f}%）", done / total
+        return "MinerU 正在解析，正在等待页数进度", None
     if state == "converting":
-        return "MinerU 正在整理解析结果", 1.0
+        return "MinerU 正在整理解析结果（解析已完成）", 1.0
     if state == "waiting-file":
-        return "等待 MinerU 接收文件", None
-    return "MinerU 排队中（免费额度高峰时可能要等 10 分钟以上）", None
+        return "MinerU 正在接收上传文件", None
+    if state == "pending":
+        return "MinerU 已接收任务，正在等待解析资源（队列中）", None
+    if state:
+        return f"MinerU 返回状态：{state}，正在等待更新", None
+    return "MinerU 已提交任务，正在等待状态更新", None
 
 
 def _check(r: httpx2.Response, action: str) -> dict:

@@ -237,7 +237,7 @@ class Pipeline:
         out.write_text(result.model_dump_json(), encoding="utf-8")
 
     async def _parse_with_retry(self, job: Job, attempt_parse: Callable[[], Awaitable[LayoutResult]]) -> LayoutResult:
-        """网络类错误（超时、连不上、上传停滞、服务端 5xx）过一会儿常常就好：自动重试，仍失败才交给用户。"""
+        """网络错误或 MinerU 云端解析超时自动重试，最多使用配置的重试机会。"""
         delays = self.deps.parse_retry_delays
         for attempt, delay in enumerate(delays, start=1):
             try:
@@ -246,7 +246,11 @@ class Pipeline:
                 if not e.retryable:
                     raise
                 log.warning("任务 %s 解析失败（%s），%.0f 秒后第 %d 次重试", job.id, e, delay, attempt)
-                self._update(job, message=f"网络不稳定，{delay:.0f} 秒后自动重试（第 {attempt}/{len(delays)} 次）：{e}")
+                if str(e).startswith("MinerU 解析超过"):
+                    message = f"MinerU 解析超时，{delay:.0f} 秒后重新提交（第 {attempt}/{len(delays)} 次重试）"
+                else:
+                    message = f"网络不稳定，{delay:.0f} 秒后自动重试（第 {attempt}/{len(delays)} 次）：{e}"
+                self._update(job, message=message)
                 await asyncio.sleep(delay)
         return await attempt_parse()
 
