@@ -15,6 +15,18 @@ interface Props {
 /** 只有解析（逐页）和翻译（逐批）有真实的完成比例，其余阶段显示“仍在处理”的动画条。 */
 const HAS_FRACTION = new Set(["parse", "translate"]);
 
+/** 只有 MinerU 仍在等待服务端资源时，才显示高峰排队提示。 */
+export function isMineruPending(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  return (
+    normalized.includes("排队") ||
+    normalized.includes("pending") ||
+    normalized.includes("waiting-file") ||
+    normalized.includes("等待 mineru") ||
+    normalized.includes("等待解析")
+  );
+}
+
 export function JobProgress({ job, onRetried }: Props) {
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
@@ -105,7 +117,7 @@ export function JobProgress({ job, onRetried }: Props) {
                   >
                     <span style={fraction === null ? undefined : { width: `${fraction * 100}%` }} />
                   </div>
-                  {stage === "parse" && job.options.parser === "mineru-cloud" && (
+                  {stage === "parse" && job.options.parser === "mineru-cloud" && isMineruPending(job.message) && (
                     <p className="wait-note">
                       MinerU 免费额度在高峰时可能要排队 10 分钟以上。可以先关闭这个页面，之后在首页“我的任务”里打开。
                     </p>
@@ -116,7 +128,11 @@ export function JobProgress({ job, onRetried }: Props) {
                 <div className="stage-detail failure">
                   <ErrorCard
                     title={state === "failed" ? `${STAGE_LABELS[job.stage] ?? "处理"}失败` : "任务已取消"}
-                    message={state === "failed" ? job.error || "这一步没有完成，可以从中断处继续。" : "已完成的步骤会保留，可以从中断处重新开始。"}
+                    message={
+                      state === "failed"
+                        ? job.error || "这一步没有完成，可以从中断处继续。"
+                        : "已完成的步骤会保留，可以从中断处重新开始。"
+                    }
                     actionLabel={state === "failed" ? "从中断处重试" : "重新开始"}
                     onAction={() => void retry()}
                     secondaryLabel="删除"
@@ -144,9 +160,7 @@ export function JobProgress({ job, onRetried }: Props) {
           </button>
         </div>
       )}
-      {error && (
-        <ErrorCard title="操作没有完成" message={error} actionLabel="再试一次" onAction={() => void retry()} />
-      )}
+      {error && <ErrorCard title="操作没有完成" message={error} actionLabel="再试一次" onAction={() => void retry()} />}
     </section>
   );
 }
