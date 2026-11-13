@@ -135,7 +135,11 @@ def test_cloud_timeout_is_retryable_and_reports_resubmission():
     async def run() -> None:
         async with httpx2.AsyncClient(transport=httpx2.MockTransport(pending)) as client:
             with pytest.raises(ParseError, match="超过 5 分钟") as error:
-                await parser._wait(client, "batch", lambda message, _: messages.append(message))
+                await parser._wait(
+                    client,
+                    "batch",
+                    lambda message, fraction=None: messages.append(message),
+                )
             assert error.value.retryable
 
     asyncio.run(run())
