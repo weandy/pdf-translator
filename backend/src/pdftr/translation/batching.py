@@ -70,11 +70,17 @@ def placeholder_problems(source: str, target: str) -> list[str]:
 def bold_problems(source: str, target: str) -> list[str]:
     """原文含局部粗体时，译文必须保留同样数量、成对且正确嵌套的非空强调。
 
-    无源粗体时不限制模型原有的排版行为，也不新增上下标校验。
+    原文没有粗体时，译文也不能凭空新增粗体。整块粗体正文在进入翻译
+    时不会生成 ``<b>`` 标签，模型若重新包住整段会让译文错误地变成粗体。
     这里只能保证标记结构，强调内容的语义对应仍由翻译模型负责。
     """
     expected = source.count("<b>")
     if not expected:
+        opened, closed = target.count("<b>"), target.count("</b>")
+        if opened or closed:
+            if opened != closed:
+                return ["译文新增粗体标记且未完整配对"]
+            return [f"译文新增粗体标记：原文没有粗体，实际 {opened} 对"]
         return []
     opened, closed = target.count("<b>"), target.count("</b>")
     if opened != closed:

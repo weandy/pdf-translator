@@ -28,7 +28,7 @@ def test_placeholders_match():
     assert not placeholders_match("a <m1/>", "甲<m1/><m1/>")
 
 
-def test_bold_structure_is_checked_only_when_the_source_has_emphasis():
+def test_bold_structure_rejects_added_emphasis_and_checks_source_emphasis():
     source = "An <b>important</b> detail."
     assert bold_problems(source, "一个<b>重要</b>细节。") == []
     assert bold_problems(source, "一个<b><sup>重要</sup></b>细节。") == []
@@ -38,7 +38,8 @@ def test_bold_structure_is_checked_only_when_the_source_has_emphasis():
     assert "嵌套" in bold_problems(source, "一个</b>重要<b>细节。")[0]
     assert "嵌套" in bold_problems(source, "一个<b><sup>重要</b></sup>细节。")[0]
     assert "没有内容" in bold_problems(source, "<b> </b>一个重要细节。")[0]
-    assert bold_problems("No emphasis.", "保持原有<b>自然格式和<sup>行为。") == []
+    assert "新增粗体" in bold_problems("No emphasis.", "保持原有<b>自然格式和</b>行为。")[0]
+    assert "未完整配对" in bold_problems("No emphasis.", "保持原有<b>自然格式和行为。")[0]
     assert bold_problems(source, "<sup>不新增上下标校验</sub>一个<b>重要</b>细节。") == []
 
 
