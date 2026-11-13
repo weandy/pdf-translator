@@ -7,6 +7,7 @@
 - discarded_blocks 里的页眉、页码、侧边标识不展示；page_footnote 是正文脚注，要保留并翻译。
 """
 
+import re
 from typing import Any
 
 from pdftr.domain.geometry import Rect
@@ -43,6 +44,21 @@ _DISCARDED_TYPES = {
     "aside_text": (BlockType.HEADER, True),
     "page_footnote": (BlockType.FOOTNOTE, False),  # 正文脚注：保留
 }
+
+# arXiv/IEEE 类论文常把章节标题排成 small-caps，MinerU 有时会将其返回为
+# 普通 text。仅在单行、罗马数字/字母编号、全大写标题的组合下提升为 title，
+# 避免把正文里的普通大写句子误判成章节标题。
+_ROMAN_SECTION_TITLE = re.compile(r"^\s*(?:[IVXLCDM]+|[A-Z])\.\s+[A-Z][A-Z0-9][A-Z0-9\s&'’(),:/-]*\s*$")
+
+
+def _looks_like_section_title(raw: dict[str, Any]) -> bool:
+    lines = raw.get("lines", [])
+    if len(lines) != 1:
+        return False
+    text = "".join(
+        str(span.get("content", "")) for span in lines[0].get("spans", []) if span.get("type") == "text"
+    ).strip()
+    return len(text) >= 8 and bool(_ROMAN_SECTION_TITLE.fullmatch(text))
 
 
 def _lines(raw: dict[str, Any]) -> tuple[list[LayoutLine], str | None]:
@@ -93,7 +109,10 @@ def normalize(layout: dict[str, Any]) -> LayoutResult:
                     ctype = _CHILD_TYPES.get(child.get("type", ""), BlockType.FIGURE)
                     blocks.append(_block(child, ctype, len(blocks)))
             else:
-                blocks.append(_block(raw, _TOP_TYPES.get(t, BlockType.TEXT), len(blocks)))
+                btype = _TOP_TYPES.get(t, BlockType.TEXT)
+                if btype is BlockType.TEXT and _looks_like_section_title(raw):
+                    btype = BlockType.TITLE
+                blocks.append(_block(raw, btype, len(blocks)))
         for raw in info.get("discarded_blocks", []):
             btype, discarded = _DISCARDED_TYPES.get(raw.get("type", ""), (BlockType.HEADER, True))
             blocks.append(_block(raw, btype, len(blocks), discarded=discarded))

@@ -8,7 +8,8 @@ from collections.abc import Sequence
 from pdftr.domain.ir import Block, BlockType, Page
 
 _SECTION = re.compile(
-    r"^(?:\d+(?:\.\d+)*[.)]?\s+|[A-Z][.)]\s+|"
+    r"^(?:\d+(?:\.\d+)*[.)]?\s+|(?:[IVXLCDM]+|[A-Z])[.)]\s+[A-Z][A-Z0-9\s&'’(),:/-]*|"
+    r"(?:[IVXLCDM]+|[A-Z])\.\s+|"
     r"(?:abstract|introduction|references|bibliography|acknowledg(?:e)?ments?|"
     r"contents|keywords?|appendix|摘要|引言|参考文献)[:：]?$)",
     re.IGNORECASE,

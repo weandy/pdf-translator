@@ -50,3 +50,38 @@ def test_discarded_but_footnote_kept():
     assert blocks["header"].discarded is True
     assert blocks["page_number"].discarded is True
     assert blocks["page_footnote"].discarded is False
+
+
+def test_small_caps_roman_section_is_promoted_to_title():
+    layout = {
+        "_backend": "hybrid",
+        "_version_name": "3.4.4",
+        "pdf_info": [
+            {
+                "page_idx": 0,
+                "page_size": [612, 792],
+                "para_blocks": [
+                    {
+                        "type": "text",
+                        "index": 0,
+                        "bbox": [100, 400, 260, 412],
+                        "lines": [
+                            {
+                                "bbox": [100, 400, 260, 412],
+                                "spans": [
+                                    {
+                                        "type": "text",
+                                        "bbox": [100, 400, 260, 412],
+                                        "content": "I. INTRODUCTION",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    block = normalize(layout).pages[0].blocks[0]
+    assert block.type is BlockType.TITLE
+    assert block.source_type == "text"
