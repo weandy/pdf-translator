@@ -14,8 +14,8 @@
 
 - 仓库：`D:\\01\\pdf-translator`
 - 分支：`main`
-- 功能代码基线：`0bf6f96`（MinerU 状态/重试与 PDF 下载体验优化完成）
-- 交接文档提交：待本轮文档提交完成
+- 功能代码基线：`a29eef9`（MinerU 状态/重试与 PDF 下载体验优化完成）
+- 交接文档提交：`a29eef9`（本轮代码、测试与交接目标同步更新）
 - GitHub：<https://github.com/weandy/pdf-translator>
 - 线上地址：<https://pdf.667786.xyz/>
 - 线上部署：Docker，宿主机 `127.0.0.1:18765` 反向代理到 web 容器
@@ -100,6 +100,14 @@
 - 前端 `npm run lint`、`npm run typecheck`、`npm run build` 通过。
 - 前端纯逻辑 Vitest（`--environment node`）：6 passed。
 - 默认 jsdom Vitest 在当前 Node `v20.19.2` 启动 worker 时被 `undici` 使用 Node 22 才有的 `zstd` 解压 API 拦截，浏览器环境测试仍待升级 Node 后补跑。
+
+本轮 MinerU 与下载体验优化（本地提交 `a29eef9`）：
+
+- 后端全量测试：406 passed，6 skipped。
+- 后端 `ruff check`、`ruff format --check`、`pyright`、`lint-imports` 通过。
+- MinerU 契约测试：10 passed；状态展示测试：1 passed。
+- 前端 `npm run lint`、`npm run typecheck`、`npm run build` 通过。
+- 默认 `npm test` 仍受当前 Node `v20.19.2` 与 `undici` 的 Node 22 `zstd` API 兼容问题影响，未能启动完整 jsdom worker。
 
 ## 当前已知限制
 
