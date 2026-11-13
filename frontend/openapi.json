@@ -1002,6 +1002,77 @@
     }
    }
   },
+  "/api/jobs/{job_id}/export/prepare": {
+   "post": {
+    "tags": [
+     "jobs"
+    ],
+    "summary": "Prepare Export",
+    "description": "先生成或命中导出缓存，再让前端启动可见的浏览器下载。",
+    "operationId": "prepare_export_api_jobs__job_id__export_prepare_post",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     },
+     {
+      "name": "mode",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "enum": [
+        "mono",
+        "dual"
+       ],
+       "type": "string",
+       "default": "mono",
+       "title": "Mode"
+      }
+     },
+     {
+      "name": "side",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "enum": [
+        "left",
+        "right"
+       ],
+       "type": "string",
+       "default": "right",
+       "title": "Side"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ExportPrepareOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/jobs/{job_id}/terms": {
    "get": {
     "tags": [
@@ -2298,6 +2369,30 @@
      "minutes"
     ],
     "title": "Estimate"
+   },
+   "ExportPrepareOut": {
+    "properties": {
+     "filename": {
+      "type": "string",
+      "title": "Filename"
+     },
+     "download_url": {
+      "type": "string",
+      "title": "Download Url"
+     },
+     "size_bytes": {
+      "type": "integer",
+      "title": "Size Bytes"
+     }
+    },
+    "type": "object",
+    "required": [
+     "filename",
+     "download_url",
+     "size_bytes"
+    ],
+    "title": "ExportPrepareOut",
+    "description": "PDF 已生成或命中缓存后，供前端启动浏览器下载的信息。"
    },
    "FormulaOut": {
     "properties": {

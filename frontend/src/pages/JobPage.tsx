@@ -8,6 +8,7 @@ import { Link, useParams } from "react-router";
 import { progressOf, withSegment } from "@/entities/document/model";
 import { STAGE_LABELS, useJob } from "@/entities/job/model";
 import { useSettings } from "@/entities/settings/model";
+import { ExportDownloadLink } from "@/features/export/ExportDownloadLink";
 import { DownloadMenu } from "@/features/export/DownloadMenu";
 import { TermsPanel } from "@/features/job-terms/TermsPanel";
 import { JobProgress } from "@/features/job-progress/JobProgress";
@@ -16,7 +17,6 @@ import { RevisionList } from "@/features/revisions/RevisionList";
 import { SegmentEditor } from "@/features/segment-edit/SegmentEditor";
 import {
   api,
-  exportUrl,
   fileUrl,
   type DocumentData,
   type Job,
@@ -319,12 +319,12 @@ function DocumentOpening({
         </div>
       )}
       <nav className="document-opening-downloads" aria-label="下载已完成的文档">
-        <a className="button" href={exportUrl(jobId, "mono")} download>
+        <ExportDownloadLink className="button" jobId={jobId} mode="mono">
           下载中文版
-        </a>
-        <a className="button" href={exportUrl(jobId, "dual", side)} download>
+        </ExportDownloadLink>
+        <ExportDownloadLink className="button" jobId={jobId} mode="dual" side={side}>
           下载双语版
-        </a>
+        </ExportDownloadLink>
         <a className="button" href={fileUrl(jobId, "original.pdf")} download>
           下载原文
         </a>

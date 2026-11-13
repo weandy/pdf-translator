@@ -1061,6 +1061,12 @@ input[type="radio"] {
   background: var(--pencil);
   outline: none;
 }
+.download-menu a.disabled,
+.document-opening-downloads a.disabled,
+.row-actions a.disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
 .download-menu small {
   color: var(--ink-soft);
   font-size: 12px;

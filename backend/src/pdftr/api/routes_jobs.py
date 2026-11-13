@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from pdftr.api.client_ip import resolve_client_ip
 from pdftr.api.deps import pipeline, secrets
-from pdftr.api.schemas import DocumentOut, JobOut, RetranslateManyIn, RevisionOut, SegmentOut
+from pdftr.api.schemas import DocumentOut, ExportPrepareOut, JobOut, RetranslateManyIn, RevisionOut, SegmentOut
 from pdftr.domain.job import JobOptions, JobStatus
 from pdftr.domain.submissions import NOTICE_VERSION, SubmissionContext
 from pdftr.pipeline import usecases
@@ -131,6 +131,24 @@ async def export_job(
     disposition = f"attachment; filename=\"translated.pdf\"; filename*=UTF-8''{quote(filename)}"
     # 文件响应支持 HTTP Range：浏览器下载中断后可以续传
     return FileResponse(path, media_type="application/pdf", headers={"Content-Disposition": disposition})
+
+
+@router.post("/{job_id}/export/prepare", response_model=ExportPrepareOut)
+async def prepare_export(
+    job_id: str,
+    p: PipelineDep,
+    mode: Literal["mono", "dual"] = "mono",
+    side: Literal["left", "right"] = "right",
+) -> ExportPrepareOut:
+    """先生成或命中导出缓存，再让前端启动可见的浏览器下载。"""
+    async with _export_slot:
+        filename, path = await asyncio.to_thread(usecases.export_job, p, job_id, mode, side)
+    query = f"mode={mode}&side={side}"
+    return ExportPrepareOut(
+        filename=filename,
+        download_url=f"/api/jobs/{job_id}/export?{query}",
+        size_bytes=path.stat().st_size,
+    )
 
 
 @router.get("/{job_id}/terms", response_model=list[usecases.TermUse])

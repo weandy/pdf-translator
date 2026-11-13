@@ -5,8 +5,9 @@ import { Link, useNavigate } from "react-router";
 import { clearHistory, removeHistory, useHistory } from "@/entities/history/model";
 import { deleteJob, MY_JOBS_QUERY, STAGE_LABELS, useMyJobs } from "@/entities/job/model";
 import { readBatches, rememberBatch, removeBatch, type BatchEntry } from "@/entities/batch/model";
+import { ExportDownloadLink } from "@/features/export/ExportDownloadLink";
 import { UploadPanel } from "@/features/upload/UploadPanel";
-import { api, exportUrl } from "@/shared/api/client";
+import { api } from "@/shared/api/client";
 import { APP_TITLE, notify } from "@/shared/attention/attention";
 import { expiresSoon, formatRemaining } from "@/shared/time/elapsed";
 
@@ -133,9 +134,9 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
                 </span>
                 <span className="row-actions">
                   {j.status === "done" && (
-                    <a className="button quiet" href={exportUrl(j.id, "mono")} download>
+                    <ExportDownloadLink className="button quiet" jobId={j.id} mode="mono">
                       下载
-                    </a>
+                    </ExportDownloadLink>
                   )}
                   {(j.status === "running" || j.status === "queued") && (
                     <button type="button" className="quiet" onClick={() => void cancel(j.id, j.filename)}>

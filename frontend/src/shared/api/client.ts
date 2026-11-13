@@ -20,6 +20,7 @@ export type LlmCheck = components["schemas"]["LlmCheck"];
 export type ParsedGlossary = components["schemas"]["ParsedGlossary"];
 export type TermUse = components["schemas"]["TermUse"];
 export type SiteStats = components["schemas"]["StatsOut"];
+export type ExportPrepare = components["schemas"]["ExportPrepareOut"];
 export type Quality = "default" | "careful";
 
 export class ApiError extends Error {
@@ -127,6 +128,8 @@ export const api = {
       ...json({ segment_ids: ids, quality: "default", user_terms: userTerms }),
     }),
   jobTerms: (jobId: string) => request<TermUse[]>(`/api/jobs/${jobId}/terms`),
+  prepareExport: (jobId: string, mode: ExportMode, side: "left" | "right" = "right") =>
+    request<ExportPrepare>(`/api/jobs/${jobId}/export/prepare?mode=${mode}&side=${side}`, { method: "POST" }),
   parseGlossary: (file: File, ai: boolean) => {
     const form = new FormData();
     form.append("file", file);

@@ -4,7 +4,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 
-import { exportUrl } from "@/shared/api/client";
+import { ExportDownloadLink } from "@/features/export/ExportDownloadLink";
 
 export function DownloadMenu({ jobId }: { jobId: string }) {
   const [open, setOpen] = useState(false);
@@ -32,18 +32,18 @@ export function DownloadMenu({ jobId }: { jobId: string }) {
       </button>
       {open && (
         <div className="download-menu" role="menu">
-          <a role="menuitem" href={exportUrl(jobId, "mono")} download onClick={() => setOpen(false)}>
+          <ExportDownloadLink role="menuitem" jobId={jobId} mode="mono">
             <span>中文版</span>
             <small>保留原版式，正文换成译文</small>
-          </a>
-          <a role="menuitem" href={exportUrl(jobId, "dual", "right")} download onClick={() => setOpen(false)}>
+          </ExportDownloadLink>
+          <ExportDownloadLink role="menuitem" jobId={jobId} mode="dual" side="right">
             <span>双语对照版（译文在右）</span>
             <small>每页左边原文、右边译文</small>
-          </a>
-          <a role="menuitem" href={exportUrl(jobId, "dual", "left")} download onClick={() => setOpen(false)}>
+          </ExportDownloadLink>
+          <ExportDownloadLink role="menuitem" jobId={jobId} mode="dual" side="left">
             <span>双语对照版（译文在左）</span>
             <small>每页左边译文、右边原文</small>
-          </a>
+          </ExportDownloadLink>
         </div>
       )}
     </div>

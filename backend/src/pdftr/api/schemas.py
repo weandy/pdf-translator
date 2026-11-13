@@ -55,6 +55,14 @@ class JobOut(BaseModel):
         return cls(**job.model_dump(exclude={"updated_at"}))
 
 
+class ExportPrepareOut(BaseModel):
+    """PDF 已生成或命中缓存后，供前端启动浏览器下载的信息。"""
+
+    filename: str
+    download_url: str
+    size_bytes: int
+
+
 class RectOut(BaseModel):
     x0: float
     y0: float

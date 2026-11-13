@@ -235,6 +235,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/{job_id}/export/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepare Export
+         * @description 先生成或命中导出缓存，再让前端启动可见的浏览器下载。
+         */
+        post: operations["prepare_export_api_jobs__job_id__export_prepare_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/{job_id}/terms": {
         parameters: {
             query?: never;
@@ -652,6 +672,18 @@ export interface components {
             peak: boolean;
             /** Minutes */
             minutes: number;
+        };
+        /**
+         * ExportPrepareOut
+         * @description PDF 已生成或命中缓存后，供前端启动浏览器下载的信息。
+         */
+        ExportPrepareOut: {
+            /** Filename */
+            filename: string;
+            /** Download Url */
+            download_url: string;
+            /** Size Bytes */
+            size_bytes: number;
         };
         /**
          * FormulaOut
@@ -1658,6 +1690,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    prepare_export_api_jobs__job_id__export_prepare_post: {
+        parameters: {
+            query?: {
+                mode?: "mono" | "dual";
+                side?: "left" | "right";
+            };
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportPrepareOut"];
                 };
             };
             /** @description Validation Error */

@@ -564,6 +564,10 @@ def test_manual_edit_must_keep_every_formula(client: TestClient):
 def test_export_is_cached_resumable_and_refreshed_after_edits(client: TestClient):
     job = _wait(client, _upload(client).json()["id"])
     url = f"/api/jobs/{job['id']}/export"
+    prepared = client.post(f"/api/jobs/{job['id']}/export/prepare", params={"mode": "mono"})
+    assert prepared.status_code == 200
+    prepared_body = prepared.json()
+    assert prepared_body["download_url"].startswith(url) and prepared_body["size_bytes"] > 0
     full = client.get(url, params={"mode": "mono"})
     assert full.status_code == 200 and full.headers["accept-ranges"] == "bytes"
     part = client.get(url, params={"mode": "mono"}, headers={"Range": "bytes=0-99"})
