@@ -132,7 +132,11 @@ def _size_for_scan(lb: LayoutBlock) -> float:
 
 def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], links: dict, report: FusionReport) -> Block:
     scanned = cp.kind is PageKind.SCANNED
-    style = block_style(chars, fallback_size=_size_for_scan(lb) if scanned else _size_from_lines(lb))
+    style = block_style(
+        chars,
+        fallback_size=_size_for_scan(lb) if scanned else _size_from_lines(lb),
+        title=lb.type is BlockType.TITLE,
+    )
     spans: list[Span] = []
     formulas: list[InlineFormula] = []
     for li, line in enumerate(lb.lines):

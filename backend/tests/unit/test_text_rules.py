@@ -44,6 +44,7 @@ def test_block_style():
     chars = [_ch("a", 0, size=10, bold=True), _ch("b", 6, size=10, bold=True), _ch("c", 12, size=12)]
     style = block_style(chars)
     assert style.font_size == 10 and not style.bold and style.serif  # 混合字重不再按多数票整块加粗
+    assert block_style(chars, title=True).font_size == 12  # small-caps 标题取首字母等较大字形
     assert block_style([c.model_copy(update={"bold": True}) for c in chars]).bold
     assert not is_serif("Helvetica-Bold")
     assert block_style([]).font_size == 10.0
