@@ -41,12 +41,15 @@
 }
 
 .tblock {
-  font-family: "Pdftr Times", "Times New Roman", "Liberation Serif", serif;
+  font-family: "Pdftr Times", "Nimbus Roman No9 L", "Times New Roman", "Liberation Serif", serif;
   font-weight: 400;
+  /* 粗体必须使用字体族提供的真实字重，避免浏览器临时合成出不一致的字形。 */
+  font-synthesis: none;
 }
 .tblock .zh {
-  font-family: "Pdftr Song", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", SimSun, serif;
+  font-family: "Pdftr Song", "Source Han Serif CN", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", SimSun, serif;
   font-weight: inherit;
+  font-synthesis: none;
 }
 .tblock.role-heading {
   font-weight: 700;
@@ -77,5 +80,7 @@
 /* 中文包装层必须继承 <b>，否则中文强调会被普通字重覆盖。 */
 .tblock b,
 .tblock b .zh {
+  font-family: inherit;
   font-weight: 700;
+  font-synthesis: none;
 }
