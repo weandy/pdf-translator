@@ -18,7 +18,8 @@ _BOLD_NAMES = ("Bold", "Black", "Heavy", "Semibold", "SemiBold")
 
 def _font_is_bold(font: str) -> bool:
     """按字体名补充 PyMuPDF 可能漏报的粗体标记。"""
-    return any(name in font for name in _BOLD_NAMES)
+    normalized = font.lower()
+    return any(name.lower() in normalized for name in _BOLD_NAMES)
 
 
 def extract(pdf: Path) -> list[CharPage]:

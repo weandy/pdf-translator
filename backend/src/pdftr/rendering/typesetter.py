@@ -117,14 +117,23 @@ class Typesetter:
     # ---- 字体选择 ----
     def _font_for(self, ch: str, style: Style) -> pymupdf.Font:
         cjk = bool(_CJK.fullmatch(ch))
+        emphasized = style.role == "heading" or style.no or style.bold
         if style.role == "label":
             first = self.f.hei_bold if style.bold else self.f.hei
         elif cjk:
             first = (self.f.hei_bold if style.role == "heading" or style.no
                      else self.f.song_bold if style.bold else self.f.song)  # fmt: skip
         else:
-            first = self.f.times_bold if style.role == "heading" or style.no or style.bold else self.f.times
-        for font in (first, self.f.song, self.f.times, self.f.fallback):
+            first = self.f.times_bold if emphasized else self.f.times
+        # 缺字时优先在同一字重的字体族中寻找，避免粗体字符悄悄退回普通字形。
+        # 最后的内置 fallback 可能没有对应字重，但至少能保证字符可见。
+        if emphasized:
+            alternatives = (self.f.song_bold, self.f.hei_bold, self.f.times_bold)
+        elif style.role == "label":
+            alternatives = (self.f.song, self.f.times, self.f.hei)
+        else:
+            alternatives = (self.f.song, self.f.hei, self.f.times)
+        for font in (first, *alternatives, self.f.fallback):
             if font.has_glyph(ord(ch)):
                 return font
         return self.f.fallback

@@ -53,6 +53,8 @@ def test_block_style():
 def test_medium_font_name_is_not_bold():
     assert not _font_is_bold("NotoSansSC-Medium")
     assert _font_is_bold("NotoSansSC-Bold")
+    assert _font_is_bold("noto-sans-sc-bold")
+    assert _font_is_bold("NimbusRoman-Black")
 
 
 def test_classify():

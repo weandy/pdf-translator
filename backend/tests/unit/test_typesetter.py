@@ -3,7 +3,7 @@
 import pymupdf
 
 from pdftr.rendering.typeset import drop_fake_scripts
-from pdftr.rendering.typesetter import FontSet, Typesetter
+from pdftr.rendering.typesetter import FontSet, Style, Typesetter
 
 TS = Typesetter(FontSet.load(None))
 SIZE = 10.0
@@ -78,3 +78,25 @@ def test_inline_bold_selects_both_chinese_and_latin_bold_fonts_without_leaking()
     assert all(r.font is f.hei_bold for t in heading for r in t.runs)
     caption = ts.tokenize("图 1. 普通图注", "caption", SIZE, lambda _: None, "图 1.")
     assert caption[0].runs[0].font is f.hei_bold
+
+
+class _GlyphFont:
+    def __init__(self, glyphs: str):
+        self.glyphs = set(glyphs)
+
+    def has_glyph(self, codepoint: int) -> bool:
+        return chr(codepoint) in self.glyphs
+
+
+def test_bold_missing_glyph_keeps_bold_fallback():
+    regular_song = _GlyphFont("汉")
+    regular_hei = _GlyphFont("")
+    regular_times = _GlyphFont("A")
+    bold_times = _GlyphFont("")
+    bold_song = _GlyphFont("A")
+    bold_hei = _GlyphFont("汉")
+    fallback = _GlyphFont("汉A")
+    ts = Typesetter(FontSet(regular_song, regular_hei, regular_times, bold_times, bold_song, bold_hei, fallback))
+
+    assert ts._font_for("汉", Style("body", bold=True)) is bold_hei
+    assert ts._font_for("A", Style("body", bold=True)) is bold_song
