@@ -46,19 +46,39 @@ _DISCARDED_TYPES = {
 }
 
 # arXiv/IEEE 类论文常把章节标题排成 small-caps，MinerU 有时会将其返回为
-# 普通 text。仅在单行、罗马数字/字母编号、全大写标题的组合下提升为 title，
-# 避免把正文里的普通大写句子误判成章节标题。
-_ROMAN_SECTION_TITLE = re.compile(r"^\s*(?:[IVXLCDM]+|[A-Z])\.\s+[A-Z][A-Z0-9][A-Z0-9\s&'’(),:/-]*\s*$")
+# 普通 text。标题识别只处理带明确编号、短而无句末标点的块，避免把普通正文
+# 或编号列表误判成章节标题。span 之间和相邻行之间统一补空格，兼容 MinerU
+# 因字体/字号变化把一个标题拆成多个 span 的情况。
+_SECTION_PREFIX = r"(?:[IVXLCDM]+|[A-Z]|\d+(?:\.\d+)*)"
+_ENGLISH_SECTION_TITLE = re.compile(rf"^\s*{_SECTION_PREFIX}\s*[.)]?\s+[A-Za-z][A-Za-z0-9]*[A-Za-z0-9\s&'’(),:/-]*\s*$")
+_CHINESE_SECTION_TITLE = re.compile(r"^\s*(?:第\s*\d+\s*章|[一二三四五六七八九十百]+[、.])\s*[^。！？!?；;]+\s*$")
+_SECTION_END = set("。！？!?；;:")
 
 
 def _looks_like_section_title(raw: dict[str, Any]) -> bool:
     lines = raw.get("lines", [])
-    if len(lines) != 1:
+    if not 1 <= len(lines) <= 2:
         return False
-    text = "".join(
-        str(span.get("content", "")) for span in lines[0].get("spans", []) if span.get("type") == "text"
-    ).strip()
-    return len(text) >= 8 and bool(_ROMAN_SECTION_TITLE.fullmatch(text))
+    line_texts = []
+    for line in lines:
+        parts = [str(span.get("content", "")).strip() for span in line.get("spans", []) if span.get("type") == "text"]
+        if parts:
+            line_texts.append(" ".join(parts))
+    text = re.sub(r"\s+", " ", " ".join(line_texts)).strip()
+    if not 4 <= len(text) <= 120 or not text or text[-1] in _SECTION_END:
+        return False
+    words = text.split()
+    if len(words) > 14:
+        return False
+    if len(text) >= 4 and _CHINESE_SECTION_TITLE.fullmatch(text):
+        return True
+    if len(text) < 8:
+        return False
+    if not _ENGLISH_SECTION_TITLE.fullmatch(text):
+        return False
+    # 编号后首个单词必须像标题词（大写或 small-caps），避免匹配普通句子。
+    body = re.sub(rf"^\s*{_SECTION_PREFIX}\s*[.)]?\s+", "", text)
+    return bool(body and body[0].isupper())
 
 
 def _lines(raw: dict[str, Any]) -> tuple[list[LayoutLine], str | None]:
