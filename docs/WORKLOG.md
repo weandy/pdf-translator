@@ -19,7 +19,7 @@
 
 - 仓库：`D:\\01\\pdf-translator`
 - 分支：`main`
-- 功能代码基线：`a29eef9`（MinerU 状态/重试与 PDF 下载体验优化完成）
+- 功能代码基线：`a9deddb`（版式样式与结构信息优化完成）
 - 交接文档提交：`a29eef9`（本轮代码、测试与交接目标同步更新）
 - GitHub：<https://github.com/weandy/pdf-translator>
 - 线上地址：<https://pdf.667786.xyz/>
