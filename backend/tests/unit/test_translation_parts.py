@@ -1,7 +1,14 @@
 from datetime import datetime, timedelta, timezone
 
 from pdftr.domain.llm import ChatUsage
-from pdftr.translation.batching import bold_problems, estimate_tokens, make_batches, parse_numbered, placeholders_match
+from pdftr.translation.batching import (
+    bold_problems,
+    estimate_tokens,
+    italic_problems,
+    make_batches,
+    parse_numbered,
+    placeholders_match,
+)
 from pdftr.translation.cost import cost_cny, is_deepseek_peak
 from pdftr.translation.prompt import DocContext, expand_formulas, system_prompt, user_prompt
 
@@ -41,6 +48,16 @@ def test_bold_structure_rejects_added_emphasis_and_checks_source_emphasis():
     assert "新增粗体" in bold_problems("No emphasis.", "保持原有<b>自然格式和</b>行为。")[0]
     assert "未完整配对" in bold_problems("No emphasis.", "保持原有<b>自然格式和行为。")[0]
     assert bold_problems(source, "<sup>不新增上下标校验</sub>一个<b>重要</b>细节。") == []
+
+
+def test_italic_structure_rejects_loss_and_added_emphasis():
+    source = "An <i>important</i> detail."
+    assert italic_problems(source, "一个<i>重要</i>细节。") == []
+    assert "丢失" in italic_problems(source, "一个重要细节。")[0]
+    assert "配对" in italic_problems(source, "一个<i>重要细节。")[0]
+    assert "新增斜体" in italic_problems("No emphasis.", "保持原有<i>自然格式和</i>行为。")[0]
+    assert "没有内容" in italic_problems(source, "<i> </i>一个重要细节。")[0]
+    assert "嵌套" in italic_problems(source, "一个<i><b>重要</i></b>细节。")[0]
 
 
 def test_prompts():

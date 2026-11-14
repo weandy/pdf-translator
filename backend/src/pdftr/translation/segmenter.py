@@ -43,20 +43,41 @@ def _join(prev: str, nxt: str) -> str:
 
 def _span_source(span: Span, *, inline_bold: bool) -> str:
     text = span.text
-    if not inline_bold:
-        return text.strip()
-    if span.bold:
-        return f"<b>{text.strip()}</b>" if text.strip() else ""
-    pieces: list[str] = []
-    offset = len(text) - len(text.lstrip())
+    start = len(text) - len(text.lstrip())
     end = len(text.rstrip())
-    for start, stop in span.bold_ranges:
-        start, stop = max(start, offset), min(stop, end)
-        if stop <= start:
-            continue
-        pieces.extend([text[offset:start], f"<b>{text[start:stop]}</b>"])
-        offset = stop
-    pieces.append(text[offset:end])
+    if end <= start:
+        return ""
+    bold = [False] * len(text)
+    if inline_bold and span.bold:
+        bold[start:end] = [True] * (end - start)
+    if inline_bold:
+        for lo, hi in span.bold_ranges:
+            lo, hi = max(lo, start), min(hi, end)
+            if hi > lo:
+                bold[lo:hi] = [True] * (hi - lo)
+    italic = [False] * len(text)
+    if span.italic:
+        italic[start:end] = [True] * (end - start)
+    for lo, hi in span.italic_ranges:
+        lo, hi = max(lo, start), min(hi, end)
+        if hi > lo:
+            italic[lo:hi] = [True] * (hi - lo)
+    pieces: list[str] = []
+    active: list[str] = []
+    for pos in range(start, end):
+        desired = (["b"] if bold[pos] else []) + (["i"] if italic[pos] else [])
+        common = 0
+        while common < len(active) and common < len(desired) and active[common] == desired[common]:
+            common += 1
+        for tag in reversed(active[common:]):
+            pieces.append(f"</{tag}>")
+        active = active[:common]
+        for tag in desired[common:]:
+            pieces.append(f"<{tag}>")
+            active.append(tag)
+        pieces.append(text[pos])
+    for tag in reversed(active):
+        pieces.append(f"</{tag}>")
     return "".join(pieces)
 
 

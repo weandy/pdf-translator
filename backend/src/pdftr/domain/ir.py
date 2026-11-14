@@ -52,6 +52,8 @@ class Span(BaseModel):
     bold: bool = False
     bold_ranges: list[tuple[int, int]] = Field(default_factory=list)  # 混合字重片段内的粗体范围，按 text 索引，右侧不含
     italic: bool = False
+    # 混合字形片段内的斜体范围，按 text 索引，右侧不含
+    italic_ranges: list[tuple[int, int]] = Field(default_factory=list)
 
 
 class InlineFormula(BaseModel):

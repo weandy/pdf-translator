@@ -11,7 +11,7 @@ from pdftr.domain.ir import Block, BlockStyle, BlockType, Document, InlineFormul
 from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutPage, LayoutResult, LayoutSpan
 from pdftr.extraction.chars import extract
 from pdftr.fusion.build import fuse
-from pdftr.fusion.emphasis import bold_ranges
+from pdftr.fusion.emphasis import bold_ranges, italic_ranges
 from pdftr.fusion.style import block_style
 from pdftr.translation.segmenter import _join, block_source, segment
 
@@ -44,6 +44,27 @@ def test_exact_normalized_mapping_preserves_parser_text_and_internal_word():
     item = span(text, bold=bold, bold_ranges=ranges)
     assert item.text == text
     assert block_source(block([item]), {}) == "pre<b>fixfix</b> and ordinary text"
+
+
+def test_italic_ranges_and_overlapping_rich_text_are_preserved():
+    text = "plain italic and both"
+    source_chars = chars(text, "")
+    italic_start = text.index("italic")
+    both_start = text.index("both")
+    source_chars = [
+        c.model_copy(update={"italic": italic_start <= i < italic_start + 6 or i >= both_start})
+        for i, c in enumerate(source_chars)
+    ]
+    bold_start = text.index("both")
+    source_chars = [
+        c.model_copy(update={"bold": i >= bold_start}) for i, c in enumerate(source_chars)
+    ]
+    italic, ranges = italic_ranges(text, source_chars)
+    bold, bold_spans = bold_ranges(text, source_chars)
+    assert not italic and ranges == [(6, 12), (17, 21)]
+    assert not bold and bold_spans == [(17, 21)]
+    item = span(text, italic_ranges=ranges, bold_ranges=bold_spans)
+    assert block_source(block([item]), {}) == "plain <i>italic</i> and <b><i>both</i></b>"
 
 
 def test_ligature_mapping_and_whitespace_use_original_parser_indices():

@@ -67,6 +67,40 @@ def placeholder_problems(source: str, target: str) -> list[str]:
     return problems
 
 
+def _emphasis_problems(source: str, target: str, *, tag: str, label: str) -> list[str]:
+    """校验一种富文本强调标签的数量、配对、嵌套和非空内容。"""
+    expected = source.count(f"<{tag}>")
+    if not expected:
+        opened, closed = target.count(f"<{tag}>"), target.count(f"</{tag}>")
+        if opened or closed:
+            if opened != closed:
+                return [f"译文新增{label}标记且未完整配对"]
+            return [f"译文新增{label}标记：原文没有{label}，实际 {opened} 对"]
+        return []
+    opened, closed = target.count(f"<{tag}>"), target.count(f"</{tag}>")
+    if opened != closed:
+        return [f"{label}标记未完整配对"]
+    if opened < expected:
+        return [f"{label}标记丢失：需要 {expected} 对，实际 {opened} 对"]
+    if opened > expected:
+        return [f"{label}标记多出：需要 {expected} 对，实际 {opened} 对"]
+    stack: list[tuple[str, int]] = []
+    for match in _RICH_TAG.finditer(target):
+        closing, current = match.group(1), match.group(2)
+        if not closing:
+            stack.append((current, match.end()))
+            continue
+        if stack and stack[-1][0] == current:
+            _, start = stack.pop()
+            if current == tag and not _RICH_TAG.sub("", target[start : match.start()]).strip():
+                return [f"{label}标记内没有内容"]
+        elif current == tag or any(t == tag for t, _ in stack):
+            return [f"{label}标记嵌套错误"]
+    if any(t == tag for t, _ in stack):
+        return [f"{label}标记未完整配对"]
+    return []
+
+
 def bold_problems(source: str, target: str) -> list[str]:
     """原文含局部粗体时，译文必须保留同样数量、成对且正确嵌套的非空强调。
 
@@ -74,33 +108,9 @@ def bold_problems(source: str, target: str) -> list[str]:
     时不会生成 ``<b>`` 标签，模型若重新包住整段会让译文错误地变成粗体。
     这里只能保证标记结构，强调内容的语义对应仍由翻译模型负责。
     """
-    expected = source.count("<b>")
-    if not expected:
-        opened, closed = target.count("<b>"), target.count("</b>")
-        if opened or closed:
-            if opened != closed:
-                return ["译文新增粗体标记且未完整配对"]
-            return [f"译文新增粗体标记：原文没有粗体，实际 {opened} 对"]
-        return []
-    opened, closed = target.count("<b>"), target.count("</b>")
-    if opened != closed:
-        return ["粗体标记未完整配对"]
-    if opened < expected:
-        return [f"粗体标记丢失：需要 {expected} 对，实际 {opened} 对"]
-    if opened > expected:
-        return [f"粗体标记多出：需要 {expected} 对，实际 {opened} 对"]
-    stack: list[tuple[str, int]] = []
-    for match in _RICH_TAG.finditer(target):
-        closing, tag = match.group(1), match.group(2)
-        if not closing:
-            stack.append((tag, match.end()))
-            continue
-        if stack and stack[-1][0] == tag:
-            _, start = stack.pop()
-            if tag == "b" and not _RICH_TAG.sub("", target[start : match.start()]).strip():
-                return ["粗体标记内没有内容"]
-        elif tag == "b" or any(t == "b" for t, _ in stack):
-            return ["粗体标记嵌套错误"]
-    if any(t == "b" for t, _ in stack):
-        return ["粗体标记未完整配对"]
-    return []
+    return _emphasis_problems(source, target, tag="b", label="粗体")
+
+
+def italic_problems(source: str, target: str) -> list[str]:
+    """原文含局部斜体时，译文必须保留同样数量、成对且正确嵌套的非空强调。"""
+    return _emphasis_problems(source, target, tag="i", label="斜体")
