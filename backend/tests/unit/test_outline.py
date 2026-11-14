@@ -21,12 +21,14 @@ def _pdf(tmp_path: Path, toc: list | None = None) -> Path:
     return path
 
 
-def _doc(titles: list[tuple[int, str]]) -> tuple[Document, list[Segment]]:
+def _doc(titles: list[tuple[int, str]], levels: dict[str, int] | None = None) -> tuple[Document, list[Segment]]:
     blocks, segs = [], []
     for i, (page, text) in enumerate(titles):
         box = Rect(x0=50, y0=100 + i * 20, x1=300, y1=112 + i * 20)
         span = Span(text=text, bbox=box, size=10)
-        b = Block(id=f"p{page}-b{i}", page=page, type=BlockType.TITLE, bbox=box, order=i, spans=[span],
+        b = Block(
+            id=f"p{page}-b{i}", page=page, type=BlockType.TITLE, level=(levels or {}).get(text), bbox=box, order=i,
+            spans=[span],
                   style=BlockStyle(font_size=10), translatable=True)  # fmt: skip
         blocks.append(b)
         segs.append(Segment(id=f"s{i}", job_id="0123456789abcdef", block_ids=[b.id], source=text,
@@ -65,3 +67,12 @@ def test_bookmark_that_does_not_match_text_falls_back_to_nearest_heading(tmp_pat
     d, segs = _doc([(0, "Paper Title"), (0, "1 Introduction and Motivation")])  # 书签文字与标题对不上
     (item,) = build_outline(pdf, d, segs)
     assert item.segment_id == "s1" and abs(item.top - 118) < 1
+
+
+def test_parser_heading_level_is_kept_when_numbering_is_absent(tmp_path: Path):
+    doc, segs = _doc(
+        [(0, "Paper Title"), (0, "Background"), (1, "Details")],
+        levels={"Background": 2, "Details": 3},
+    )
+    items = build_outline(_pdf(tmp_path), doc, segs)
+    assert [(item.title, item.level) for item in items] == [("Background", 2), ("Details", 3)]

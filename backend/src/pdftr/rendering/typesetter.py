@@ -38,13 +38,25 @@ class FontSet:
     song_bold: pymupdf.Font
     hei_bold: pymupdf.Font
     fallback: pymupdf.Font = field(default_factory=lambda: pymupdf.Font("cjk"))
+    # 西文斜体；中文没有独立斜体字形，沿用对应的宋体/黑体字形。
+    times_italic: pymupdf.Font | None = None
+    times_bold_italic: pymupdf.Font | None = None
 
     @classmethod
     def load(cls, font_dir: Path | None) -> "FontSet":
         if font_dir is not None and fonts.available(font_dir):
             f = fonts.FILES
-            return cls(*(pymupdf.Font(fontfile=str(font_dir / f[k]))
-                         for k in ("song", "hei", "times", "times-bold", "song-bold", "hei-bold")))  # fmt: skip
+            loaded = {key: pymupdf.Font(fontfile=str(font_dir / filename)) for key, filename in f.items()}
+            return cls(
+                loaded["song"],
+                loaded["hei"],
+                loaded["times"],
+                loaded["times-bold"],
+                loaded["song-bold"],
+                loaded["hei-bold"],
+                times_italic=loaded["times-italic"],
+                times_bold_italic=loaded["times-bold-italic"],
+            )
         cjk = pymupdf.Font("cjk")  # 没有字体文件时（开发环境）用内置字体，排版规则不变
         return cls(cjk, cjk, pymupdf.Font("tiro"), pymupdf.Font("tibo"), cjk, cjk, cjk)
 
@@ -55,6 +67,7 @@ class Style:
 
     role: str
     bold: bool = False
+    italic: bool = False
     no: bool = False
     script: str = ""  # "sup" / "sub" / ""
 
@@ -118,16 +131,31 @@ class Typesetter:
     def _font_for(self, ch: str, style: Style) -> pymupdf.Font:
         cjk = bool(_CJK.fullmatch(ch))
         emphasized = style.role == "heading" or style.no or style.bold
+        italic = bool(style.italic and not cjk)
+        times_italic = self.f.times_italic or self.f.times
+        times_bold_italic = self.f.times_bold_italic or self.f.times_bold
         if style.role == "label":
             first = self.f.hei_bold if style.bold else self.f.hei
         elif cjk:
             first = (self.f.hei_bold if style.role == "heading" or style.no
                      else self.f.song_bold if style.bold else self.f.song)  # fmt: skip
         else:
-            first = self.f.times_bold if emphasized else self.f.times
+            first = (
+                times_bold_italic
+                if emphasized and italic
+                else times_italic
+                if italic
+                else self.f.times_bold
+                if emphasized
+                else self.f.times
+            )
         # 缺字时优先在同一字重的字体族中寻找，避免粗体字符悄悄退回普通字形。
         # 最后的内置 fallback 可能没有对应字重，但至少能保证字符可见。
-        if emphasized:
+        if italic and emphasized:
+            alternatives = (times_bold_italic, self.f.song_bold, self.f.hei_bold, self.f.times_bold)
+        elif italic:
+            alternatives = (times_italic, self.f.song, self.f.hei, self.f.times)
+        elif emphasized:
             alternatives = (self.f.song_bold, self.f.hei_bold, self.f.times_bold)
         elif style.role == "label":
             alternatives = (self.f.song, self.f.times, self.f.hei)
@@ -181,7 +209,7 @@ class Typesetter:
     @staticmethod
     def _style(role: str, stack: list[str]) -> Style:
         script = next((t for t in reversed(stack) if t in ("sup", "sub")), "")
-        return Style(role, bold="b" in stack, script=script)
+        return Style(role, bold="b" in stack, italic="i" in stack, script=script)
 
     def _text_tokens(self, text: str, style: Style, size: float) -> list[Token]:
         out: list[Token] = []

@@ -20,6 +20,7 @@ from pdftr.translation.batching import (
     BATCH_TOKENS,
     bold_problems,
     estimate_tokens,
+    italic_problems,
     make_batches,
     parse_numbered,
     placeholder_problems,
@@ -122,6 +123,7 @@ async def translate(
             and (hit := cache.get(key))
             and placeholders_match(seg.source, hit)
             and not bold_problems(seg.source, hit)
+            and not italic_problems(seg.source, hit)
         ):
             seg.target, seg.status = hit, SegmentStatus.DONE
             report.cached += 1
@@ -207,7 +209,8 @@ async def translate(
             target = got.get(n, "")
             formula_errors = placeholder_problems(u.source, target)
             bold_errors = bold_problems(u.source, target)
-            if target and not formula_errors and not bold_errors:
+            italic_errors = italic_problems(u.source, target)
+            if target and not formula_errors and not bold_errors and not italic_errors:
                 cache.put(u.key, target)
                 for i in u.seg_indexes:
                     out[i].target, out[i].status = target, SegmentStatus.DONE
@@ -218,6 +221,8 @@ async def translate(
                     errors.append("公式占位符不一致：" + "；".join(formula_errors))
                 if bold_errors:
                     errors.append("粗体标记不一致：" + "；".join(bold_errors))
+                if italic_errors:
+                    errors.append("斜体标记不一致：" + "；".join(italic_errors))
                 reasons[u.key] = "；".join(errors) if target else "返回编号缺失或译文为空"
                 retry.append(u)
         if on_progress:

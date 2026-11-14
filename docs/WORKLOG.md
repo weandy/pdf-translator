@@ -2,7 +2,12 @@
 
 > 这份文件用于跨对话继续开发。每完成一个完整功能，更新“当前状态”“最近完成”和“下一步”，再单独提交 Git。
 >
-> 最后更新：2026-11-13（Asia/Shanghai）
+> 最后更新：2026-11-14（Asia/Shanghai）
+
+### 本轮目标（2026-11-14）
+
+- 完整修复版式样式边界：粗体字体回退保持字重、斜体端到端保留、章节标题识别扩展、混合字号与扫描页标题稳健处理，并补充颜色/目录/孤立文字的回归保护。
+- 验收标准：原文局部粗体与斜体在翻译输入、网页阅读器和导出 PDF 中保持；常见编号标题不因解析器类型差异降级为正文；缺字回退不改变字重；后端测试、lint、typecheck 与前端 lint、typecheck、test、build 通过。
 
 ### 本轮目标（2026-11-12）
 
@@ -49,6 +54,8 @@
 - 字体试验：正文和局部 `<b>` 禁止浏览器合成粗体，强制继承当前字体族；增加 Source Han Serif/Nimbus Roman 作为系统回退，保持内嵌字体 Regular/Bold 配对。
 - 修复 MinerU 对 small-caps 罗马数字章节标题的漏识别：`I. INTRODUCTION` 这类普通 `text` 块会提升为章节标题，参与正确的章节上下文和标题排版。
 - 修复 small-caps 章节标题字号取中位数导致译文标题偏小：标题块改用字符最大字号，正文字号规则不变。
+- 完善版式样式边界：粗体缺字时保持同字重回退；斜体从字符融合、翻译标签校验到网页与 PDF 排版完整贯通；标题识别支持多 span、两行、数字/字母/中文编号；标题字号对异常大字稳健；扫描页标题使用行框估算；解析器标题层级进入目录；孤立文字过滤竖排字符。
+- 新增 Tinos 斜体与粗斜体字体资源，并同步更新字体接口和前端类型。
 - 章节、内部链接和搜索跳转会短暂高亮并淡出。
 - 修改记录支持差异突出显示。
 
@@ -111,6 +118,13 @@
 - MinerU 契约测试：10 passed；状态展示测试：1 passed。
 - 前端 `npm run lint`、`npm run typecheck`、`npm run build` 通过。
 - 默认 `npm test` 仍受当前 Node `v20.19.2` 与 `undici` 的 Node 22 `zstd` API 兼容问题影响，未能启动完整 jsdom worker。
+
+本轮版式边界修复（本地提交 `c820231`、`853e0ad`、`dcb9af5` 及后续集成提交）：
+
+- 后端全量测试：418 passed，6 skipped。
+- 后端 `ruff format --check`、`ruff check`、`pyright`、`lint-imports` 通过。
+- 前端 `npm run lint`、`npm run typecheck`、`npm run build` 通过。
+- 前端 Node 环境定向测试：3 个文件、16 passed；完整 jsdom 测试仍受当前 Node 20 与 `undici` 的 Node 22 `zstd` API 兼容问题影响。
 
 ## 当前已知限制
 

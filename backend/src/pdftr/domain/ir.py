@@ -75,6 +75,7 @@ class Block(BaseModel):
     id: str  # 如 "p3-b12"
     page: int
     type: BlockType
+    level: int | None = None  # 解析器提供的标题层级；没有时由目录构建逻辑按编号推断
     bbox: Rect
     order: int  # 阅读顺序
     spans: list[Span] = Field(default_factory=list)

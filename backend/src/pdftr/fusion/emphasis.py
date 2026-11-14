@@ -10,9 +10,7 @@ def _visible(text: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFKC", text) if not c.isspace())
 
 
-def _style_ranges(
-    text: str, chars: Sequence[Char], *, attribute: str
-) -> tuple[bool, list[tuple[int, int]]]:
+def _style_ranges(text: str, chars: Sequence[Char], *, attribute: str) -> tuple[bool, list[tuple[int, int]]]:
     """按字符样式映射整段或局部强调；OCR 差异、漏字时宁可不猜位置。
 
     连字（如 ﬁ）会展开成多个字符，范围仍使用原始解析文字的索引；空白只在两侧都粗体时归入。

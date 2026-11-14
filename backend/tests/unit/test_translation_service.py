@@ -126,6 +126,26 @@ def test_persistent_bold_loss_reaches_the_existing_bound_with_explicit_reason():
     assert report.cost_cny is not None and report.usage.prompt_tokens == 1000
 
 
+def test_persistent_italic_loss_is_retried_with_explicit_reason():
+    class DropItalic(FakeChat):
+        async def complete(self, system, user, opts):
+            result = await super().complete(system, user, opts)
+            return ChatResult(text=result.text.replace("<i>", "").replace("</i>", ""), usage=result.usage)
+
+    chat = DropItalic()
+    (out,), report = asyncio.run(
+        translate(
+            [_seg(0, "An <i>important</i> detail.")],
+            chat=chat,
+            cache=DictCache(),
+            ctx=DocContext(),
+            opts=TranslateOptions(max_attempts=2),
+        )
+    )
+    assert out.status is SegmentStatus.FAILED and out.translation_attempts == 2
+    assert report.requests == 2 and report.failed == 1 and "斜体标记丢失" in out.failure_reason
+
+
 def test_persistent_failure_and_edited_untouched():
     chat = FakeChat(break_once={"Some other text."})
     chat.break_once = set()  # 下面用一个总是丢占位符的段落

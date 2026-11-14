@@ -17,6 +17,8 @@ FILES = {
     "hei": "NotoSansSC-Medium.ttf",
     "times": "Tinos-Regular.ttf",
     "times-bold": "Tinos-Bold.ttf",
+    "times-italic": "Tinos-Italic.ttf",
+    "times-bold-italic": "Tinos-BoldItalic.ttf",
     "song-bold": "NotoSerifSC-Bold.ttf",
     "hei-bold": "NotoSansSC-Bold.ttf",
 }

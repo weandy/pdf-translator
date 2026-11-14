@@ -56,9 +56,7 @@ def test_italic_ranges_and_overlapping_rich_text_are_preserved():
         for i, c in enumerate(source_chars)
     ]
     bold_start = text.index("both")
-    source_chars = [
-        c.model_copy(update={"bold": i >= bold_start}) for i, c in enumerate(source_chars)
-    ]
+    source_chars = [c.model_copy(update={"bold": i >= bold_start}) for i, c in enumerate(source_chars)]
     italic, ranges = italic_ranges(text, source_chars)
     bold, bold_spans = bold_ranges(text, source_chars)
     assert not italic and ranges == [(6, 12), (17, 21)]

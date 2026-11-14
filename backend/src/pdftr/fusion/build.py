@@ -27,7 +27,7 @@ from pdftr.domain.ir import (
 )
 from pdftr.domain.layout import LayoutBlock, LayoutResult
 from pdftr.fusion.align import align
-from pdftr.fusion.emphasis import bold_ranges
+from pdftr.fusion.emphasis import bold_ranges, italic_ranges
 from pdftr.fusion.formula_align import refine_block
 from pdftr.fusion.relocate import relocate
 from pdftr.fusion.style import block_style
@@ -121,6 +121,10 @@ def _size_from_lines(lb: LayoutBlock) -> float:
 def _size_for_scan(lb: LayoutBlock) -> float:
     """扫描页只有块级坐标：先按块面积与文字长度粗估字号（字宽约 0.5、行距约 1.2 字号）得出行数，
     再按行数反推（最后一行通常不满，直接用粗估会偏大）；块框比字形略高，按每行 1.25 字号算。"""
+    if lb.type is BlockType.TITLE and lb.lines:
+        line_heights = [line.bbox.height for line in lb.lines if line.bbox.height > 0]
+        if line_heights:
+            return round(min(max(statistics.median(line_heights) * 0.95, 5.0), 24.0), 2)
     text = "".join(s.content for ln in lb.lines for s in ln.spans)
     width, height = lb.bbox.width, lb.bbox.height
     if not text or width <= 0 or height <= 0:
@@ -154,15 +158,18 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], links: dict, report
             report.text_replaced += replaced
             if text:
                 bold, ranges = bold_ranges(text, span_chars)
+                italic, italic_ranges_ = italic_ranges(text, span_chars)
+                span_style = block_style(span_chars, fallback_size=style.font_size, title=lb.type is BlockType.TITLE)
                 spans.append(
                     Span(
                         text=text,
                         line=li,
                         bbox=s.bbox,
-                        size=style.font_size,
+                        size=span_style.font_size,
                         bold=bold,
                         bold_ranges=ranges,
-                        italic=style.italic,
+                        italic=italic,
+                        italic_ranges=italic_ranges_,
                     )
                 )
     report.formulas += len(formulas)
@@ -171,6 +178,7 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], links: dict, report
         id=block_id(cp.index, lb.order),
         page=cp.index,
         type=lb.type,
+        level=lb.level,
         bbox=lb.bbox,
         order=lb.order,
         spans=spans,
@@ -186,7 +194,8 @@ def _orphan_blocks(cp: CharPage, orphans: list[Char], start: int, report: Fusion
     """解析器漏掉的文字：按 PyMuPDF 行分组，字母足够多的行补成可翻译的文本块。"""
     by_line: dict[int, list[Char]] = defaultdict(list)
     for ch in orphans:
-        by_line[ch.line].append(ch)
+        if ch.upright:
+            by_line[ch.line].append(ch)
     blocks: list[Block] = []
     for chars in by_line.values():
         text = text_of(chars)
@@ -200,16 +209,26 @@ def _orphan_blocks(cp: CharPage, orphans: list[Char], start: int, report: Fusion
         )
         style = block_style(chars)
         bold, ranges = bold_ranges(text, chars)
+        italic, italic_ranges_ = italic_ranges(text, chars)
         order = start + len(blocks)
         blocks.append(
             Block(
                 id=block_id(cp.index, order),
                 page=cp.index,
                 type=BlockType.TEXT,
+                level=None,
                 bbox=box,
                 order=order,
                 spans=[
-                    Span(text=text, bbox=box, size=style.font_size, bold=bold, bold_ranges=ranges, italic=style.italic)
+                    Span(
+                        text=text,
+                        bbox=box,
+                        size=style.font_size,
+                        bold=bold,
+                        bold_ranges=ranges,
+                        italic=italic,
+                        italic_ranges=italic_ranges_,
+                    )
                 ],
                 style=style,
                 translatable=True,
@@ -258,16 +277,26 @@ def _figure_labels(cp: CharPage, chars: list[Char], start: int, report: FusionRe
         )
         style = block_style(visible)
         bold, ranges = bold_ranges(text, run)
+        italic, italic_ranges_ = italic_ranges(text, run)
         order = start + len(blocks)
         blocks.append(
             Block(
                 id=block_id(cp.index, order),
                 page=cp.index,
                 type=BlockType.FIGURE_TEXT,
+                level=None,
                 bbox=box,
                 order=order,
                 spans=[
-                    Span(text=text, bbox=box, size=style.font_size, bold=bold, bold_ranges=ranges, italic=style.italic)
+                    Span(
+                        text=text,
+                        bbox=box,
+                        size=style.font_size,
+                        bold=bold,
+                        bold_ranges=ranges,
+                        italic=italic,
+                        italic_ranges=italic_ranges_,
+                    )
                 ],
                 style=style,
                 translatable=True,

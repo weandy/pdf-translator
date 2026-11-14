@@ -309,8 +309,8 @@ def build_outline(pdf: Path, doc: Document, segments: list[Segment]) -> list[Out
     out = []
     for block, seg, text in heads:
         m = _NUMBERED.match(text)
-        level = 1 + m.group(2).count(".") if m else 1  # “3” 一级，“3.1” 二级，“3.1.2” 三级
-        out.append(OutlineItem(title=text, level=min(level, 4), page=block.page, top=block.bbox.y0,
+        level = block.level if block.level is not None else (1 + m.group(2).count(".") if m else 1)
+        out.append(OutlineItem(title=text, level=max(1, min(int(level), 4)), page=block.page, top=block.bbox.y0,
                                translated=translated(seg), segment_id=seg.id if seg else None))  # fmt: skip
     return out
 

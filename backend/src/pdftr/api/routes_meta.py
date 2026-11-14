@@ -75,6 +75,7 @@ def config(request: Request) -> ConfigOut:
 WebFont = Literal[
     "NotoSerifSC-Regular.woff2", "NotoSerifSC-Bold.woff2", "NotoSansSC-Medium.woff2",
     "NotoSansSC-Bold.woff2", "Tinos-Regular.woff2", "Tinos-Bold.woff2",
+    "Tinos-Italic.woff2", "Tinos-BoldItalic.woff2",
 ]  # fmt: skip
 
 

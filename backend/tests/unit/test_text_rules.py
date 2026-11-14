@@ -50,6 +50,22 @@ def test_block_style():
     assert block_style([]).font_size == 10.0
 
 
+def test_title_size_ignores_anomalous_outlier_but_keeps_small_caps_lead():
+    normal = [_ch(chr(97 + i), i * 6, size=8) for i in range(14)]
+    lead = _ch("I", 0, size=10)
+    outlier = _ch("*", 6, size=20)
+    assert block_style([lead, *normal], title=True).font_size == 10
+    assert block_style([lead, *normal, outlier], title=True).font_size == 10
+
+
+def test_block_style_only_marks_fully_italic_blocks():
+    chars = [_ch("a", 0), _ch("b", 6)]
+    italic = [c.model_copy(update={"italic": True}) for c in chars]
+    mixed = [italic[0], chars[1]]
+    assert block_style(italic).italic
+    assert not block_style(mixed).italic
+
+
 def test_medium_font_name_is_not_bold():
     assert not _font_is_bold("NotoSansSC-Medium")
     assert _font_is_bold("NotoSansSC-Bold")

@@ -39,6 +39,20 @@
   src: url("/api/fonts/Tinos-Bold.woff2?v=1") format("woff2");
   font-display: swap;
 }
+@font-face {
+  font-family: "Pdftr Times";
+  font-style: italic;
+  font-weight: 400;
+  src: url("/api/fonts/Tinos-Italic.woff2?v=1") format("woff2");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Pdftr Times";
+  font-style: italic;
+  font-weight: 700;
+  src: url("/api/fonts/Tinos-BoldItalic.woff2?v=1") format("woff2");
+  font-display: swap;
+}
 
 .tblock {
   font-family: "Pdftr Times", "Nimbus Roman No9 L", "Times New Roman", "Liberation Serif", serif;

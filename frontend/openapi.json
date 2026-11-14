@@ -478,7 +478,9 @@
         "NotoSansSC-Medium.woff2",
         "NotoSansSC-Bold.woff2",
         "Tinos-Regular.woff2",
-        "Tinos-Bold.woff2"
+        "Tinos-Bold.woff2",
+        "Tinos-Italic.woff2",
+        "Tinos-BoldItalic.woff2"
        ],
        "type": "string",
        "title": "Name"
@@ -2070,6 +2072,17 @@
      "type": {
       "type": "string",
       "title": "Type"
+     },
+     "level": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Level"
      },
      "bbox": {
       "$ref": "#/components/schemas/RectOut"

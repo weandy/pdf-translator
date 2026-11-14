@@ -96,7 +96,27 @@ def test_bold_missing_glyph_keeps_bold_fallback():
     bold_song = _GlyphFont("A")
     bold_hei = _GlyphFont("汉")
     fallback = _GlyphFont("汉A")
-    ts = Typesetter(FontSet(regular_song, regular_hei, regular_times, bold_times, bold_song, bold_hei, fallback))
+    ts = Typesetter(  # type: ignore[arg-type]
+        FontSet(regular_song, regular_hei, regular_times, bold_times, bold_song, bold_hei, fallback)  # type: ignore[arg-type]
+    )
 
     assert ts._font_for("汉", Style("body", bold=True)) is bold_hei
     assert ts._font_for("A", Style("body", bold=True)) is bold_song
+
+
+def test_inline_italic_uses_real_italic_fonts():
+    f = FontSet(
+        song=pymupdf.Font("cjk"),
+        hei=pymupdf.Font("cjk"),
+        times=pymupdf.Font("tiro"),
+        times_bold=pymupdf.Font("tibo"),
+        song_bold=pymupdf.Font("cjk"),
+        hei_bold=pymupdf.Font("cjk"),
+        times_italic=pymupdf.Font("tiro"),
+        times_bold_italic=pymupdf.Font("tibo"),
+    )
+    ts = Typesetter(f)
+    tokens = ts.tokenize("plain <i>Italic</i>", "body", SIZE, lambda _: None)
+    runs = [r for t in tokens for r in t.runs]
+    assert runs[0].font is f.times
+    assert runs[-1].font is f.times_italic

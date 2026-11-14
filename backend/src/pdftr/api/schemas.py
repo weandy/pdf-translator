@@ -74,6 +74,7 @@ class BlockOut(BaseModel):
     id: str
     page: int
     type: str
+    level: int | None = None
     bbox: RectOut
     font_size: float
     bold: bool
@@ -180,7 +181,8 @@ class DocumentOut(BaseModel):
             PageOut(
                 index=p.index, width=p.width, height=p.height, kind=p.kind.value,
                 blocks=[
-                    BlockOut(id=b.id, page=b.page, type=b.type.value, bbox=RectOut(**b.bbox.model_dump()),
+                    BlockOut(id=b.id, page=b.page, type=b.type.value, level=b.level,
+                             bbox=RectOut(**b.bbox.model_dump()),
                              font_size=b.style.font_size, bold=b.style.bold, italic=b.style.italic,
                              serif=b.style.serif, color=b.style.color, translatable=b.translatable)
                     for b in p.blocks

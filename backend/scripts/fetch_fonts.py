@@ -29,6 +29,8 @@ VARIABLE = [  # （可变字体地址, 字重, 输出文件名）
 STATIC = [
     (f"{GOOGLE_FONTS}/tinos/Tinos-Regular.ttf", "Tinos-Regular.ttf"),
     (f"{GOOGLE_FONTS}/tinos/Tinos-Bold.ttf", "Tinos-Bold.ttf"),
+    (f"{GOOGLE_FONTS}/tinos/Tinos-Italic.ttf", "Tinos-Italic.ttf"),
+    (f"{GOOGLE_FONTS}/tinos/Tinos-BoldItalic.ttf", "Tinos-BoldItalic.ttf"),
     (f"{GOOGLE_FONTS}/tinos/METADATA.pb", "LICENSE-Tinos.txt"),  # 该目录没有 OFL.txt，许可证（OFL）记录在元数据里
     (f"{GOOGLE_FONTS}/notoserifsc/OFL.txt", "OFL-NotoSerifSC.txt"),
     (f"{GOOGLE_FONTS}/notosanssc/OFL.txt", "OFL-NotoSansSC.txt"),

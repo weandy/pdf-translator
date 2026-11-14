@@ -18,16 +18,22 @@ def block_style(chars: Sequence[Char], fallback_size: float = 10.0, *, title: bo
     visible = [c for c in chars if not c.c.isspace()]
     if not visible:
         return BlockStyle(font_size=fallback_size)
-    n = len(visible)
     fonts = Counter(c.font for c in visible)
     colors = Counter(c.color for c in visible)
-    return BlockStyle(
+    sizes = [c.size for c in visible]
+    median = statistics.median(sizes)
+    if title:
         # small-caps 章节标题常把首字母排得更大，其余字母排成小型大写。
-        # 标题使用最大字号恢复整体层级，正文仍使用中位数抵抗异常字符。
-        font_size=round(max(c.size for c in visible) if title else statistics.median(c.size for c in visible), 2),
+        # 取接近中位数的最大字号，既保留首字母层级，也避免脚注/异常字形的离群值抬高整段。
+        candidates = [size for size in sizes if size <= median * 1.35]
+        font_size = max(candidates or [median])
+    else:
+        font_size = median
+    return BlockStyle(
+        font_size=round(font_size, 2),
         # 混合正文不能按多数票整块加粗，否则少数常规字重丢失；局部强调由 Span 范围保留。
         bold=all(c.bold for c in visible),
-        italic=sum(c.italic for c in visible) > n / 2,
+        italic=all(c.italic for c in visible),
         serif=is_serif(fonts.most_common(1)[0][0]),
         color=colors.most_common(1)[0][0],
     )
