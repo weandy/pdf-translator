@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="PDFTR_", env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     data_dir: Path = Path("data")
-    max_upload_mb: int = 200
-    max_pages: int = 200  # MinerU 精准解析单文件上限（S2 / 调研 §4.1）
+    max_upload_mb: int = Field(default=200, ge=1, le=2048)
+    max_pages: int = Field(default=200, ge=1, le=10000)  # MinerU 精准解析单文件上限（S2 / 调研 §4.1）
 
     # 部署者可选配置的共享 Key；用户在浏览器里填写的 Key 优先（docs/01-tech-stack.md §4.4.2）
     llm_base_url: str = "https://api.deepseek.com"
@@ -34,13 +34,13 @@ class Settings(BaseSettings):
     paddle_token: str = ""  # 部署者共享的 PaddleOCR（星河社区）Token（可选）
     paddle_proxy: str = ""  # 发往 PaddleOCR 的代理（可选，写法同 PDFTR_MINERU_PROXY）
 
-    llm_concurrency: int = 0  # 每个任务同时发给翻译服务的请求数；0 = 按服务商自动（DeepSeek 4、本机模型 1、其他 2）
-    max_concurrent_jobs: int = 4  # 同时上传、解析的任务数
-    max_concurrent_translations: int = 1  # 同时翻译的任务数（一篇接一篇；每篇内部的并发见 llm_concurrency）
-    shutdown_grace_s: float = 180  # 服务停止（如部署新版本）时等待进行中的任务完成的最长时间
-    max_queued_jobs: int = 10  # 排队中的任务超过这个数时拒绝新上传
-    retention_hours: int = 24  # 任务文件与译文缓存在服务器上保留的小时数，0 表示不自动删除
-    min_free_disk_mb: int = 1024  # 磁盘剩余空间低于此值时拒绝新上传
+    llm_concurrency: int = Field(default=0, ge=0, le=64)  # 每个任务同时发给翻译服务的请求数；0 = 按服务商自动
+    max_concurrent_jobs: int = Field(default=4, ge=1, le=64)  # 同时上传、解析的任务数
+    max_concurrent_translations: int = Field(default=1, ge=1, le=64)  # 同时翻译的任务数
+    shutdown_grace_s: float = Field(default=180, gt=0, le=3600)  # 服务停止时等待进行中的任务完成的最长时间
+    max_queued_jobs: int = Field(default=10, ge=1, le=10000)  # 排队中的任务超过这个数时拒绝新上传
+    retention_hours: int = Field(default=24, ge=0, le=8760)  # 任务文件与译文缓存保留的小时数，0 表示不自动删除
+    min_free_disk_mb: int = Field(default=1024, ge=0)  # 磁盘剩余空间低于此值时拒绝新上传
     # 论文术语库来源，逗号分隔，排在前面的优先；首次使用时下载（见 glossary/sources.py）。
     # 机器之心术语库（aitd）为 CC BY-NC-SA 4.0，不可商用：商业部署请去掉 aitd；留空则不用术语库
     glossary_sources: str = "aitd,d2l,ml-technical-term,ais-vocab,gist,computerese"
