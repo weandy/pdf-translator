@@ -56,29 +56,36 @@ export function forgetJob(id: string): void {
 
 export const MY_JOBS_QUERY = ["my-jobs"];
 
+export interface MyJobsResult {
+  jobs: Job[];
+  warning: string | null;
+}
+
 export function useMyJobs() {
   return useQuery({
     queryKey: MY_JOBS_QUERY,
-    queryFn: async () => {
+    queryFn: async (): Promise<MyJobsResult> => {
       const ids = myJobIds();
-      const jobs = await Promise.all(
-        ids.map((id) =>
-          api
-            .job(id)
-            .catch((e: unknown) =>
-              e instanceof ApiError && e.status === 404
-                ? null
-                : Promise.reject(e),
-            ),
-        ),
-      );
+      const results = await Promise.allSettled(ids.map((id) => api.job(id)));
+      const jobs: Job[] = [];
+      let failed = 0;
+      results.forEach((result, i) => {
+        if (result.status === "fulfilled") jobs.push(result.value);
+        else if (result.reason instanceof ApiError && result.reason.status === 404) {
+          const id = ids[i];
+          if (id) forgetJob(id);
+        }
+        else failed += 1;
+      });
       // 服务器上已过期删除的任务，从本地列表里去掉
-      ids.forEach((id, i) => jobs[i] === null && forgetJob(id));
-      return jobs.filter((j): j is Job => j !== null);
+      return {
+        jobs,
+        warning: failed ? `${failed} 个任务暂时无法读取，请检查网络后刷新。` : null,
+      };
     },
     // 有任务在排队或进行时每 3 秒刷新一次（批量上传后留在首页看进度）
     refetchInterval: (q) =>
-      q.state.data?.some((j) => j.status === "queued" || j.status === "running")
+      q.state.data?.jobs.some((j) => j.status === "queued" || j.status === "running")
         ? 3000
         : false,
   });

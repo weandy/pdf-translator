@@ -128,8 +128,21 @@ export const api = {
       ...json({ segment_ids: ids, quality: "default", user_terms: userTerms }),
     }),
   jobTerms: (jobId: string) => request<TermUse[]>(`/api/jobs/${jobId}/terms`),
-  prepareExport: (jobId: string, mode: ExportMode, side: "left" | "right" = "right") =>
-    request<ExportPrepare>(`/api/jobs/${jobId}/export/prepare?mode=${mode}&side=${side}`, { method: "POST" }),
+  prepareExport: async (jobId: string, mode: ExportMode, side: "left" | "right" = "right") => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 310000);
+    try {
+      return await request<ExportPrepare>(`/api/jobs/${jobId}/export/prepare?mode=${mode}&side=${side}`, {
+        method: "POST",
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (controller.signal.aborted) throw new ApiError(408, "PDF 准备超时，请稍后重试");
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  },
   parseGlossary: (file: File, ai: boolean) => {
     const form = new FormData();
     form.append("file", file);

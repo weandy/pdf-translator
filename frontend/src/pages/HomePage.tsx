@@ -22,11 +22,13 @@ const STATUS: Record<string, string> = {
 export function HomePage({ openSettings }: { openSettings: () => void }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { data: jobs } = useMyJobs();
+  const { data: jobsResult } = useMyJobs();
+  const jobs = jobsResult?.jobs ?? [];
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const history = useHistory();
   const [batches, setBatches] = useState<BatchEntry[]>(readBatches);
+  const jobsWarning = jobsResult?.warning;
   // 本机历史里服务器上已经没有的翻译（到期删除或手动删除）
   const past = jobs ? history.filter((h) => !jobs.some((j) => j.id === h.id)) : [];
   const active = jobs?.filter((j) => j.status === "queued" || j.status === "running").length ?? 0;
@@ -103,6 +105,7 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
           onNeedSettings={openSettings}
         />
       </div>
+      {jobsWarning && jobs.length === 0 && <p className="error">{jobsWarning}</p>}
 
       {jobs && jobs.length > 0 && (
         <section className="jobs" aria-labelledby="jobs-title">
@@ -110,7 +113,7 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
             <h2 id="jobs-title">我的任务</h2>
             <span className="hint">只显示在这个浏览器里上传的论文</span>
           </div>
-          {error && <p className="error">{error}</p>}
+          {(error || jobsWarning) && <p className="error">{error ?? jobsWarning}</p>}
           {notice && <p className="check-ok">{notice}</p>}
           <ul className="job-list">
             {jobs.map((j) => (
@@ -164,7 +167,7 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
             {batches.map((batch) => {
               const byId = new Map((jobs ?? []).map((job) => [job.id, job]));
               const entries = batch.jobIds.map((id) => byId.get(id));
-              const finished = entries.filter((job) => job && ["done", "failed", "cancelled"].includes(job.status)).length;
+              const finished = entries.filter((job) => !job || ["done", "failed", "cancelled"].includes(job.status)).length;
               const done = entries.filter((job) => job?.status === "done").length;
               const percent = batch.jobIds.length ? Math.round((finished / batch.jobIds.length) * 100) : 0;
               return (

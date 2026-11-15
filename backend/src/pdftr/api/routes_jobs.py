@@ -5,10 +5,11 @@
 
 import asyncio
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import ValidationError
 
@@ -117,6 +118,27 @@ def get_file(job_id: str, name: Literal["original.pdf", "background.pdf"], p: Pi
 
 # 导出时每份约占 200 MB 内存，同时只做一份，避免小机器内存不够
 _export_slot = asyncio.Semaphore(1)
+_export_tasks: set[asyncio.Task[tuple[str, Path]]] = set()
+EXPORT_TIMEOUT_S = 300
+
+
+async def _prepare_export(
+    p: Pipeline, job_id: str, mode: Literal["mono", "dual"], side: Literal["left", "right"]
+) -> tuple[str, Path]:
+    async with _export_slot:
+        return await asyncio.to_thread(usecases.export_job, p, job_id, mode, side)
+
+
+async def _export_with_timeout(
+    p: Pipeline, job_id: str, mode: Literal["mono", "dual"], side: Literal["left", "right"]
+) -> tuple[str, Path]:
+    task = asyncio.create_task(_prepare_export(p, job_id, mode, side))
+    _export_tasks.add(task)
+    task.add_done_callback(_export_tasks.discard)
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), timeout=EXPORT_TIMEOUT_S)
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="PDF 准备超过 5 分钟，请稍后重试") from exc
 
 
 @router.get("/{job_id}/export")
@@ -126,8 +148,7 @@ async def export_job(
     mode: Literal["mono", "dual"] = "mono",
     side: Literal["left", "right"] = "right",  # 双语对照时译文放在左边还是右边
 ) -> Response:
-    async with _export_slot:
-        filename, path = await asyncio.to_thread(usecases.export_job, p, job_id, mode, side)
+    filename, path = await _export_with_timeout(p, job_id, mode, side)
     disposition = f"attachment; filename=\"translated.pdf\"; filename*=UTF-8''{quote(filename)}"
     # 文件响应支持 HTTP Range：浏览器下载中断后可以续传
     return FileResponse(path, media_type="application/pdf", headers={"Content-Disposition": disposition})
@@ -141,8 +162,7 @@ async def prepare_export(
     side: Literal["left", "right"] = "right",
 ) -> ExportPrepareOut:
     """先生成或命中导出缓存，再让前端启动可见的浏览器下载。"""
-    async with _export_slot:
-        filename, path = await asyncio.to_thread(usecases.export_job, p, job_id, mode, side)
+    filename, path = await _export_with_timeout(p, job_id, mode, side)
     query = f"mode={mode}&side={side}"
     return ExportPrepareOut(
         filename=filename,

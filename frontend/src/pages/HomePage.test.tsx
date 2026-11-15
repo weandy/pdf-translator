@@ -8,7 +8,7 @@ import { HomePage } from "@/pages/HomePage";
 import { api } from "@/shared/api/client";
 
 vi.mock("@/entities/job/model", () => ({
-  useMyJobs: () => ({ data: [] }),
+  useMyJobs: () => ({ data: { jobs: [], warning: null } }),
   deleteJob: vi.fn(),
   MY_JOBS_QUERY: ["my-jobs"],
   STAGE_LABELS: {},
