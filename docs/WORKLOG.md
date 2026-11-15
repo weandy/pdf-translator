@@ -2,7 +2,12 @@
 
 > 这份文件用于跨对话继续开发。每完成一个完整功能，更新“当前状态”“最近完成”和“下一步”，再单独提交 Git。
 >
-> 最后更新：2026-11-14（Asia/Shanghai）
+> 最后更新：2026-11-15（Asia/Shanghai）
+
+### 本轮目标（2026-11-15）
+
+- 按整体审计顺序修复：任务修改并发覆盖、MinerU 全流程超时、运行配置范围、用户自定义 LLM 地址 SSRF、导出与任务列表异常状态、公式/链接/斜体边界。
+- 验收标准：每项独立 Git 提交；后端测试、lint、pyright、import-linter 和前端 lint、typecheck、build 通过；不部署、不重启服务器。
 
 ### 本轮目标（2026-11-14）
 
@@ -125,6 +130,17 @@
 - 后端 `ruff format --check`、`ruff check`、`pyright`、`lint-imports` 通过。
 - 前端 `npm run lint`、`npm run typecheck`、`npm run build` 通过。
 - 前端 Node 环境定向测试：3 个文件、16 passed；完整 jsdom 测试仍受当前 Node 20 与 `undici` 的 Node 22 `zstd` API 兼容问题影响。
+
+本轮整体审计修复（`2d44151`、`54f212f`、`75a0bb5`、`9923554`、`28372bd`、`30be071`）：
+
+- 任务编辑、重翻、撤回和重试增加完成状态与任务级互斥，避免后台翻译覆盖用户修改。
+- MinerU 上传、轮询、下载统一使用一次解析总时限，上传取消任务会等待清理。
+- 并发、队列、上传、页数和保留期配置增加范围校验。
+- 用户自定义 LLM URL 默认拒绝内网、本机、元数据和带凭据地址；本地模型需显式开启私网地址配置。
+- 导出准备增加服务端 5 分钟超时和客户端超时提示；任务列表与批次对瞬时失败、过期任务容错。
+- 公式跨行裁剪、跨块链接归属和小写字体名斜体识别增加修复与回归测试。
+- 后端全量测试：435 passed，6 skipped；ruff、pyright、import-linter 通过。
+- 前端 lint、typecheck、build 通过；完整 jsdom 测试仍受 Node 20 与 `undici` 的 Node 22 `zstd` API 兼容问题影响。
 
 ## 当前已知限制
 
