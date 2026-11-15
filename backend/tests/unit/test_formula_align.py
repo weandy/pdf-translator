@@ -70,3 +70,12 @@ def test_formula_box_ignores_tall_math_glyph_extents():
     refined, _, found = refine_block(block, chars)
     (formula,) = [s for line in refined.lines for s in line.spans if s.kind == "inline_formula"]
     assert found == 1 and formula.bbox.y0 == 0 and formula.bbox.y1 == 10
+
+
+def test_cross_visual_line_formula_box_covers_all_formula_rows():
+    chars = _chars(["Start ab", "cd End"])
+    block = LayoutBlock(type=BlockType.TEXT, bbox=Rect(x0=0, y0=0, x1=200, y1=40), order=0,
+                        content="Start $abcd$ End")  # fmt: skip
+    refined, _, found = refine_block(block, chars)
+    (formula,) = [s for line in refined.lines for s in line.spans if s.kind == "inline_formula"]
+    assert found == 1 and formula.bbox.y1 > 20

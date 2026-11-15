@@ -22,6 +22,12 @@ def _font_is_bold(font: str) -> bool:
     return any(name.lower() in normalized for name in _BOLD_NAMES)
 
 
+def _font_is_italic(font: str) -> bool:
+    """按字体名补充 PyMuPDF 可能漏报的斜体标记。"""
+    normalized = font.lower()
+    return "italic" in normalized or "oblique" in normalized
+
+
 def extract(pdf: Path) -> list[CharPage]:
     pages: list[CharPage] = []
     with pymupdf.open(pdf) as doc:
@@ -41,8 +47,9 @@ def _page(page: pymupdf.Page) -> CharPage:
             upright = abs(dx - 1) < 0.01 and abs(dy) < 0.01
             for span in line["spans"]:
                 font = span["font"]
+                normalized_font = font.lower()
                 bold = bool(span["flags"] & _FLAG_BOLD) or _font_is_bold(font)
-                italic = bool(span["flags"] & _FLAG_ITALIC) or "Italic" in font or "Oblique" in font
+                italic = bool(span["flags"] & _FLAG_ITALIC) or _font_is_italic(normalized_font)
                 for ch in span["chars"]:
                     chars.append(
                         Char(

@@ -1,7 +1,7 @@
 from pdftr.domain.chars import Char
 from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import PageKind
-from pdftr.extraction.chars import _font_is_bold
+from pdftr.extraction.chars import _font_is_bold, _font_is_italic
 from pdftr.extraction.classify import classify
 from pdftr.fusion.align import align
 from pdftr.fusion.style import block_style, is_serif
@@ -71,6 +71,9 @@ def test_medium_font_name_is_not_bold():
     assert _font_is_bold("NotoSansSC-Bold")
     assert _font_is_bold("noto-sans-sc-bold")
     assert _font_is_bold("NimbusRoman-Black")
+    assert _font_is_italic("nimbusroman-italic")
+    assert _font_is_italic("NotoSans-OBLIQUE")
+    assert not _font_is_italic("NotoSans-Regular")
 
 
 def test_classify():

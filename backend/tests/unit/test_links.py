@@ -171,6 +171,25 @@ def test_unsupported_link_actions_do_not_parse_text(tmp_path: Path, monkeypatch:
     assert extract_links(pdf, Document(job_id="synthetic", pages=[]), []) == []
 
 
+def test_link_owner_uses_overlap_when_link_center_is_outside_block(tmp_path: Path):
+    pdf = tmp_path / "synthetic-cross-block-link.pdf"
+    with pymupdf.open() as src:
+        page = src.new_page(width=300, height=100)
+        page.insert_text((20, 40), "Long linked text")
+        page.insert_link(
+            {"kind": pymupdf.LINK_URI, "from": pymupdf.Rect(15, 25, 280, 45), "uri": "https://example.com/long"}
+        )
+        src.save(pdf)
+    box = Rect(x0=10, y0=20, x1=100, y1=50)
+    block = Block(
+        id="b0", page=0, type=BlockType.TEXT, bbox=box, order=0, style=BlockStyle(font_size=11), translatable=True
+    )
+    links = extract_links(
+        pdf, Document(job_id="synthetic", pages=[Page(index=0, width=300, height=100, blocks=[block])]), ["b0"]
+    )
+    assert len(links) == 1 and links[0].block_id == "b0"
+
+
 def test_indexed_link_anchors_match_textbox_for_character_edges_lines_rotation_and_unicode():
     with pymupdf.open() as src:
         page = src.new_page(width=300, height=220)

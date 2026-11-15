@@ -239,7 +239,9 @@ def refine_block(block: LayoutBlock, chars: Sequence[Char]) -> tuple[LayoutBlock
                 continue
             _flush_text(run, spans)
             if n not in emitted:  # 跨行的公式只在第一行出一个片段，框取它在这一行的部分
-                part = [ordered[j] for j in located[n].chars if row_of[id(ordered[j])] == line_no]
+                # 片段只放在首行，但裁剪框必须覆盖公式在后续视觉行中的字符，
+                # 否则分式、矩阵等上下延伸公式会在导出时被截掉。
+                part = [ordered[j] for j in located[n].chars]
                 spans.append(
                     LayoutSpan(kind="inline_formula", content=located[n].latex, bbox=_formula_box(part, rows[line_no]))
                 )

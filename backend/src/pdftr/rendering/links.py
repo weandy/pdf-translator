@@ -56,6 +56,11 @@ def _overlaps(a: _Box, b: _Box) -> bool:
     return a[0] < b[2] and a[1] < b[3] and a[2] > b[0] and a[3] > b[1]
 
 
+def _overlap_area(a: pymupdf.Rect, b: Rect) -> float:
+    """链接框与文字块的交集面积；长 URL 跨出块边界时仍可找到主要所属块。"""
+    return max(0.0, min(a.x1, b.x1) - max(a.x0, b.x0)) * max(0.0, min(a.y1, b.y1) - max(a.y0, b.y0))
+
+
 def _text_lines(textpage: pymupdf.TextPage) -> list[_TextLine]:
     """保留 PDF 原始行序与字符框；一次跨越 MuPDF 边界，后续链接只比较数值。"""
     lines: list[_TextLine] = []
@@ -115,9 +120,8 @@ def extract_links(pdf: Path, doc: Document, translated: Iterable[str]) -> list[P
                     to = raw.get("to") or pymupdf.Point(0, height)
                     link.dest_page, link.dest_x, link.dest_y = raw["page"], to.x, to.y
                     link.dest_top = max(src[raw["page"]].rect.height - to.y, 0.0)
-                cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
-                owner = next((b for b in blocks if b.page == page_no and b.bbox.x0 <= cx <= b.bbox.x1
-                              and b.bbox.y0 <= cy <= b.bbox.y1), None)  # fmt: skip
+                candidates = [b for b in blocks if b.page == page_no and _overlap_area(r, b.bbox) > 0]
+                owner = max(candidates, key=lambda b: _overlap_area(r, b.bbox), default=None)
                 link.block_id = owner.id if owner else None
                 if owner is not None:
                     area = max(owner.bbox.width * owner.bbox.height, 1e-6)
