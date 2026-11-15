@@ -22,7 +22,7 @@ def test_indent_rules():
         first=True,
     )
     assert not wants_indent(_block(), _seg("We propose a method."), first=False)  # 跨栏的后半段
-    assert not wants_indent(_block(), _seg("where x is the input."), first=True)  # 公式后接着说
+    assert wants_indent(_block(), _seg("where x is the input."), first=True)
     assert not wants_indent(_block(), _seg("• First item"), first=True)
     assert not wants_indent(_block(), _seg("(1) First item"), first=True)
     assert not wants_indent(_block(BlockType.CAPTION), _seg("Figure 1: A caption."), first=True)

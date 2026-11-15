@@ -1,6 +1,6 @@
 /**
  * 译文排版规则（W3C《中文排版需求》clreq），与后端 rendering/typeset.py 一致：
- * 汉字与西文、数字之间加空格（§6.3.3），正文段首缩进两字（§6.2.1.1），正文两端对齐（§6.2）。
+ * 汉字与西文、数字之间加空格（§6.3.3），普通正文段首缩进两字（§6.2.1.1），正文两端对齐（§6.2）。
  */
 import type { BlockData, SegmentData } from "@/shared/api/client";
 
@@ -49,5 +49,5 @@ export function spaceCjkLatin(text: string): string {
 export function wantsIndent(block: BlockData, segment: SegmentData, first: boolean): boolean {
   if (block.type !== "text" || !first) return false;
   const source = segment.source.trimStart();
-  return !(LIST_ITEM.test(source) || /^[a-z]/.test(source));
+  return !LIST_ITEM.test(source);
 }

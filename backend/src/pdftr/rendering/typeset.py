@@ -2,7 +2,7 @@
 
 - §6.3.3 汉字与西文、数字之间留四分之一个汉字宽的间距；标点、括号旁不加。
   网页插入空格（西文空格约 0.25 字宽），导出 PDF 由排版器作为间距处理（rendering/typesetter.py）。
-- §6.2.1.1 段首缩进两个汉字：只用于正文段落；列表项、公式后接着说的半句（原文以小写字母开头）不缩进。
+- §6.2.1.1 段首缩进两个汉字：只用于正文段落；列表项不缩进。
 - §6.2 正文两端对齐，末行左对齐。
 """
 
@@ -25,8 +25,8 @@ def drop_fake_scripts(text: str) -> str:
 
 
 def wants_indent(block: Block, segment: Segment, first: bool) -> bool:
-    """段首缩进两字：正文段落的开头部分；列表项与公式后接着说的半句不缩进。"""
+    """段首缩进两字：普通正文的第一块；列表项、标题和图注不缩进。"""
     if block.type is not BlockType.TEXT or not first:
         return False
     source = segment.source.lstrip()
-    return not (_LIST_ITEM.match(source) or source[:1].islower())
+    return not _LIST_ITEM.match(source)

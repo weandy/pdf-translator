@@ -15,11 +15,11 @@ describe("spaceCjkLatin", () => {
 describe("wantsIndent", () => {
   const block = (type = "text") => ({ type, bold: false }) as BlockData;
   const seg = (source: string) => ({ source }) as SegmentData;
-  it("正文段首缩进；跨栏后半段、公式后接着说、列表项、图注不缩进", () => {
+  it("普通正文段首缩进；跨栏后半段、列表项、图注不缩进", () => {
     expect(wantsIndent(block(), seg("We propose a method."), true)).toBe(true);
     expect(wantsIndent({ ...block(), bold: true }, seg("We propose a method."), true)).toBe(true);
     expect(wantsIndent(block(), seg("We propose a method."), false)).toBe(false);
-    expect(wantsIndent(block(), seg("where x is the input."), true)).toBe(false);
+    expect(wantsIndent(block(), seg("where x is the input."), true)).toBe(true);
     expect(wantsIndent(block(), seg("• First item"), true)).toBe(false);
     expect(wantsIndent(block(), seg("(1) First item"), true)).toBe(false);
     expect(wantsIndent(block("caption"), seg("Figure 1: A caption."), true)).toBe(false);
