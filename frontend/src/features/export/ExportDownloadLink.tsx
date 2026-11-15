@@ -4,6 +4,8 @@ import { api, exportUrl, type ExportMode } from "@/shared/api/client";
 
 type DownloadState = "idle" | "preparing" | "started" | "error";
 
+export type ExportDownloadState = DownloadState;
+
 interface Props {
   jobId: string;
   mode: ExportMode;
@@ -11,18 +13,30 @@ interface Props {
   children: ReactNode;
   role?: "menuitem";
   className?: string;
+  disabled?: boolean;
+  onStateChange?: (state: ExportDownloadState, message: string) => void;
 }
 
 /** 先准备服务端 PDF，再启动浏览器下载，避免慢生成时用户重复点击。 */
-export function ExportDownloadLink({ jobId, mode, side = "right", children, role, className }: Props) {
+export function ExportDownloadLink({
+  jobId,
+  mode,
+  side = "right",
+  children,
+  role,
+  className,
+  disabled = false,
+  onStateChange,
+}: Props) {
   const [state, setState] = useState<DownloadState>("idle");
   const [error, setError] = useState("");
 
   const start = async (event: MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
-    if (state === "preparing" || state === "started") return;
+    if (disabled || state === "preparing" || state === "started") return;
     setState("preparing");
     setError("");
+    onStateChange?.("preparing", "");
     try {
       const prepared = await api.prepareExport(jobId, mode, side);
       const link = document.createElement("a");
@@ -30,9 +44,12 @@ export function ExportDownloadLink({ jobId, mode, side = "right", children, role
       link.download = prepared.filename;
       link.click();
       setState("started");
+      onStateChange?.("started", "");
     } catch (cause) {
       setState("error");
-      setError(cause instanceof Error ? cause.message : "PDF 准备失败，请重试");
+      const message = cause instanceof Error ? cause.message : "PDF 准备失败，请重试";
+      setError(message);
+      onStateChange?.("error", message);
     }
   };
 
@@ -56,11 +73,11 @@ export function ExportDownloadLink({ jobId, mode, side = "right", children, role
   return (
     <a
       role={role}
-      className={`${className ?? ""}${state === "preparing" || state === "started" ? " disabled" : ""}`}
+      className={`${className ?? ""}${disabled || state === "preparing" || state === "started" ? " disabled" : ""}`}
       href={exportUrl(jobId, mode, side)}
       download
       aria-busy={state === "preparing"}
-      aria-disabled={state === "preparing" || state === "started" ? true : undefined}
+      aria-disabled={disabled || state === "preparing" || state === "started" ? true : undefined}
       title={error || undefined}
       onClick={start}
     >

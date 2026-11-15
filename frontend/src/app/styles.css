@@ -1048,6 +1048,16 @@ input[type="radio"] {
   background: var(--paper);
   box-shadow: var(--sheet-shadow);
 }
+.download-status {
+  display: block;
+  max-width: 280px;
+  margin-top: 4px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+.download-status.error {
+  color: var(--danger);
+}
 .download-menu a {
   display: grid;
   gap: 2px;
