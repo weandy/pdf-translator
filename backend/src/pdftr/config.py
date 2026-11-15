@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     llm_model: str = "deepseek-flash"
     llm_api_key: str = ""
     llm_protocol: Literal["openai", "anthropic"] = "openai"  # 部署者共享 Key 所用的接口协议
+    allow_private_llm_urls: bool = False  # 用户自定义接口是否允许访问内网地址（本地模型部署时显式开启）
     mineru_api_token: str = ""
     # 发往 MinerU（接口、上传、下载结果）的代理，如 socks5h://用户:密码@主机:端口 或 http://主机:端口。
     # 服务器到国内线路差时使用：实测某海外服务器直连上传约 25 KB/s，经洛杉矶一台线路好的机器转发约 1.8 MB/s
