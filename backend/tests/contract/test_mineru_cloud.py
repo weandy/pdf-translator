@@ -180,7 +180,7 @@ def test_stalled_request_hits_deadline_and_retries():
 
     with pytest.raises(httpx2.TimeoutException, match="超过 0 秒未完成"):
         asyncio.run(run())
-    assert calls == ["PUT", "PUT"]  # 超时后重试了一次
+    assert calls == ["PUT"]  # deadline 覆盖内部重试，不能重复累加请求时限
 
 
 def test_upload_status_text():

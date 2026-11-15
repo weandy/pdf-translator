@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import contextlib
 import io
 import json
 import logging
@@ -75,6 +76,7 @@ class MinerUCloudParser:
     async def _parse(
         self, pdf: Path, pages: list[int] | None, raw_dir: Path | None, on_progress: ParseProgress
     ) -> LayoutResult:
+        deadline_at = time.monotonic() + self._timeout
         headers = {"Authorization": f"Bearer {self._token}"}
         async with (
             httpx2.AsyncClient(headers=headers, timeout=httpx2.Timeout(120, connect=15),
@@ -83,10 +85,10 @@ class MinerUCloudParser:
                                proxy=self._proxy, follow_redirects=True) as plain,
         ):  # fmt: skip
             on_progress("正在上传到 MinerU 云端")
-            batch_id, upload_url = await self._request_upload(api, pdf, pages)
+            batch_id, upload_url = await self._request_upload(api, pdf, pages, deadline_at=deadline_at)
             data = pdf.read_bytes()
             started = time.monotonic()
-            r = await self._upload(plain, upload_url, data, on_progress)
+            r = await self._upload(plain, upload_url, data, on_progress, deadline_at=deadline_at)
             _check(r, "上传文件")
             # 走代理时上传往往一两秒就结束，进度来不及看到：把上传结果带进后续的状态里一直显示
             uploaded = upload_summary(len(data), time.monotonic() - started)
@@ -94,9 +96,9 @@ class MinerUCloudParser:
             def with_upload(message: str, fraction: float | None = None) -> None:
                 on_progress(f"{message}（{uploaded}）", fraction)
 
-            zip_url = await self._wait(api, batch_id, with_upload)
+            zip_url = await self._wait(api, batch_id, with_upload, deadline_at=deadline_at)
             on_progress("正在下载解析结果", 1.0)
-            r = await self._send(plain, "GET", zip_url, deadline=300)
+            r = await self._send(plain, "GET", zip_url, deadline=self._remaining(deadline_at))
             _check(r, "下载解析结果")
         data = r.content
         if raw_dir is not None:
@@ -104,7 +106,9 @@ class MinerUCloudParser:
             (raw_dir / "mineru.zip").write_bytes(data)
         return normalize(_read_layout(data))
 
-    async def _request_upload(self, api: httpx2.AsyncClient, pdf: Path, pages: list[int] | None) -> tuple[str, str]:
+    async def _request_upload(
+        self, api: httpx2.AsyncClient, pdf: Path, pages: list[int] | None, *, deadline_at: float | None = None
+    ) -> tuple[str, str]:
         # 始终整份解析：MinerU 按 page_ranges 解析时返回的页码是否相对子集未经验证，
         # 用户选择的页码范围在翻译阶段筛选（pages 参数在这里不使用）。
         del pages
@@ -113,6 +117,7 @@ class MinerUCloudParser:
             api,
             "POST",
             f"{API}/file-urls/batch",
+            deadline=self._remaining(deadline_at),
             json={
                 "files": [file],
                 "model_version": self._model_version,
@@ -127,8 +132,15 @@ class MinerUCloudParser:
         except (KeyError, IndexError, TypeError) as e:
             raise ParseError(f"MinerU 返回格式异常：{body}") from e
 
-    async def _wait(self, api: httpx2.AsyncClient, batch_id: str, on_progress: ParseProgress) -> str:
-        deadline = time.monotonic() + self._timeout
+    async def _wait(
+        self,
+        api: httpx2.AsyncClient,
+        batch_id: str,
+        on_progress: ParseProgress,
+        *,
+        deadline_at: float | None = None,
+    ) -> str:
+        deadline = deadline_at or time.monotonic() + self._timeout
         last = None
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
@@ -160,23 +172,35 @@ class MinerUCloudParser:
     ) -> httpx2.Response:
         """网络偶发中断（连接超时、连接被重置）时按退避间隔重试；HTTP 错误码不重试。
 
-        deadline 是单次请求的总时限：httpx 的超时只限制“单次读写”，网络时断时续时每次都能挤出一点数据，
-        永远不会超时（实测上传 4 MB 的 PDF 卡了 7 分钟以上），所以另设总时限。
+        deadline 是这次请求（包括内部重试）的总时限，不能因为重试而重复累加。
         """
+        deadline_at = time.monotonic() + deadline
         for delay in (*self._retry_delays, None):
+            remaining = deadline_at - time.monotonic()
+            if remaining <= 0:
+                raise httpx2.TimeoutException(f"{method} 超过 {deadline:.0f} 秒未完成")
             try:
-                return await asyncio.wait_for(client.request(method, url, **kwargs), deadline)
+                return await asyncio.wait_for(client.request(method, url, **kwargs), remaining)
             except (httpx2.TransportError, TimeoutError) as e:
+                if isinstance(e, TimeoutError):
+                    raise httpx2.TimeoutException(f"{method} 超过 {deadline:.0f} 秒未完成") from e
                 if delay is None:
-                    if isinstance(e, TimeoutError):
-                        raise httpx2.TimeoutException(f"{method} 超过 {deadline:.0f} 秒未完成") from e
                     raise
+                remaining = deadline_at - time.monotonic()
+                if remaining <= 0:
+                    raise httpx2.TimeoutException(f"{method} 超过 {deadline:.0f} 秒未完成") from e
                 log.warning("访问 MinerU 网络出错（%s），%.0f 秒后重试", type(e).__name__, delay)
-                await asyncio.sleep(delay)
+                await asyncio.sleep(min(delay, remaining))
         raise AssertionError("unreachable")
 
     async def _upload(
-        self, client: httpx2.AsyncClient, url: str, data: bytes, on_progress: ParseProgress
+        self,
+        client: httpx2.AsyncClient,
+        url: str,
+        data: bytes,
+        on_progress: ParseProgress,
+        *,
+        deadline_at: float | None = None,
     ) -> httpx2.Response:
         """分块上传并每秒汇报进度（已传多少、速度、预计剩余时间）。
 
@@ -185,6 +209,9 @@ class MinerUCloudParser:
         """
         attempts = len(self._retry_delays) + 1
         for n, delay in enumerate((*self._retry_delays, None), start=1):
+            remaining = self._remaining(deadline_at)
+            if remaining <= 0:
+                raise ParseError("上传到 MinerU 云端超过 5 分钟，正在自动重试", retryable=True)
             sent, start = 0, time.monotonic()
             last = start
 
@@ -198,16 +225,20 @@ class MinerUCloudParser:
             task = asyncio.ensure_future(client.request("PUT", url, content=body(), headers=headers))
             try:
                 while True:
-                    done, _ = await asyncio.wait({task}, timeout=1.0)
+                    done, _ = await asyncio.wait({task}, timeout=min(1.0, remaining))
                     if done:
                         return task.result()
                     now = time.monotonic()
+                    if now >= (deadline_at or float("inf")):
+                        raise TimeoutError
                     if now - last > self._stall_timeout:
                         raise TimeoutError
                     retry = f"（第 {n}/{attempts} 次尝试）" if n > 1 else ""
                     on_progress(upload_status(sent, len(data), now - start) + retry, sent / len(data))
             except (httpx2.TransportError, TimeoutError) as e:
                 task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
                 if delay is None:
                     raise ParseError(
                         f"上传到 MinerU 云端失败：网络连续 {self._stall_timeout:.0f} 秒没有进展，"
@@ -217,6 +248,12 @@ class MinerUCloudParser:
                 log.warning("上传到 MinerU 卡住或出错（%s），%.0f 秒后重传", type(e).__name__, delay)
                 await asyncio.sleep(delay)
         raise AssertionError("unreachable")
+
+    def _remaining(self, deadline_at: float | None) -> float:
+        """返回本次解析总时限内还能使用的秒数。"""
+        if deadline_at is None:
+            return 180.0
+        return max(0.0, deadline_at - time.monotonic())
 
 
 def upload_status(sent: int, total: int, elapsed: float, service: str = "MinerU") -> str:
