@@ -249,12 +249,17 @@ def retry_job(pipeline: Pipeline, job_id: str, secrets: Secrets) -> Job:
     if job.status is JobStatus.DONE and not pipeline.deps.store.count_segments(job_id, SegmentStatus.FAILED):
         raise UserError("任务已完成")
     _require_secrets(secrets, parser=job.options.parser if job.stage == "parse" else None)
-    if job.stage == "done":
-        job.stage = "translate"  # 已完成但有失败段落：只重跑翻译和背景页
-    job.status, job.error = JobStatus.QUEUED, ""
-    pipeline.deps.store.save_job(job)
-    pipeline.submit(job, secrets)
-    return job
+    if not pipeline.begin_mutation(job_id):
+        raise UserError("任务正在修改，请稍后再试")
+    try:
+        if job.stage == "done":
+            job.stage = "translate"  # 已完成但有失败段落：只重跑翻译和背景页
+        job.status, job.error = JobStatus.QUEUED, ""
+        pipeline.deps.store.save_job(job)
+        pipeline.submit(job, secrets)
+        return job
+    finally:
+        pipeline.end_mutation(job_id)
 
 
 class DocumentView(BaseModel):
@@ -386,15 +391,27 @@ def _record(
 
 def edit_segment(pipeline: Pipeline, segment_id: str, target: str) -> Segment:
     seg = _segment(pipeline, segment_id)
-    # 公式占位符少了或多了，阅读器与导出 PDF 里对应的公式会悄悄消失或重复，不保存
-    if problems := placeholder_problems(seg.source, target):
-        raise UserError("译文里的公式不对：" + "；".join(problems) + "。每个公式占位符要各保留一次")
-    before = seg.model_copy()
-    seg.target, seg.status = target.strip(), SegmentStatus.EDITED
-    seg.failure_reason = ""
-    pipeline.deps.store.save_segments([seg])
-    _record(pipeline, before, seg, "edit")
-    return seg
+    job = get_job(pipeline, seg.job_id)
+    if job.status is not JobStatus.DONE:
+        raise UserError("任务完成后才能编辑译文")
+    if not pipeline.begin_mutation(seg.job_id):
+        raise UserError("任务正在修改，请稍后再试")
+    try:
+        seg = _segment(pipeline, segment_id)
+        job = get_job(pipeline, seg.job_id)
+        if job.status is not JobStatus.DONE:
+            raise UserError("任务完成后才能编辑译文")
+        # 公式占位符少了或多了，阅读器与导出 PDF 里对应的公式会悄悄消失或重复，不保存
+        if problems := placeholder_problems(seg.source, target):
+            raise UserError("译文里的公式不对：" + "；".join(problems) + "。每个公式占位符要各保留一次")
+        before = seg.model_copy()
+        seg.target, seg.status = target.strip(), SegmentStatus.EDITED
+        seg.failure_reason = ""
+        pipeline.deps.store.save_segments([seg])
+        _record(pipeline, before, seg, "edit")
+        return seg
+    finally:
+        pipeline.end_mutation(seg.job_id)
 
 
 GLOSSARY_MAX_BYTES = 2 * 1024 * 1024
@@ -453,28 +470,35 @@ def revert_revision(pipeline: Pipeline, revision_id: int) -> Segment:
         raise NotFound("修改记录不存在")
     if rev.action == "revert" or rev.reverted_by is not None:
         raise UserError("这一步已经撤回过了")
-    seg = _segment(pipeline, rev.segment_id)
-    before = seg.model_copy()
-    seg.target, seg.status, seg.quality = rev.before, rev.before_status, rev.before_quality
-    store.save_segments([seg])
-    undo = store.add_revision(
-        Revision(
-            job_id=seg.job_id, segment_id=seg.id, action="revert", reverts=rev.id,
-            before=before.target, before_status=before.status, before_quality=before.quality,
-            after=seg.target, after_status=seg.status, after_quality=seg.quality,
-        )
-    )  # fmt: skip
-    later = [
-        r.model_copy(update={"reverted_by": undo.id})
-        for r in store.revisions(seg.job_id)
-        if r.segment_id == seg.id
-        and r.id >= rev.id
-        and r.id != undo.id
-        and r.action != "revert"
-        and r.reverted_by is None
-    ]
-    store.save_revisions(later)
-    return seg
+    if get_job(pipeline, rev.job_id).status is not JobStatus.DONE:
+        raise UserError("任务完成后才能撤回修改")
+    if not pipeline.begin_mutation(rev.job_id):
+        raise UserError("任务正在修改，请稍后再试")
+    try:
+        seg = _segment(pipeline, rev.segment_id)
+        before = seg.model_copy()
+        seg.target, seg.status, seg.quality = rev.before, rev.before_status, rev.before_quality
+        store.save_segments([seg])
+        undo = store.add_revision(
+            Revision(
+                job_id=seg.job_id, segment_id=seg.id, action="revert", reverts=rev.id,
+                before=before.target, before_status=before.status, before_quality=before.quality,
+                after=seg.target, after_status=seg.status, after_quality=seg.quality,
+            )
+        )  # fmt: skip
+        later = [
+            r.model_copy(update={"reverted_by": undo.id})
+            for r in store.revisions(seg.job_id)
+            if r.segment_id == seg.id
+            and r.id >= rev.id
+            and r.id != undo.id
+            and r.action != "revert"
+            and r.reverted_by is None
+        ]
+        store.save_revisions(later)
+        return seg
+    finally:
+        pipeline.end_mutation(rev.job_id)
 
 
 async def retranslate_segment(
@@ -503,36 +527,43 @@ async def retranslate_segments(
     if not 1 <= len(segment_ids) <= MAX_RETRANSLATE:
         raise UserError(f"一次最多重翻 {MAX_RETRANSLATE} 段")
     job = get_job(pipeline, job_id)
-    segs = [_segment(pipeline, sid) for sid in dict.fromkeys(segment_ids)]
-    if any(s.job_id != job_id for s in segs):
-        raise NotFound("段落不属于这个任务")
-    terms = user_terms if user_terms is not None else job.options.user_terms
-    befores = {s.id: s.model_copy() for s in segs}
-    for s in segs:
-        s.status = SegmentStatus.PENDING
-    deps = pipeline.deps
-    outs, report = await translate(
-        segs, chat=deps.chat_factory(secrets), cache=deps.cache, ctx=load_context(deps, job_id, terms),
-        lookup_terms=combine(terms, deps.term_matcher()),
-        opts=TranslateOptions(quality=quality, use_cache=False, total_timeout_s=45),
-    )  # fmt: skip
-    for out in outs:
-        before = befores[out.id]
-        if (
-            out.status is SegmentStatus.FAILED
-            and before.target
-            and before.status in (SegmentStatus.DONE, SegmentStatus.EDITED)
-        ):
-            # 重翻未成功时保留上一份可用译文，不能把已翻好的段落退回原文。
-            out.target, out.status, out.quality = before.target, before.status, before.quality
-    deps.store.save_segments(outs)
-    for out in outs:
-        _record(pipeline, befores[out.id], out, "careful" if quality == "careful" else "retranslate")
-    if report.cost_cny is not None:  # 重翻、精修的费用也计入任务花费
-        job = get_job(pipeline, job_id)
-        job.cost_cny = (job.cost_cny or 0) + report.cost_cny
-        deps.store.save_job(job)
-    return outs
+    if job.status is not JobStatus.DONE:
+        raise UserError("任务完成后才能重翻段落")
+    if not pipeline.begin_mutation(job_id):
+        raise UserError("任务正在修改，请稍后再试")
+    try:
+        segs = [_segment(pipeline, sid) for sid in dict.fromkeys(segment_ids)]
+        if any(s.job_id != job_id for s in segs):
+            raise NotFound("段落不属于这个任务")
+        terms = user_terms if user_terms is not None else job.options.user_terms
+        befores = {s.id: s.model_copy() for s in segs}
+        for s in segs:
+            s.status = SegmentStatus.PENDING
+        deps = pipeline.deps
+        outs, report = await translate(
+            segs, chat=deps.chat_factory(secrets), cache=deps.cache, ctx=load_context(deps, job_id, terms),
+            lookup_terms=combine(terms, deps.term_matcher()),
+            opts=TranslateOptions(quality=quality, use_cache=False, total_timeout_s=45),
+        )  # fmt: skip
+        for out in outs:
+            before = befores[out.id]
+            if (
+                out.status is SegmentStatus.FAILED
+                and before.target
+                and before.status in (SegmentStatus.DONE, SegmentStatus.EDITED)
+            ):
+                # 重翻未成功时保留上一份可用译文，不能把已翻好的段落退回原文。
+                out.target, out.status, out.quality = before.target, before.status, before.quality
+        deps.store.save_segments(outs)
+        for out in outs:
+            _record(pipeline, befores[out.id], out, "careful" if quality == "careful" else "retranslate")
+        if report.cost_cny is not None:  # 重翻、精修的费用也计入任务花费
+            job = get_job(pipeline, job_id)
+            job.cost_cny = (job.cost_cny or 0) + report.cost_cny
+            deps.store.save_job(job)
+        return outs
+    finally:
+        pipeline.end_mutation(job_id)
 
 
 class TermUse(BaseModel):

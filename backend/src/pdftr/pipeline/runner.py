@@ -7,6 +7,7 @@
 import asyncio
 import json
 import logging
+import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -136,6 +137,8 @@ class Pipeline:
                        "render": local}  # fmt: skip
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._cancelling: set[str] = set()  # 用户要求取消的任务（与服务停止时的取消区分开）
+        self._mutations: set[str] = set()  # 已完成任务的编辑/重翻/撤回互斥标记
+        self._mutation_guard = threading.Lock()
 
     # ---- 调度 ----
     def submit(self, job: Job, secrets: Secrets) -> None:
@@ -159,6 +162,18 @@ class Pipeline:
     def active_count(self) -> int:
         """排队中与执行中的任务数。"""
         return len(self._tasks)
+
+    def begin_mutation(self, job_id: str) -> bool:
+        """占用一个任务的用户修改槽，避免两个请求同时覆盖段落或修改记录。"""
+        with self._mutation_guard:
+            if job_id in self._mutations:
+                return False
+            self._mutations.add(job_id)
+            return True
+
+    def end_mutation(self, job_id: str) -> None:
+        with self._mutation_guard:
+            self._mutations.discard(job_id)
 
     def recover_interrupted(self) -> None:
         """服务重启时，进行中的任务已没有密钥可用，标记失败，用户重新提供 Key 后可从断点重试。"""

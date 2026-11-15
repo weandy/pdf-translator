@@ -110,6 +110,8 @@ def test_manual_retry_has_whole_request_budget_and_retains_previous_valid_transl
     assert original is not None
     original.status, original.target = SegmentStatus.EDITED, "原有可用译文 <m1/>"
     pipeline.deps.store.save_segments([original])
+    job.status = JobStatus.DONE
+    pipeline.deps.store.save_job(job)
     real_translate = usecases.translate
     observed = []
 
@@ -125,5 +127,23 @@ def test_manual_retry_has_whole_request_budget_and_retains_previous_valid_transl
         assert result.failure_reason and result.translation_attempts == 10
         current = pipeline.deps.store.get_job(job.id)
         assert current is not None and current.cost_cny is not None and current.cost_cny > 0
+    finally:
+        close_pipeline(pipeline)
+
+
+def test_manual_mutations_require_done_and_are_exclusive(tmp_path, monkeypatch):
+    pipeline, job = setup_pipeline(tmp_path, monkeypatch, RepairChat())
+    try:
+        with pytest.raises(usecases.UserError, match="完成后才能重翻"):
+            asyncio.run(usecases.retranslate_segment(pipeline, "hard", "default", SECRETS))
+
+        job.status = JobStatus.DONE
+        pipeline.deps.store.save_job(job)
+        assert pipeline.begin_mutation(job.id)
+        with pytest.raises(usecases.UserError, match="正在修改"):
+            usecases.edit_segment(pipeline, "hard", "新的译文")
+        pipeline.end_mutation(job.id)
+        edited = usecases.edit_segment(pipeline, "hard", "新的译文 <m1/>")
+        assert edited.status is SegmentStatus.EDITED
     finally:
         close_pipeline(pipeline)
