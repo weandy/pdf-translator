@@ -561,7 +561,7 @@ input[type="radio"] {
 }
 .job-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 96px 120px 132px;
+  grid-template-columns: minmax(0, 1fr) 96px 120px minmax(260px, auto);
   gap: 16px;
   align-items: center;
   padding: 14px 4px;
@@ -589,6 +589,32 @@ input[type="radio"] {
   display: flex;
   gap: 4px;
   justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.download-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: 100%;
+}
+.download-choice select {
+  width: auto;
+  min-width: 0;
+  max-width: 190px;
+  min-height: 40px;
+  font-size: 13px;
+}
+.download-choice > a {
+  display: flex;
+  flex-direction: column;
+  max-width: 150px;
+}
+.download-choice small {
+  white-space: normal;
+}
+.batch-items .download-choice {
+  grid-column: 1 / -1;
+  justify-self: end;
 }
 .batch-list-home {
   display: grid;

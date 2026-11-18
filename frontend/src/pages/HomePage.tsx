@@ -5,7 +5,7 @@ import { Link, useNavigate } from "react-router";
 import { clearHistory, removeHistory, useHistory } from "@/entities/history/model";
 import { deleteJob, MY_JOBS_QUERY, STAGE_LABELS, useMyJobs } from "@/entities/job/model";
 import { readBatches, rememberBatch, removeBatch, type BatchEntry } from "@/entities/batch/model";
-import { ExportDownloadLink } from "@/features/export/ExportDownloadLink";
+import { DownloadChoice } from "@/features/export/DownloadChoice";
 import { UploadPanel } from "@/features/upload/UploadPanel";
 import { api } from "@/shared/api/client";
 import { APP_TITLE, notify } from "@/shared/attention/attention";
@@ -136,11 +136,7 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
                   {j.page_count} 页{j.cost_cny !== null && `，¥${j.cost_cny.toFixed(3)}`}
                 </span>
                 <span className="row-actions">
-                  {j.status === "done" && (
-                    <ExportDownloadLink className="button quiet" jobId={j.id} mode="mono">
-                      下载
-                    </ExportDownloadLink>
-                  )}
+                  {j.status === "done" && <DownloadChoice jobId={j.id} />}
                   {(j.status === "running" || j.status === "queued") && (
                     <button type="button" className="quiet" onClick={() => void cancel(j.id, j.filename)}>
                       取消
@@ -167,7 +163,9 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
             {batches.map((batch) => {
               const byId = new Map((jobs ?? []).map((job) => [job.id, job]));
               const entries = batch.jobIds.map((id) => byId.get(id));
-              const finished = entries.filter((job) => !job || ["done", "failed", "cancelled"].includes(job.status)).length;
+              const finished = entries.filter(
+                (job) => !job || ["done", "failed", "cancelled"].includes(job.status),
+              ).length;
               const done = entries.filter((job) => job?.status === "done").length;
               const percent = batch.jobIds.length ? Math.round((finished / batch.jobIds.length) * 100) : 0;
               return (
@@ -176,7 +174,8 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
                     <div>
                       <strong>{batch.name}</strong>
                       <span className="hint">
-                        {done}/{batch.jobIds.length} 篇完成 · {finished === batch.jobIds.length ? "已结束" : `已处理 ${percent}%`}
+                        {done}/{batch.jobIds.length} 篇完成 ·{" "}
+                        {finished === batch.jobIds.length ? "已结束" : `已处理 ${percent}%`}
                       </span>
                     </div>
                     <button
@@ -191,7 +190,13 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
                       移除批次
                     </button>
                   </div>
-                  <div className="batch-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+                  <div
+                    className="batch-progress"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={percent}
+                  >
                     <span style={{ width: `${percent}%` }} />
                   </div>
                   <ul className="batch-items">
@@ -207,8 +212,13 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
                             <span className="name muted">任务已过期或已删除</span>
                           )}
                           <span className={`status ${job?.status ?? ""}`}>
-                            {job ? (job.status === "running" ? STAGE_LABELS[job.stage] ?? STATUS.running : STATUS[job.status]) : "不可用"}
+                            {job
+                              ? job.status === "running"
+                                ? (STAGE_LABELS[job.stage] ?? STATUS.running)
+                                : STATUS[job.status]
+                              : "不可用"}
                           </span>
+                          {job?.status === "done" && <DownloadChoice jobId={id} />}
                         </li>
                       );
                     })}
