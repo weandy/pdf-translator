@@ -639,10 +639,10 @@ input[type="radio"] {
 .home-feedback {
   margin: 16px 0 0;
 }
-.jobs.batches {
+.current-jobs {
   margin-top: 28px;
 }
-.batch-list-home {
+.task-list {
   display: grid;
   gap: 16px;
   margin: 0;
@@ -655,6 +655,19 @@ input[type="radio"] {
   border-radius: 6px;
   background: var(--paper);
   box-shadow: var(--sheet-shadow);
+}
+.task-list > .job-item {
+  padding-inline: 16px;
+}
+.job-action-error {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--red-pen);
+  overflow-wrap: anywhere;
+}
+.job-item .job-secondary {
+  color: var(--ink-soft);
+  font-size: 13px;
 }
 .batch-card-head {
   display: flex;
@@ -686,22 +699,8 @@ input[type="radio"] {
 .batch-format span {
   white-space: nowrap;
 }
-.batch-progress {
-  height: 4px;
-  margin: 14px 0 8px;
-  overflow: hidden;
-  border-radius: 2px;
-  background: var(--desk-deep);
-}
-.batch-progress span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--pen);
-  transition: width 0.3s ease;
-}
 .batch-items {
-  margin: 0;
+  margin: 12px 0 0;
   padding: 0;
   list-style: none;
 }
@@ -712,6 +711,7 @@ input[type="radio"] {
   align-items: start;
   padding: 8px 0;
   border-top: 1px solid var(--rule);
+  border-bottom: 0;
 }
 .batch-items .name,
 .batch-items .status {
@@ -722,12 +722,6 @@ input[type="radio"] {
 }
 .batch-items .status::before {
   flex-shrink: 0;
-}
-.batch-row-actions {
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-end;
-  gap: 4px;
 }
 .batch-row-download {
   display: grid;
@@ -1642,6 +1636,10 @@ input[type="radio"] {
   .job-item .row-actions:empty {
     display: none;
   }
+  .batch-items .row-actions {
+    grid-column: auto;
+    justify-content: flex-end;
+  }
   .workspace {
     flex-direction: column;
   }
@@ -1666,6 +1664,27 @@ input[type="radio"] {
 }
 
 @media (max-width: 560px) {
+  .task-list > .job-item {
+    padding-inline: 4px;
+    gap: 6px;
+  }
+  .task-list .job-item .name {
+    grid-column: 1 / -1;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .task-list > .job-item .job-state {
+    grid-column: 1 / -1;
+    max-width: none;
+  }
+  .task-list > .job-item .job-message {
+    display: inline;
+    margin-left: 8px;
+  }
+  .download-choice-action {
+    width: auto;
+    max-width: 108px;
+  }
   .batch-card {
     padding-inline: 12px;
   }

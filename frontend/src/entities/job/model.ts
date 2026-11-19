@@ -69,7 +69,6 @@ export interface MyJobsResult {
   jobs: Job[];
   unavailableIds: string[];
   failedIds: string[];
-  warning: string | null;
 }
 
 function isUnavailable(error: unknown): boolean {
@@ -120,7 +119,6 @@ export function useMyJobs(additionalIds: string[] = []): { data: MyJobsResult; i
       jobs,
       unavailableIds,
       failedIds,
-      warning: failedIds.length ? `${failedIds.length} 个任务暂时无法读取，正在重试。` : null,
     },
     isPending: results.some((result) => result.isPending),
   };
