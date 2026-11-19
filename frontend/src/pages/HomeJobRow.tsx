@@ -2,7 +2,6 @@ import { useRef, useState } from "react";
 import { Link } from "react-router";
 
 import { STAGE_LABELS } from "@/entities/job/model";
-import { DownloadChoice } from "@/features/export/DownloadChoice";
 import { ExportDownloadLink } from "@/features/export/ExportDownloadLink";
 import type { ExportMode, Job } from "@/shared/api/client";
 import { expiresSoon, formatRemaining } from "@/shared/time/elapsed";
@@ -34,7 +33,8 @@ interface Props extends HomeJobActions {
   filename: string;
   job?: Job;
   lookupState?: keyof typeof LOOKUP_LABELS;
-  groupDownload?: { mode: ExportMode; onPreparingChange: (preparing: boolean) => void };
+  downloadMode: ExportMode;
+  onPreparingChange: (preparing: boolean) => void;
 }
 
 export function HomeJobRow({
@@ -42,7 +42,8 @@ export function HomeJobRow({
   filename,
   job,
   lookupState = "pending",
-  groupDownload,
+  downloadMode,
+  onPreparingChange,
   onCancelJob,
   onDeleteJob,
   onRetryJob,
@@ -54,6 +55,8 @@ export function HomeJobRow({
   const canRetry = job?.status === "failed" || job?.status === "cancelled";
   let status = job ? STATUS_LABELS[job.status] : LOOKUP_LABELS[lookupState];
   if (job?.status === "running") status = STAGE_LABELS[job.stage] ?? status;
+  const message = job?.error || job?.message;
+  const remaining = job?.expires_at ? formatRemaining(job.expires_at) : null;
 
   const actOnJob = async (action: JobAction) => {
     if (inFlight.current) return;
@@ -72,41 +75,46 @@ export function HomeJobRow({
 
   return (
     <li className="job-item">
-      {job ? (
-        <Link to={`/jobs/${id}`} className="name" title={filename}>
-          {filename}
-        </Link>
-      ) : (
-        <span className="name muted" title={filename}>
-          {filename}
-        </span>
-      )}
-      <div className="job-state" title={job?.error || job?.message || undefined}>
-        <span className={`status ${job?.status ?? lookupState}`}>{status}</span>
-        {!groupDownload && active && job.message && <small className="job-message">{job.message}</small>}
-        {!groupDownload && !active && job?.expires_at && (
-          <small className={`job-message${expiresSoon(job.expires_at) ? " expiring" : ""}`}>
-            服务器保留{formatRemaining(job.expires_at)}
+      <div className="job-document">
+        {job ? (
+          <Link to={`/jobs/${id}`} className="name" title={filename}>
+            {filename}
+          </Link>
+        ) : (
+          <span className="name muted" title={filename}>
+            {filename}
+          </span>
+        )}
+        {job && (
+          <small className="job-metadata num">
+            {job.page_count} 页{job.cost_cny !== null && ` · ¥${job.cost_cny.toFixed(3)}`}
+            {remaining && (
+              <span className={expiresSoon(job.expires_at) ? "expiring" : undefined}>
+                {remaining === "即将删除" ? ` · ${remaining}` : ` · 保留期${remaining}`}
+              </span>
+            )}
           </small>
         )}
       </div>
-      {job && !groupDownload && (
-        <span className="facts-cell num">
-          {job.page_count} 页{job.cost_cny !== null && `，¥${job.cost_cny.toFixed(3)}`}
-        </span>
-      )}
+      <div className="job-state" title={message || undefined}>
+        <span className={`status ${job?.status ?? lookupState}`}>{status}</span>
+        {message && message !== status && <small className="job-message">{message}</small>}
+      </div>
       {job && (
         <div className="row-actions">
-          {job.status === "done" &&
-            (groupDownload ? (
-              <div className="batch-row-download">
-                <ExportDownloadLink key={groupDownload.mode} className="button" jobId={id} {...groupDownload}>
-                  下载 PDF
-                </ExportDownloadLink>
-              </div>
-            ) : (
-              <DownloadChoice jobId={id} />
-            ))}
+          {job.status === "done" && (
+            <div className="batch-row-download">
+              <ExportDownloadLink
+                key={downloadMode}
+                className="button"
+                jobId={id}
+                mode={downloadMode}
+                onPreparingChange={onPreparingChange}
+              >
+                下载 PDF
+              </ExportDownloadLink>
+            </div>
+          )}
           {canRetry && (
             <button type="button" className="job-retry" disabled={busy} onClick={() => void actOnJob(onRetryJob)}>
               {job.status === "failed" ? "重试" : "重新开始"}

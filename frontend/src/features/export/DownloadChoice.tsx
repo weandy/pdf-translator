@@ -1,10 +1,16 @@
-import { useId, useState } from "react";
+import { useCallback, useId, useState } from "react";
 
 import type { ExportMode } from "@/shared/api/client";
 
-import { ExportDownloadLink } from "./ExportDownloadLink";
-
-export const DEFAULT_DOWNLOAD_MODE: ExportMode = "dual";
+/** 同一次上传共用格式；所有正在准备的下载结束后，才能更换格式。 */
+export function useDownloadChoice() {
+  const [mode, setMode] = useState<ExportMode>("dual");
+  const [pending, setPending] = useState(0);
+  const onPreparingChange = useCallback((preparing: boolean) => {
+    setPending((count) => count + (preparing ? 1 : -1));
+  }, []);
+  return { mode, setMode, preparing: pending > 0, onPreparingChange };
+}
 
 export function DownloadFormatSelect({
   mode,
@@ -34,28 +40,5 @@ export function DownloadFormatSelect({
         <option value="mono">仅译文</option>
       </select>
     </>
-  );
-}
-
-/** 默认按左原文、右译文生成双语 PDF。 */
-export function DownloadChoice({ jobId }: { jobId: string }) {
-  const [mode, setMode] = useState<ExportMode>(DEFAULT_DOWNLOAD_MODE);
-  const [preparing, setPreparing] = useState(false);
-
-  return (
-    <div className="download-choice">
-      <DownloadFormatSelect mode={mode} onChange={setMode} disabled={preparing} />
-      <div className="download-choice-action">
-        <ExportDownloadLink
-          key={`${jobId}-${mode}`}
-          className="button quiet"
-          jobId={jobId}
-          mode={mode}
-          onPreparingChange={setPreparing}
-        >
-          下载 PDF
-        </ExportDownloadLink>
-      </div>
-    </div>
   );
 }

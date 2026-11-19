@@ -1,7 +1,4 @@
-import { useCallback, useState } from "react";
-
-import type { BatchEntry } from "@/entities/batch/model";
-import { DEFAULT_DOWNLOAD_MODE, DownloadFormatSelect } from "@/features/export/DownloadChoice";
+import { DownloadFormatSelect, useDownloadChoice } from "@/features/export/DownloadChoice";
 import type { Job } from "@/shared/api/client";
 
 import { HomeJobRow, type HomeJobActions } from "./HomeJobRow";
@@ -16,36 +13,41 @@ const uploadTime = new Intl.DateTimeFormat("zh-CN", {
 });
 
 interface Props extends HomeJobActions {
-  batch: BatchEntry;
+  jobIds: string[];
+  createdAt: string | undefined;
   jobs: ReadonlyMap<string, Job>;
   filenames: ReadonlyMap<string, string>;
   unavailable: ReadonlySet<string>;
   unreadable: ReadonlySet<string>;
-  onRemoveBatch: (batch: BatchEntry) => void;
+  onUngroup?: () => void;
 }
 
-export function HomeBatch({ batch, jobs, filenames, unavailable, unreadable, onRemoveBatch, ...actions }: Props) {
-  const [mode, setMode] = useState(DEFAULT_DOWNLOAD_MODE);
-  const [preparingCount, setPreparingCount] = useState(0);
-  const onPreparingChange = useCallback((preparing: boolean) => {
-    setPreparingCount((count) => count + (preparing ? 1 : -1));
-  }, []);
-  const ids = [...new Set(batch.jobIds)];
+export function HomeTaskCard({
+  jobIds,
+  createdAt,
+  jobs,
+  filenames,
+  unavailable,
+  unreadable,
+  onUngroup,
+  ...actions
+}: Props) {
+  const { mode, setMode, preparing, onPreparingChange } = useDownloadChoice();
+  const ids = [...new Set(jobIds)];
   const downloadable = ids.filter((id) => jobs.get(id)?.status === "done").length;
-  const createdAt = Date.parse(batch.createdAt);
-  const groupDownload = { mode, onPreparingChange };
+  const timestamp = Date.parse(createdAt ?? "");
 
   return (
     <li className="batch-card">
       <div className="batch-card-head">
         <div className="batch-card-info">
           <h3>
-            {Number.isFinite(createdAt) ? (
+            {Number.isFinite(timestamp) ? (
               <>
-                <time dateTime={batch.createdAt}>{uploadTime.format(createdAt)}</time> 上传的论文
+                <time dateTime={createdAt}>{uploadTime.format(timestamp)}</time> 上传的论文
               </>
             ) : (
-              "一起上传的论文"
+              "上传记录"
             )}
           </h3>
           <p className="hint">
@@ -55,7 +57,7 @@ export function HomeBatch({ batch, jobs, filenames, unavailable, unreadable, onR
         {downloadable > 0 && (
           <div className="batch-format">
             <span aria-hidden="true">下载格式</span>
-            <DownloadFormatSelect mode={mode} onChange={setMode} disabled={preparingCount > 0} />
+            <DownloadFormatSelect mode={mode} onChange={setMode} disabled={preparing} />
           </div>
         )}
       </div>
@@ -69,17 +71,20 @@ export function HomeBatch({ batch, jobs, filenames, unavailable, unreadable, onR
               filename={job?.filename ?? filenames.get(id) ?? `论文 ${index + 1}`}
               job={job}
               lookupState={unavailable.has(id) ? "unavailable" : unreadable.has(id) ? "unreadable" : "pending"}
-              groupDownload={groupDownload}
+              downloadMode={mode}
+              onPreparingChange={onPreparingChange}
               {...actions}
             />
           );
         })}
       </ul>
-      <div className="batch-card-footer">
-        <button type="button" className="quiet" onClick={() => onRemoveBatch(batch)}>
-          取消分组
-        </button>
-      </div>
+      {onUngroup && ids.length > 1 && (
+        <div className="batch-card-footer">
+          <button type="button" className="quiet" onClick={onUngroup}>
+            取消分组
+          </button>
+        </div>
+      )}
     </li>
   );
 }

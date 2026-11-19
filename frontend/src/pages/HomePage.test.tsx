@@ -120,7 +120,7 @@ describe("首页内容", () => {
     });
   });
 
-  it("上传区下方按时间混排批次和单篇，批次成员共用一个下载格式", async () => {
+  it("上传区下方用统一卡片按时间展示单篇和多篇，每张卡共用一个下载格式", async () => {
     fixture.batches = [
       { id: "earlier", name: "合成较早批次", createdAt: "2026-11-15T00:00:00Z", jobIds: ["queued", "running"] },
       { id: "batch", name: "合成批次", createdAt: "2026-11-18T00:00:00Z", jobIds: ["done", "another"] },
@@ -137,20 +137,38 @@ describe("首页内容", () => {
       const tasks = host.querySelector('[aria-labelledby="jobs-title"]')!;
       expect(host.querySelector(".home-hero")?.nextElementSibling).toBe(tasks);
       expect(host.textContent).not.toContain("我的批次");
-      const rows = [...tasks.querySelector("ul")!.children];
-      expect(rows).toHaveLength(4);
-      expect(rows[0]?.textContent).toContain("合成最新单篇.pdf");
-      expect(rows[1]?.querySelector("h3 time")?.getAttribute("datetime")).toBe("2026-11-18T00:00:00Z");
-      expect(rows[2]?.textContent).toContain("合成早期单篇.pdf");
-      expect(rows[3]?.querySelector("h3 time")?.getAttribute("datetime")).toBe("2026-11-15T00:00:00Z");
+      const cards = [...tasks.querySelectorAll(".task-list > .batch-card")];
+      expect(cards.map((card) => card.querySelector(".batch-card-head h3 time")?.getAttribute("datetime"))).toEqual([
+        "2026-11-19T00:00:00Z",
+        "2026-11-18T00:00:00Z",
+        "2026-11-16T00:00:00Z",
+        "2026-11-15T00:00:00Z",
+      ]);
+      expect(cards.map((card) => card.querySelector(".batch-card-info .hint")?.textContent)).toEqual([
+        "可下载 1 / 1 篇",
+        "可下载 2 / 2 篇",
+        "可下载 0 / 1 篇",
+        "可下载 0 / 2 篇",
+      ]);
+      expect(cards.map((card) => card.querySelectorAll(":scope > .batch-items > .job-item").length)).toEqual([
+        1, 2, 1, 2,
+      ]);
+      expect(cards.map((card) => card.querySelectorAll("select").length)).toEqual([1, 1, 0, 0]);
+      expect(cards[0]?.querySelector(".batch-items .status")?.textContent).toBe("可下载");
+      expect(cards[1]?.querySelector(".batch-items .status")?.textContent).toBe("可下载");
+      expect(cards[0]?.querySelector(".batch-card-footer")).toBeNull();
       expect(host.querySelectorAll('a[href="/jobs/done"]')).toHaveLength(1);
-      const group = rows[1]!;
-      expect(group.querySelectorAll("select")).toHaveLength(1);
 
-      const select = group.querySelector<HTMLSelectElement>("select")!;
+      const single = cards[0]!;
+      const group = cards[1]!;
+      const singleFormat = single.querySelector<HTMLSelectElement>(".batch-card-head .batch-format select")!;
+      const select = group.querySelector<HTMLSelectElement>(".batch-card-head .batch-format select")!;
       const downloadUrls = () =>
         [...group.querySelectorAll(".batch-items a[download]")].map((link) => link.getAttribute("href"));
       expect(select.value).toBe("dual");
+      expect(single.querySelector(".batch-items a[download]")?.getAttribute("href")).toBe(
+        "/api/jobs/single/export?mode=dual&side=right",
+      );
       expect(downloadUrls()).toEqual([
         "/api/jobs/done/export?mode=dual&side=right",
         "/api/jobs/another/export?mode=dual&side=right",
@@ -160,7 +178,7 @@ describe("首页内容", () => {
         select.dispatchEvent(new Event("change", { bubbles: true }));
       });
       expect(downloadUrls()).toEqual(["/api/jobs/done/export?mode=mono", "/api/jobs/another/export?mode=mono"]);
-      expect(rows[0]?.querySelector("select")?.value).toBe("dual");
+      expect(singleFormat.value).toBe("dual");
     });
   });
 
@@ -189,7 +207,7 @@ describe("首页内容", () => {
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
     await renderHome(async (host) => {
-      const group = host.querySelector(".batch-card")!;
+      const group = host.querySelector('a[href="/jobs/done"]')!.closest(".batch-card")!;
       expect(group.querySelector(".batch-card-info")?.textContent).toContain("可下载 1 / 4 篇");
       expect(group.querySelector(".batch-card-info")?.textContent).not.toContain("已结束");
       const rowStatus = (filename: string) =>
@@ -205,10 +223,13 @@ describe("首页内容", () => {
       const ungroup = [...group.querySelectorAll("button")].find((button) => button.textContent === "取消分组")!;
       await act(async () => ungroup.click());
       expect(fixture.restoreMyJobs).toHaveBeenCalledWith(["done", "pending", "offline"]);
-      expect(host.querySelector(".batch-card")).toBeNull();
-      const taskRows = host.querySelector('[aria-labelledby="jobs-title"] ul')!;
-      expect(taskRows.children).toHaveLength(4);
-      expect(taskRows.textContent).toContain("合成完成.pdf");
+      expect(host.querySelector(".batch-card-footer")).toBeNull();
+      const cards = [...host.querySelectorAll(".task-list > .batch-card")];
+      expect(cards).toHaveLength(4);
+      expect(cards.every((card) => card.querySelectorAll(":scope > .batch-items > .job-item").length === 1)).toBe(true);
+      expect(host.querySelector('a[href="/jobs/done"]')?.closest(".batch-card")?.textContent).toContain(
+        "可下载 1 / 1 篇",
+      );
       expect(rowStatus("pending.pdf")).toBe("查询中");
       expect(rowStatus("offline.pdf")).toBe("暂时无法读取");
     });

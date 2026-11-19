@@ -6,12 +6,20 @@ import { readBatches, rememberBatch, removeBatch, type BatchEntry } from "@/enti
 import { clearHistory, removeHistory, useHistory } from "@/entities/history/model";
 import { deleteJob, MY_JOBS_QUERY, myJobIds, restoreMyJobs, useMyJobs } from "@/entities/job/model";
 import { UploadPanel } from "@/features/upload/UploadPanel";
-import { HomeBatch } from "@/pages/HomeBatch";
-import { HomeJobRow } from "@/pages/HomeJobRow";
+import { HomeTaskCard } from "@/pages/HomeBatch";
 import { api, type Job } from "@/shared/api/client";
 import { APP_TITLE, notify } from "@/shared/attention/attention";
 
-type TaskEntry = { kind: "group"; batch: BatchEntry; time: number } | { kind: "job"; id: string; time: number };
+interface TaskEntry {
+  key: string;
+  jobIds: string[];
+  createdAt?: string;
+  batch?: BatchEntry;
+}
+
+function uploadTimestamp(entry: TaskEntry): number {
+  return Date.parse(entry.createdAt ?? "") || 0;
+}
 
 export function HomePage({ openSettings }: { openSettings: () => void }) {
   const navigate = useNavigate();
@@ -28,16 +36,17 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
   const trackedIds = new Set(myJobIds());
   const historyById = new Map(history.map((entry) => [entry.id, entry]));
   const tasks: TaskEntry[] = batches.map((batch) => ({
-    kind: "group",
+    key: `group-${batch.id}`,
+    jobIds: batch.jobIds,
+    createdAt: batch.createdAt,
     batch,
-    time: Date.parse(batch.createdAt) || 0,
   }));
   for (const id of new Set([...trackedIds, ...jobsById.keys()])) {
     if (batchIds.has(id) || unavailable.has(id)) continue;
     const createdAt = jobsById.get(id)?.created_at ?? historyById.get(id)?.createdAt;
-    tasks.push({ kind: "job", id, time: createdAt ? Date.parse(createdAt) || 0 : 0 });
+    tasks.push({ key: id, jobIds: [id], createdAt });
   }
-  tasks.sort((a, b) => b.time - a.time);
+  tasks.sort((a, b) => uploadTimestamp(b) - uploadTimestamp(a));
   const past = history.filter(
     (entry) =>
       !batchIds.has(entry.id) && !jobsById.has(entry.id) && !unreadable.has(entry.id) && !trackedIds.has(entry.id),
@@ -138,33 +147,21 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
             <span className="hint">本机上传，最新在前</span>
           </div>
           <ul className="task-list">
-            {tasks.map((entry) =>
-              entry.kind === "group" ? (
-                <HomeBatch
-                  key={`group-${entry.batch.id}`}
-                  batch={entry.batch}
-                  jobs={jobsById}
-                  filenames={filenames}
-                  unavailable={unavailable}
-                  unreadable={unreadable}
-                  onCancelJob={cancel}
-                  onDeleteJob={remove}
-                  onRetryJob={retry}
-                  onRemoveBatch={ungroup}
-                />
-              ) : (
-                <HomeJobRow
-                  key={entry.id}
-                  id={entry.id}
-                  job={jobsById.get(entry.id)}
-                  filename={jobsById.get(entry.id)?.filename ?? filenames.get(entry.id) ?? "论文"}
-                  lookupState={unreadable.has(entry.id) ? "unreadable" : "pending"}
-                  onCancelJob={cancel}
-                  onDeleteJob={remove}
-                  onRetryJob={retry}
-                />
-              ),
-            )}
+            {tasks.map(({ key, jobIds, createdAt, batch }) => (
+              <HomeTaskCard
+                key={key}
+                jobIds={jobIds}
+                createdAt={createdAt}
+                jobs={jobsById}
+                filenames={filenames}
+                unavailable={unavailable}
+                unreadable={unreadable}
+                onCancelJob={cancel}
+                onDeleteJob={remove}
+                onRetryJob={retry}
+                onUngroup={batch ? () => ungroup(batch) : undefined}
+              />
+            ))}
           </ul>
         </section>
       )}

@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { api } from "@/shared/api/client";
 
-import { DownloadChoice } from "./DownloadChoice";
+import { DownloadFormatSelect, useDownloadChoice } from "./DownloadChoice";
 import { DownloadMenu } from "./DownloadMenu";
 import { ExportDownloadLink } from "./ExportDownloadLink";
 
@@ -13,6 +13,18 @@ const preparedPdf = {
   download_url: "/api/jobs/synthetic/export",
   size_bytes: 100,
 };
+
+function DownloadControls() {
+  const { mode, setMode, preparing, onPreparingChange } = useDownloadChoice();
+  return (
+    <>
+      <DownloadFormatSelect mode={mode} onChange={setMode} disabled={preparing} />
+      <ExportDownloadLink key={mode} jobId="synthetic" mode={mode} onPreparingChange={onPreparingChange}>
+        下载 PDF
+      </ExportDownloadLink>
+    </>
+  );
+}
 
 describe("任务下载", () => {
   let host: HTMLDivElement;
@@ -33,7 +45,7 @@ describe("任务下载", () => {
   });
 
   async function render() {
-    await act(async () => root.render(<DownloadChoice jobId="synthetic" />));
+    await act(async () => root.render(<DownloadControls />));
   }
 
   function clickDownload(link = host.querySelector("a")!) {
