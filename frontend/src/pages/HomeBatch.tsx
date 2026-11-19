@@ -32,8 +32,9 @@ export function HomeTaskCard({
   onUngroup,
   ...actions
 }: Props) {
-  const { mode, setMode, preparing, onPreparingChange } = useDownloadChoice();
   const ids = [...new Set(jobIds)];
+  const cardKey = JSON.stringify([...ids].sort());
+  const { mode, setMode, preparing, onPreparingChange } = useDownloadChoice(cardKey);
   const downloadable = ids.filter((id) => jobs.get(id)?.status === "done").length;
   const timestamp = Date.parse(createdAt ?? "");
 

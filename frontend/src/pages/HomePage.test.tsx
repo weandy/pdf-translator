@@ -157,7 +157,13 @@ describe("首页内容", () => {
       expect(cards[0]?.querySelector(".batch-items .status")?.textContent).toBe("可下载");
       expect(cards[1]?.querySelector(".batch-items .status")?.textContent).toBe("可下载");
       expect(cards[0]?.querySelector(".batch-card-footer")).toBeNull();
-      expect(host.querySelectorAll('a[href="/jobs/done"]')).toHaveLength(1);
+      expect(host.querySelectorAll('a.name[href="/jobs/done"]')).toHaveLength(1);
+      const edits = [...tasks.querySelectorAll<HTMLAnchorElement>("a.edit-translation")];
+      expect(edits.map((edit) => edit.getAttribute("href"))).toEqual(["/jobs/single", "/jobs/done", "/jobs/another"]);
+      expect(edits.every((edit) => edit.textContent === "编辑译文")).toBe(true);
+      for (const edit of edits) {
+        expect(edit.nextElementSibling?.querySelector("a[download]")).toBeTruthy();
+      }
 
       const single = cards[0]!;
       const group = cards[1]!;

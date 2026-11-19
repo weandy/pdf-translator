@@ -14,8 +14,8 @@ const preparedPdf = {
   size_bytes: 100,
 };
 
-function DownloadControls() {
-  const { mode, setMode, preparing, onPreparingChange } = useDownloadChoice();
+function DownloadControls({ cardKey }: { cardKey: string }) {
+  const { mode, setMode, preparing, onPreparingChange } = useDownloadChoice(cardKey);
   return (
     <>
       <DownloadFormatSelect mode={mode} onChange={setMode} disabled={preparing} />
@@ -44,8 +44,8 @@ describe("任务下载", () => {
     vi.restoreAllMocks();
   });
 
-  async function render() {
-    await act(async () => root.render(<DownloadControls />));
+  async function render(cardKey: string) {
+    await act(async () => root.render(<DownloadControls key={cardKey} cardKey={cardKey} />));
   }
 
   function clickDownload(link = host.querySelector("a")!) {
@@ -66,7 +66,7 @@ describe("任务下载", () => {
 
   it("默认双语右侧译文，切换仅译文及切回双语均使用对应参数并重置下载状态", async () => {
     const prepare = vi.spyOn(api, "prepareExport").mockResolvedValue(preparedPdf);
-    await render();
+    await render("switch-format");
     expect(host.querySelector("select")!.value).toBe("dual");
     expect(host.querySelector("label")!.htmlFor).toBe(host.querySelector("select")!.id);
     await download();
@@ -84,7 +84,7 @@ describe("任务下载", () => {
 
   it("同格式可再次下载，反馈始终在按钮外更新", async () => {
     const prepare = vi.spyOn(api, "prepareExport").mockResolvedValue(preparedPdf);
-    await render();
+    await render("repeat-download");
     const link = host.querySelector("a")!;
     const status = host.querySelector('[role="status"]')!;
     expect(status.textContent).toBe("");
@@ -103,6 +103,25 @@ describe("任务下载", () => {
     expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(2);
   });
 
+  it("返回任务列表后恢复所选格式，各卡片的格式独立", async () => {
+    const prepare = vi.spyOn(api, "prepareExport").mockResolvedValue(preparedPdf);
+    await render("saved-format");
+    await select("mono");
+    await act(async () => root.render(null));
+
+    await render("other-card");
+    expect(host.querySelector("select")!.value).toBe("dual");
+    await render("saved-format");
+    expect(host.querySelector("select")!.value).toBe("mono");
+    await download();
+    expect(prepare).toHaveBeenCalledWith("synthetic", "mono", "right");
+
+    await select("dual");
+    await act(async () => root.render(null));
+    await render("saved-format");
+    expect(host.querySelector("select")!.value).toBe("dual");
+  });
+
   it("准备期间锁定类型并阻止重复下载，失败后可切换类型", async () => {
     let reject!: (reason: Error) => void;
     const prepare = vi.spyOn(api, "prepareExport").mockImplementation(
@@ -111,7 +130,7 @@ describe("任务下载", () => {
           reject = fail;
         }),
     );
-    await render();
+    await render("preparing");
     await act(async () => {
       clickDownload();
       clickDownload();

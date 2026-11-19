@@ -103,17 +103,22 @@ export function HomeJobRow({
       {job && (
         <div className="row-actions">
           {job.status === "done" && (
-            <div className="batch-row-download">
-              <ExportDownloadLink
-                key={downloadMode}
-                className="button"
-                jobId={id}
-                mode={downloadMode}
-                onPreparingChange={onPreparingChange}
-              >
-                下载 PDF
-              </ExportDownloadLink>
-            </div>
+            <>
+              <Link className="button edit-translation" to={`/jobs/${id}`} aria-label={`编辑译文：${filename}`}>
+                编辑译文
+              </Link>
+              <div className="batch-row-download">
+                <ExportDownloadLink
+                  key={downloadMode}
+                  className="button"
+                  jobId={id}
+                  mode={downloadMode}
+                  onPreparingChange={onPreparingChange}
+                >
+                  下载 PDF
+                </ExportDownloadLink>
+              </div>
+            </>
           )}
           {canRetry && (
             <button type="button" className="job-retry" disabled={busy} onClick={() => void actOnJob(onRetryJob)}>

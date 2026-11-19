@@ -603,6 +603,7 @@ input[type="radio"] {
   min-height: 40px;
   font-size: 13px;
 }
+.edit-translation,
 .batch-row-download .button {
   min-height: 40px;
   white-space: nowrap;
@@ -688,7 +689,7 @@ input[type="radio"] {
 }
 .batch-items li {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 140px 172px;
+  grid-template-columns: minmax(0, 1fr) minmax(100px, 140px) 270px;
   gap: 12px;
   align-items: center;
   padding: 10px 0;
@@ -1659,8 +1660,12 @@ input[type="radio"] {
     flex-basis: 100%;
   }
   .batch-items li {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 172px);
+    grid-template-columns: minmax(0, 1fr);
     gap: 6px 8px;
+  }
+  .batch-items .row-actions {
+    justify-content: flex-start;
+    align-items: flex-start;
   }
   .job-document {
     grid-column: 1 / -1;
