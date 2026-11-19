@@ -1,10 +1,8 @@
-import { useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type MouseEvent, type ReactNode } from "react";
 
 import { api, exportUrl, type ExportMode } from "@/shared/api/client";
 
-type DownloadState = "idle" | "preparing" | "started" | "error";
-
-export type ExportDownloadState = DownloadState;
+export type ExportDownloadState = "idle" | "preparing" | "started" | "error";
 
 interface Props {
   jobId: string;
@@ -14,7 +12,9 @@ interface Props {
   role?: "menuitem";
   className?: string;
   disabled?: boolean;
+  showStatus?: boolean;
   onStateChange?: (state: ExportDownloadState, message: string) => void;
+  onPreparingChange?: (preparing: boolean) => void;
 }
 
 /** 先准备服务端 PDF，再启动浏览器下载，避免慢生成时用户重复点击。 */
@@ -26,63 +26,96 @@ export function ExportDownloadLink({
   role,
   className,
   disabled = false,
+  showStatus = true,
   onStateChange,
+  onPreparingChange,
 }: Props) {
-  const [state, setState] = useState<DownloadState>("idle");
-  const [error, setError] = useState("");
+  const statusId = useId();
+  const [feedback, setFeedback] = useState<{ state: ExportDownloadState; message: string }>({
+    state: "idle",
+    message: "",
+  });
+  const releasePreparing = useRef<(() => void) | null>(null);
+  const preparing = feedback.state === "preparing";
+  const blocked = disabled || preparing;
+
+  useEffect(() => () => releasePreparing.current?.(), []);
+
+  const report = (state: ExportDownloadState, message = "") => {
+    setFeedback({ state, message });
+    onStateChange?.(state, message);
+  };
 
   const start = async (event: MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
-    if (disabled || state === "preparing" || state === "started") return;
-    setState("preparing");
-    setError("");
-    onStateChange?.("preparing", "");
+    if (blocked || releasePreparing.current) return;
+
+    // 同步加锁，避免界面重新渲染前的点击重复提交；卸载时释放上层格式选择。
+    const release = () => {
+      if (releasePreparing.current !== release) return;
+      releasePreparing.current = null;
+      onPreparingChange?.(false);
+    };
+    releasePreparing.current = release;
+    onPreparingChange?.(true);
+    report("preparing");
     try {
       const prepared = await api.prepareExport(jobId, mode, side);
       const link = document.createElement("a");
       link.href = prepared.download_url;
       link.download = prepared.filename;
       link.click();
-      setState("started");
-      onStateChange?.("started", "");
+      report("started");
     } catch (cause) {
-      setState("error");
-      const message = cause instanceof Error ? cause.message : "PDF 准备失败，请重试";
-      setError(message);
-      onStateChange?.("error", message);
+      report("error", cause instanceof Error ? cause.message : "PDF 准备失败，请重试");
+    } finally {
+      release();
     }
   };
 
-  const label =
-    state === "preparing"
-      ? "正在准备 PDF…"
-      : state === "started"
-        ? "已开始下载"
-        : state === "error"
-          ? "重试下载"
-          : children;
-  const hint =
-    state === "preparing"
-      ? "正在排版并准备文件，请不要重复点击"
-      : state === "started"
-        ? "请查看浏览器下载栏"
-        : state === "error"
-          ? error
-          : null;
+  return (
+    <>
+      <a
+        role={role}
+        className={`${className ?? ""}${blocked ? " disabled" : ""}`}
+        href={exportUrl(jobId, mode, side)}
+        download
+        aria-busy={preparing}
+        aria-disabled={blocked || undefined}
+        aria-describedby={showStatus ? statusId : undefined}
+        onClick={start}
+      >
+        {children}
+      </a>
+      {showStatus && <ExportDownloadStatus id={statusId} {...feedback} />}
+    </>
+  );
+}
+
+export function ExportDownloadStatus({
+  id,
+  state,
+  message,
+}: {
+  id: string;
+  state: ExportDownloadState;
+  message: string;
+}) {
+  const statusText = {
+    idle: "",
+    preparing: "正在准备 PDF…",
+    started: "已开始下载",
+    error: message || "下载失败，请重试",
+  }[state];
 
   return (
-    <a
-      role={role}
-      className={`${className ?? ""}${disabled || state === "preparing" || state === "started" ? " disabled" : ""}`}
-      href={exportUrl(jobId, mode, side)}
-      download
-      aria-busy={state === "preparing"}
-      aria-disabled={disabled || state === "preparing" || state === "started" ? true : undefined}
-      title={error || undefined}
-      onClick={start}
+    <small
+      id={id}
+      className={`export-download-status${state === "error" ? " error" : ""}`}
+      role="status"
+      aria-atomic="true"
     >
-      {state === "idle" ? label : <span>{label}</span>}
-      {hint && <small>{hint}</small>}
-    </a>
+      {statusText}
+    </small>
   );
 }

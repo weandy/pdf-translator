@@ -2,42 +2,60 @@ import { useId, useState } from "react";
 
 import type { ExportMode } from "@/shared/api/client";
 
-import { ExportDownloadLink, type ExportDownloadState } from "./ExportDownloadLink";
+import { ExportDownloadLink } from "./ExportDownloadLink";
 
-/** 任务和批次共用下载类型，默认按左原文、右译文生成双语 PDF。 */
-export function DownloadChoice({ jobId }: { jobId: string }) {
+export const DEFAULT_DOWNLOAD_MODE: ExportMode = "dual";
+
+export function DownloadFormatSelect({
+  mode,
+  onChange,
+  disabled,
+  label = "下载格式",
+}: {
+  mode: ExportMode;
+  onChange: (mode: ExportMode) => void;
+  disabled?: boolean;
+  label?: string;
+}) {
   const id = useId();
-  const [mode, setMode] = useState<ExportMode>("dual");
-  const [state, setState] = useState<ExportDownloadState>("idle");
-  const preparing = state === "preparing";
 
   return (
-    <div className="download-choice">
+    <>
       <label className="visually-hidden" htmlFor={id}>
-        下载类型
+        {label}
       </label>
       <select
         id={id}
         value={mode}
-        disabled={preparing}
-        onChange={(event) => {
-          setMode(event.target.value as ExportMode);
-          setState("idle");
-        }}
+        disabled={disabled}
+        onChange={(event) => onChange(event.currentTarget.value === "mono" ? "mono" : "dual")}
       >
         <option value="dual">双语（左原文·右译文）</option>
         <option value="mono">仅译文</option>
       </select>
-      <ExportDownloadLink
-        key={`${jobId}-${mode}`}
-        className="button quiet"
-        jobId={jobId}
-        mode={mode}
-        side="right"
-        onStateChange={setState}
-      >
-        下载 PDF
-      </ExportDownloadLink>
+    </>
+  );
+}
+
+/** 默认按左原文、右译文生成双语 PDF。 */
+export function DownloadChoice({ jobId }: { jobId: string }) {
+  const [mode, setMode] = useState<ExportMode>(DEFAULT_DOWNLOAD_MODE);
+  const [preparing, setPreparing] = useState(false);
+
+  return (
+    <div className="download-choice">
+      <DownloadFormatSelect mode={mode} onChange={setMode} disabled={preparing} />
+      <div className="download-choice-action">
+        <ExportDownloadLink
+          key={`${jobId}-${mode}`}
+          className="button quiet"
+          jobId={jobId}
+          mode={mode}
+          onPreparingChange={setPreparing}
+        >
+          下载 PDF
+        </ExportDownloadLink>
+      </div>
     </div>
   );
 }

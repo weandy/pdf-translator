@@ -211,7 +211,7 @@ export function JobPage() {
                   <span className="wide-only">修改</span>记录{changes > 0 && <span className="num"> {changes}</span>}
                 </span>
               </button>
-              <DownloadMenu jobId={id} />
+              <DownloadMenu key={id} jobId={id} />
             </>
           }
         />
@@ -319,12 +319,16 @@ function DocumentOpening({
         </div>
       )}
       <nav className="document-opening-downloads" aria-label="下载已完成的文档">
-        <ExportDownloadLink className="button" jobId={jobId} mode="mono">
-          下载中文版
-        </ExportDownloadLink>
-        <ExportDownloadLink className="button" jobId={jobId} mode="dual" side={side}>
-          下载双语版
-        </ExportDownloadLink>
+        <div>
+          <ExportDownloadLink className="button" jobId={jobId} mode="mono">
+            下载中文版
+          </ExportDownloadLink>
+        </div>
+        <div>
+          <ExportDownloadLink className="button" jobId={jobId} mode="dual" side={side}>
+            下载双语版
+          </ExportDownloadLink>
+        </div>
         <a className="button" href={fileUrl(jobId, "original.pdf")} download>
           下载原文
         </a>

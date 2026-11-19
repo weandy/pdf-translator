@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { queryOptions, useQueries, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { watchJob, type JobSnapshot } from "@/entities/job/sync";
@@ -29,73 +29,108 @@ export const STAGE_ORDER = [
  * 本浏览器创建过的任务 ID 保存在 localStorage 里。
  */
 const MY_JOBS_KEY = "pdftr.jobs.v1";
+const RESTORED_JOBS_KEY = "pdftr.jobs.restored.v1";
 const MY_JOBS_MAX = 30;
+const isJobId = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{16}$/.test(value);
+
+function readJobIds(key: string): string[] {
+  const ids = readJSON<unknown>(key, []);
+  return Array.isArray(ids) ? ids.filter(isJobId) : [];
+}
 
 export function myJobIds(): string[] {
-  const ids = readJSON<unknown>(MY_JOBS_KEY, []);
-  return Array.isArray(ids)
-    ? ids.filter(
-        (x): x is string => typeof x === "string" && /^[0-9a-f]{16}$/.test(x),
-      )
-    : [];
+  return [...new Set([...readJobIds(MY_JOBS_KEY), ...readJobIds(RESTORED_JOBS_KEY)])];
 }
 
 export function rememberJob(id: string): void {
-  writeJSON(
-    MY_JOBS_KEY,
-    [id, ...myJobIds().filter((x) => x !== id)].slice(0, MY_JOBS_MAX),
-  );
+  if (!isJobId(id)) return;
+  writeJSON(MY_JOBS_KEY, [id, ...readJobIds(MY_JOBS_KEY).filter((x) => x !== id)].slice(0, MY_JOBS_MAX));
+}
+
+/** 移出批次的任务继续可在首页查看，后续上传也不会挤出这组任务。 */
+export function restoreMyJobs(ids: string[]): void {
+  writeJSON(RESTORED_JOBS_KEY, [...new Set([...ids.filter(isJobId), ...readJobIds(RESTORED_JOBS_KEY)])]);
 }
 
 export function forgetJob(id: string): void {
-  writeJSON(
-    MY_JOBS_KEY,
-    myJobIds().filter((x) => x !== id),
-  );
+  for (const key of [MY_JOBS_KEY, RESTORED_JOBS_KEY]) {
+    const ids = readJobIds(key);
+    if (ids.includes(id))
+      writeJSON(
+        key,
+        ids.filter((x) => x !== id),
+      );
+  }
 }
 
 export const MY_JOBS_QUERY = ["my-jobs"];
 
 export interface MyJobsResult {
   jobs: Job[];
+  unavailableIds: string[];
+  failedIds: string[];
   warning: string | null;
 }
 
-export function useMyJobs() {
-  return useQuery({
-    queryKey: MY_JOBS_QUERY,
-    queryFn: async (): Promise<MyJobsResult> => {
-      const ids = myJobIds();
-      const results = await Promise.allSettled(ids.map((id) => api.job(id)));
-      const jobs: Job[] = [];
-      let failed = 0;
-      results.forEach((result, i) => {
-        if (result.status === "fulfilled") jobs.push(result.value);
-        else if (result.reason instanceof ApiError && result.reason.status === 404) {
-          const id = ids[i];
-          if (id) forgetJob(id);
-        }
-        else failed += 1;
-      });
-      // 服务器上已过期删除的任务，从本地列表里去掉
-      return {
-        jobs,
-        warning: failed ? `${failed} 个任务暂时无法读取，请检查网络后刷新。` : null,
-      };
-    },
-    // 有任务在排队或进行时每 3 秒刷新一次（批量上传后留在首页看进度）
-    refetchInterval: (q) =>
-      q.state.data?.jobs.some((j) => j.status === "queued" || j.status === "running")
-        ? 3000
-        : false,
+function isUnavailable(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 404 || error.status === 410);
+}
+
+export function useMyJobs(additionalIds: string[] = []): { data: MyJobsResult; isPending: boolean } {
+  const queryClient = useQueryClient();
+  const ids = [...new Set([...myJobIds(), ...additionalIds.filter(isJobId)])];
+  const results = useQueries({
+    // 独立查询，让一个慢请求或网络错误不影响其他论文的状态和下载。
+    queries: ids.map((id) =>
+      queryOptions({
+        queryKey: [...MY_JOBS_QUERY, id],
+        queryFn: async ({ signal }): Promise<Job | null> => {
+          try {
+            return await api.job(id, signal);
+          } catch (error) {
+            if (!isUnavailable(error) || signal.aborted) throw error;
+            forgetJob(id);
+            return null;
+          }
+        },
+        retry: false,
+        staleTime: (query) => (query.state.data === null ? "static" : 0),
+        refetchInterval: (query) => {
+          if (query.state.status === "error") return 3000;
+          const status = query.state.data?.status;
+          return status === "queued" || status === "running" ? 3000 : false;
+        },
+      }),
+    ),
   });
+
+  // 服务端确认的 404/410 仍可用于历史展示，即使任务已从本机列表清理。
+  const unavailableIds = queryClient
+    .getQueriesData<Job | null>({ queryKey: MY_JOBS_QUERY, predicate: (query) => query.state.data === null })
+    .map(([key]) => String(key[1]));
+  const jobs: Job[] = [];
+  const failedIds: string[] = [];
+  results.forEach((result, index) => {
+    const id = ids[index];
+    if (result.isError && id) failedIds.push(id);
+    else if (result.data) jobs.push(result.data);
+  });
+  return {
+    data: {
+      jobs,
+      unavailableIds,
+      failedIds,
+      warning: failedIds.length ? `${failedIds.length} 个任务暂时无法读取，正在重试。` : null,
+    },
+    isPending: results.some((result) => result.isPending),
+  };
 }
 
 export async function deleteJob(id: string): Promise<void> {
   try {
     await api.deleteJob(id);
   } catch (e) {
-    if (!(e instanceof ApiError && e.status === 404)) throw e;
+    if (!isUnavailable(e)) throw e;
   }
   forgetJob(id);
 }

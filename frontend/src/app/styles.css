@@ -567,7 +567,8 @@ input[type="radio"] {
   padding: 14px 4px;
   border-bottom: 1px solid var(--rule);
 }
-.job-item .name {
+.job-item .name,
+.batch-items .name {
   overflow: hidden;
   color: var(--ink);
   font-family: var(--serif);
@@ -577,13 +578,19 @@ input[type="radio"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.job-item .name:hover {
+.job-item a.name:hover,
+.batch-items a.name:hover {
   color: var(--pen);
   text-decoration: underline;
 }
 .job-item .facts-cell {
   color: var(--ink-soft);
   font-size: 13px;
+}
+.job-state {
+  min-width: 0;
+  max-width: 12rem;
+  overflow-wrap: anywhere;
 }
 .job-item .row-actions {
   display: flex;
@@ -597,28 +604,47 @@ input[type="radio"] {
   gap: 6px;
   max-width: 100%;
 }
-.download-choice select {
+.download-choice select,
+.batch-format select {
   width: auto;
   min-width: 0;
   max-width: 190px;
   min-height: 40px;
   font-size: 13px;
 }
-.download-choice > a {
-  display: flex;
-  flex-direction: column;
-  max-width: 150px;
+.download-choice .button,
+.batch-row-download .button {
+  min-height: 40px;
+  white-space: nowrap;
 }
-.download-choice small {
-  white-space: normal;
+.download-choice-action {
+  display: grid;
+  width: 108px;
+  min-width: 0;
 }
-.batch-items .download-choice {
-  grid-column: 1 / -1;
-  justify-self: end;
+.export-download-status {
+  display: block;
+  max-width: 280px;
+  margin-top: 4px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.export-download-status:empty {
+  position: absolute;
+}
+.export-download-status.error {
+  color: var(--red-pen);
+}
+.home-feedback {
+  margin: 16px 0 0;
+}
+.jobs.batches {
+  margin-top: 28px;
 }
 .batch-list-home {
   display: grid;
-  gap: 12px;
+  gap: 16px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -626,29 +652,43 @@ input[type="radio"] {
 .batch-card {
   padding: 14px 16px;
   border: 1px solid var(--rule);
+  border-radius: 6px;
   background: var(--paper);
   box-shadow: var(--sheet-shadow);
 }
 .batch-card-head {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: flex-start;
   justify-content: space-between;
 }
-.batch-card-head > div {
+.batch-card-info {
   display: grid;
-  gap: 2px;
+  flex: 1 1 260px;
+  gap: 4px;
   min-width: 0;
 }
-.batch-card-head strong {
-  overflow: hidden;
+.batch-card-info h3 {
+  margin: 0;
   font-family: var(--serif);
-  text-overflow: ellipsis;
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+.batch-format {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+.batch-format span {
   white-space: nowrap;
 }
 .batch-progress {
   height: 4px;
-  margin: 12px 0 8px;
+  margin: 14px 0 8px;
   overflow: hidden;
   border-radius: 2px;
   background: var(--desk-deep);
@@ -661,19 +701,52 @@ input[type="radio"] {
   transition: width 0.3s ease;
 }
 .batch-items {
-  display: grid;
-  gap: 4px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 .batch-items li {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 140px 172px;
   gap: 12px;
-  align-items: center;
-  padding-top: 4px;
+  align-items: start;
+  padding: 8px 0;
   border-top: 1px solid var(--rule);
+}
+.batch-items .name,
+.batch-items .status {
+  margin-top: 6px;
+}
+.batch-items .name.muted {
+  color: var(--ink-soft);
+}
+.batch-items .status::before {
+  flex-shrink: 0;
+}
+.batch-row-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.batch-row-download {
+  display: grid;
+  width: 108px;
+  min-width: 0;
+}
+.batch-row-download a.disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+.batch-card-footer {
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid var(--rule);
+}
+.batch-card-footer button {
+  padding-inline: 8px;
+  color: var(--ink-soft);
+  font-size: 13px;
 }
 .status {
   display: inline-flex;
@@ -1073,16 +1146,6 @@ input[type="radio"] {
   border-radius: 8px;
   background: var(--paper);
   box-shadow: var(--sheet-shadow);
-}
-.download-status {
-  display: block;
-  max-width: 280px;
-  margin-top: 4px;
-  color: var(--ink-soft);
-  font-size: 12px;
-}
-.download-status.error {
-  color: var(--danger);
 }
 .download-menu a {
   display: grid;
@@ -1579,10 +1642,6 @@ input[type="radio"] {
   .job-item .row-actions:empty {
     display: none;
   }
-  .batch-card-head {
-    align-items: stretch;
-    flex-direction: column;
-  }
   .workspace {
     flex-direction: column;
   }
@@ -1603,6 +1662,23 @@ input[type="radio"] {
   }
   .topbar {
     padding: 0 12px;
+  }
+}
+
+@media (max-width: 560px) {
+  .batch-card {
+    padding-inline: 12px;
+  }
+  .batch-card-info {
+    flex-basis: 100%;
+  }
+  .batch-items li {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 8px;
+  }
+  .batch-items .name {
+    grid-column: 1 / -1;
+    margin-top: 0;
   }
 }
 

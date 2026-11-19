@@ -300,7 +300,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
           ))}
         </ul>
       )}
-      {items.length > 1 && <p className="hint">几篇同时解析，翻译一篇接一篇进行；完成后在下方“我的任务”里打开。</p>}
+      {items.length > 1 && <p className="hint">几篇同时解析，翻译一篇接一篇进行。进度可在下方“我的批次”查看。</p>}
       {items.length > 1 && undecided.length > 0 && (
         <p className="seen-notice">
           有 {undecided.length} 篇你在这个浏览器里翻译过，请先对每篇选择“仍要翻译”或“移除”。

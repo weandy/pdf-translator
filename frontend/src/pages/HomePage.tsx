@@ -2,11 +2,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 
-import { clearHistory, removeHistory, useHistory } from "@/entities/history/model";
-import { deleteJob, MY_JOBS_QUERY, STAGE_LABELS, useMyJobs } from "@/entities/job/model";
 import { readBatches, rememberBatch, removeBatch, type BatchEntry } from "@/entities/batch/model";
+import { clearHistory, removeHistory, useHistory } from "@/entities/history/model";
+import { deleteJob, MY_JOBS_QUERY, myJobIds, restoreMyJobs, STAGE_LABELS, useMyJobs } from "@/entities/job/model";
 import { DownloadChoice } from "@/features/export/DownloadChoice";
 import { UploadPanel } from "@/features/upload/UploadPanel";
+import { HomeBatch } from "@/pages/HomeBatch";
 import { api } from "@/shared/api/client";
 import { APP_TITLE, notify } from "@/shared/attention/attention";
 import { expiresSoon, formatRemaining } from "@/shared/time/elapsed";
@@ -22,23 +23,35 @@ const STATUS: Record<string, string> = {
 export function HomePage({ openSettings }: { openSettings: () => void }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { data: jobsResult } = useMyJobs();
-  const jobs = jobsResult?.jobs ?? [];
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const history = useHistory();
   const [batches, setBatches] = useState<BatchEntry[]>(readBatches);
-  const jobsWarning = jobsResult?.warning;
-  // 本机历史里服务器上已经没有的翻译（到期删除或手动删除）
-  const past = jobs ? history.filter((h) => !jobs.some((j) => j.id === h.id)) : [];
-  const active = jobs?.filter((j) => j.status === "queued" || j.status === "running").length ?? 0;
+  const batchIds = new Set(batches.flatMap((batch) => batch.jobIds));
+  const { data: jobsResult, isPending } = useMyJobs([...batchIds]);
+  const jobsById = new Map(jobsResult.jobs.map((job) => [job.id, job]));
+  const filenames = new Map(history.map((entry) => [entry.id, entry.filename]));
+  const unavailable = new Set(jobsResult.unavailableIds);
+  const unreadable = new Set(jobsResult.failedIds);
+  const trackedIds = new Set(myJobIds());
+  const jobs = jobsResult.jobs.filter((job) => !batchIds.has(job.id));
+  const past = history.filter(
+    (entry) =>
+      !batchIds.has(entry.id) && !jobsById.has(entry.id) && !unreadable.has(entry.id) && !trackedIds.has(entry.id),
+  );
+  const active = jobsResult.jobs.filter((job) => job.status === "queued" || job.status === "running").length;
+  const hasUnknown = isPending || unreadable.size > 0;
   const wasActive = useRef(0);
   useEffect(() => {
-    // 有任务在进行时标题显示数量；批量任务全部结束、页面在后台时发桌面通知（用户同意过时）
-    if (wasActive.current > 0 && active === 0) notify("翻译全部结束", "在“我的任务”里查看结果");
-    wasActive.current = active;
+    // 查询未确认时保留通知计数，防止网络故障触发完成通知。
+    if (!hasUnknown) {
+      if (wasActive.current > 0 && active === 0) notify("翻译全部结束", "在首页查看翻译结果");
+      wasActive.current = active;
+    } else if (active > 0) {
+      wasActive.current = active;
+    }
     document.title = active > 0 ? `(进行中 ${active}) ${APP_TITLE}` : APP_TITLE;
-  }, [active]);
+  }, [active, hasUnknown]);
 
   const cancel = async (id: string, filename: string) => {
     if (!window.confirm(`取消“${filename}”？已完成的步骤会保留，之后可以重新开始。`)) return;
@@ -60,6 +73,14 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
+  };
+
+  const ungroup = (batch: BatchEntry) => {
+    if (!window.confirm("只移除这个批次分组，不删除其中的任务？")) return;
+    restoreMyJobs(batch.jobIds.filter((id) => !unavailable.has(id)));
+    removeBatch(batch.id);
+    setBatches(readBatches());
+    setNotice(null);
   };
 
   return (
@@ -94,35 +115,66 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
         <UploadPanel
           onCreated={(job) => void navigate(`/jobs/${job.id}`)}
           onBatchCreated={(created) => {
-            rememberBatch(
+            const batch = rememberBatch(
               created.map((job) => job.id),
               created.length > 0 ? `${created[0]?.filename ?? "论文"} 等 ${created.length} 篇` : undefined,
             );
             setBatches(readBatches());
-            setNotice(`已加入 ${created.length} 篇，进度见下方“我的批次”。`);
+            setNotice(`已加入 ${created.length} 篇，进度见下方“${batch ? "我的批次" : "我的任务"}”。`);
             void queryClient.invalidateQueries({ queryKey: MY_JOBS_QUERY });
           }}
           onNeedSettings={openSettings}
         />
       </div>
-      {jobsWarning && jobs.length === 0 && <p className="error">{jobsWarning}</p>}
+      {notice && (
+        <p className="home-feedback check-ok" role="status">
+          {notice}
+        </p>
+      )}
+      {(error || jobsResult.warning) && (
+        <p className="home-feedback error" role="status">
+          {error ?? jobsResult.warning}
+        </p>
+      )}
+      {batches.length > 0 && (
+        <section className="jobs batches" aria-labelledby="batches-title">
+          <div className="jobs-head">
+            <h2 id="batches-title">我的批次</h2>
+          </div>
+          <ul className="batch-list-home">
+            {batches.map((batch) => (
+              <HomeBatch
+                key={batch.id}
+                batch={batch}
+                jobs={jobsById}
+                filenames={filenames}
+                unavailable={unavailable}
+                unreadable={unreadable}
+                onCancelJob={cancel}
+                onDeleteJob={remove}
+                onRemoveBatch={ungroup}
+              />
+            ))}
+          </ul>
+        </section>
+      )}
 
-      {jobs && jobs.length > 0 && (
+      {jobs.length > 0 && (
         <section className="jobs" aria-labelledby="jobs-title">
           <div className="jobs-head">
             <h2 id="jobs-title">我的任务</h2>
             <span className="hint">只显示在这个浏览器里上传的论文</span>
           </div>
-          {(error || jobsWarning) && <p className="error">{error ?? jobsWarning}</p>}
-          {notice && <p className="check-ok">{notice}</p>}
           <ul className="job-list">
             {jobs.map((j) => (
               <li key={j.id} className="job-item">
                 <Link to={`/jobs/${j.id}`} className="name" title={j.filename}>
                   {j.filename}
                 </Link>
-                <span className={`status ${j.status}`} title={j.message || undefined}>
-                  {j.status === "running" ? (STAGE_LABELS[j.stage] ?? STATUS.running) : STATUS[j.status]}
+                <div className="job-state" title={j.message || undefined}>
+                  <span className={`status ${j.status}`}>
+                    {j.status === "running" ? (STAGE_LABELS[j.stage] ?? STATUS.running) : STATUS[j.status]}
+                  </span>
                   {(j.status === "running" || j.status === "queued") && j.message && (
                     <small className="job-message">{j.message}</small>
                   )}
@@ -131,7 +183,7 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
                       服务器保留{formatRemaining(j.expires_at)}
                     </small>
                   )}
-                </span>
+                </div>
                 <span className="facts-cell num">
                   {j.page_count} 页{j.cost_cny !== null && `，¥${j.cost_cny.toFixed(3)}`}
                 </span>
@@ -153,87 +205,11 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
           </ul>
         </section>
       )}
-      {batches.length > 0 && (
-        <section className="jobs batches" aria-labelledby="batches-title">
-          <div className="jobs-head">
-            <h2 id="batches-title">我的批次</h2>
-            <span className="hint">多文件上传会集中显示在这里</span>
-          </div>
-          <ul className="batch-list-home">
-            {batches.map((batch) => {
-              const byId = new Map((jobs ?? []).map((job) => [job.id, job]));
-              const entries = batch.jobIds.map((id) => byId.get(id));
-              const finished = entries.filter(
-                (job) => !job || ["done", "failed", "cancelled"].includes(job.status),
-              ).length;
-              const done = entries.filter((job) => job?.status === "done").length;
-              const percent = batch.jobIds.length ? Math.round((finished / batch.jobIds.length) * 100) : 0;
-              return (
-                <li key={batch.id} className="batch-card">
-                  <div className="batch-card-head">
-                    <div>
-                      <strong>{batch.name}</strong>
-                      <span className="hint">
-                        {done}/{batch.jobIds.length} 篇完成 ·{" "}
-                        {finished === batch.jobIds.length ? "已结束" : `已处理 ${percent}%`}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      className="quiet danger"
-                      onClick={() => {
-                        if (!window.confirm("只移除这个批次分组，不删除其中的任务？")) return;
-                        removeBatch(batch.id);
-                        setBatches(readBatches());
-                      }}
-                    >
-                      移除批次
-                    </button>
-                  </div>
-                  <div
-                    className="batch-progress"
-                    role="progressbar"
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={percent}
-                  >
-                    <span style={{ width: `${percent}%` }} />
-                  </div>
-                  <ul className="batch-items">
-                    {batch.jobIds.map((id) => {
-                      const job = byId.get(id);
-                      return (
-                        <li key={id}>
-                          {job ? (
-                            <Link to={`/jobs/${id}`} className="name" title={job.filename}>
-                              {job.filename}
-                            </Link>
-                          ) : (
-                            <span className="name muted">任务已过期或已删除</span>
-                          )}
-                          <span className={`status ${job?.status ?? ""}`}>
-                            {job
-                              ? job.status === "running"
-                                ? (STAGE_LABELS[job.stage] ?? STATUS.running)
-                                : STATUS[job.status]
-                              : "不可用"}
-                          </span>
-                          {job?.status === "done" && <DownloadChoice jobId={id} />}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      )}
       {past.length > 0 && (
         <section className="jobs history" aria-labelledby="history-title">
           <div className="jobs-head">
             <h2 id="history-title">历史记录</h2>
-            <span className="hint">只存在这个浏览器里；这些翻译在服务器上已删除（到期或手动删除）</span>
+            <span className="hint">只存在这个浏览器里</span>
             <span className="spacer" />
             <button
               type="button"
@@ -249,7 +225,7 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
                 <span className="name" title={h.filename}>
                   {h.filename}
                 </span>
-                <span className="status">已删除</span>
+                <span className="status">{unavailable.has(h.id) ? "已过期或已删除" : "历史记录"}</span>
                 <span className="facts-cell num">
                   {h.pages} 页，{new Date(h.createdAt).toLocaleDateString("zh-CN")}
                 </span>
