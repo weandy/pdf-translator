@@ -11,6 +11,7 @@
 - 版面解析：MinerU 云端 API（默认且界面唯一选项）；PaddleOCR-VL 适配器保留在后端但界面不开放（解析慢）
 - 翻译：任意 OpenAI 兼容接口（默认 DeepSeek）或 Anthropic Messages 接口
 - 仓库：https://github.com/weandy/pdf-translator（`main` 分支，推送即触发 CI）
+- 线上实例：https://pdf.667786.xyz/（部署细节见 §7）
 
 ## 2. 目录
 
@@ -30,8 +31,8 @@ backend/src/pdftr/
 backend/tests/   unit / contract（适配器，不联网）/ e2e（假解析器、假模型走完整接口）/ regression
 frontend/src/    app → pages → features → entities → shared（见 §3）
 docs/            调研、选型、验证实验、设计文档（见 §9）
-deploy/          docker-compose（hostnet 叠加文件用于本机 Docker 网桥不可用的情况）
-spikes/          早期验证实验脚本与 Playwright 浏览器测试环境（不属于产品代码）
+deploy/          docker-compose（hostnet 叠加文件只在宿主机 Docker 网桥不可用时使用）
+spikes/          早期验证实验脚本（不属于产品代码）
 ```
 
 ## 3. 架构规则（CI 会检查）
@@ -79,7 +80,8 @@ npm run lint && npm run typecheck && npm test && npm run build
 - CI（`.github/workflows`）跑的就是上面这些；提交前本地全部通过。
 - 回归样本不入库：`backend/.samples/`（`scripts/fetch_samples.py` 生成，需要 MinerU Token）；扫描件样例在 `backend/.samples/scans/`（NASA NTRS 公有领域扫描件 + 电子版渲染的模拟扫描件）。
 - 导出 PDF 用的字体由 `scripts/fetch_fonts.py` 下载到 `backend/fonts/`（Docker 构建时自动下载）。
-- 浏览器验收：`spikes/.venv` 里装有 Playwright（`spikes/.venv/bin/python`），用它截图、量尺寸，手机视口用 390×844。
+- 前端开发页是 http://localhost:5173（Vite 默认端口）。Windows + Node 22 下 `npm run dev` 只监听 IPv6 `::1`，用 `127.0.0.1:5173` 打不开；`/api` 由 Vite 代理到 `http://127.0.0.1:8000`。
+- 浏览器验收：用本机 `playwright` 命令（Python 全局安装）或 `npx playwright` 截图、量尺寸；桌面 1440×900、手机 390×844。测试只用合成 PDF 或公开论文。
 
 ## 6. 约定
 
@@ -106,29 +108,38 @@ npm run lint && npm run typecheck && npm test && npm run build
 
 ## 7. 部署（项目维护者的服务器）
 
-- 公网实例跑在 Docker 里（`pdf-translator-app-1`、`pdf-translator-web-1`），经 Cloudflare 快速隧道对外，systemd 服务名 `pdftr-tunnel`（cloudflared → `127.0.0.1:18080`）。快速隧道地址重启会变，查看：`journalctl -u pdftr-tunnel | grep trycloudflare`。固定域名尚未配置（等维护者提供 Cloudflare 上的域名）。
-- 部署配置在仓库根目录的 `.env`（不入库，含代理等敏感配置）。
+- 线上实例 <https://pdf.667786.xyz/>。链路：1Panel OpenResty → 宿主机 `127.0.0.1:18765` → web 容器（Caddy）→ `app:8000`（Compose 默认 bridge 网络，不对外暴露）。**不再使用** Cloudflare 快速隧道和 `pdftr-tunnel`。
+- 服务器 `HW-SGP`（`hcss-ecs-6974`，root）经 **Netcatty MCP** 操作，不要用本地 SSH 绕过。部署目录 `/opt/pdf-translator`。
+- 部署配置在仓库根目录的 `.env`（不入库，含代理等敏感配置），权限 600。
 - **部署前必须硬性检查没有进行中的任务**，有就中止，连镜像都先不要构建（构建会占用带宽和 CPU，拖慢正在上传的任务）：
 
 ```bash
-cd /root/pdf-translator
+cd /opt/pdf-translator
 CHECK='import sqlite3,sys;db=sqlite3.connect("/data/app.db");r=db.execute("select id from jobs where status in (\"running\",\"queued\")").fetchall();print("进行中:",r);sys.exit(1 if r else 0)'
-docker exec pdf-translator-app-1 python -c "$CHECK" \
-  && docker build --network host -q -t pdf-translator-app backend \
-  && docker build --network host -q -t pdf-translator-web frontend \
+docker exec pdf-translator-app-1 python -c "$CHECK"   # 必须输出 进行中: [] 且 exit 0
+
+# 备份数据库（数据在命名卷 pdf-translator_pdftr-data 的 /data）
+docker exec pdf-translator-app-1 python -c "import sqlite3;s=sqlite3.connect('/data/app.db');d=sqlite3.connect('/data/backups/pre-<改动>-<版本>-<日期>.db');s.backup(d);d.close();s.close()"
+
+# 保留旧镜像，便于回滚（镜像 tag 约定 before-<改动>-<日期>）
+docker tag pdf-translator-web:latest pdf-translator-web:before-<改动>-<日期>
+
+# 只改了前端时只重建 web；改了后端再重建 app（两者都改时先 app 后 web）
+docker build --network host -q -t pdf-translator-web frontend \
   && docker exec pdf-translator-app-1 python -c "$CHECK" \
-  && docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/docker-compose.hostnet.yml up -d
+  && docker compose --env-file .env -f deploy/docker-compose.yml up -d
 ```
 
-- 只改了前端时只构建 `pdf-translator-web`。部署后在公网验收，测试任务用完删除（`DELETE /api/jobs/{id}`）。
+- `deploy/docker-compose.hostnet.yml` 只在宿主机网桥不可用时叠加（`ip_forward=0` 之类）；当前线上用的是默认 bridge，不要习惯性叠加。
+- 部署后在公网验收 `https://pdf.667786.xyz/api/health`（200、`data_dir_writable: true`），浏览页面确认资源是新版本；测试任务用完删除（`DELETE /api/jobs/{id}`）。
 - 服务停止时会等进行中的任务最多 180 秒（`shutdown_grace_s`），Compose 的 `stop_grace_period` 为 200 秒。
 - MinerU 上海存储从这台机器直连很慢（约 25 KB/s），线上通过 `PDFTR_MINERU_PROXY`（SOCKS5）转发；代理机停用时删掉 `.env` 里这一项再重启。
 
 ## 8. 已知的坑
 
-- **本机内存只有约 4 GB**：内存紧张时 pyright 会跑十几分钟（正常十几秒）、Chromium 会崩溃。跑检查前停掉不用的本地 vite / uvicorn。
-- **停止本地进程**：`pkill -f` / `pgrep -f` 会匹配到命令自身把 shell 杀掉。用 `ps -eo pid,args | awk '/[u]vicorn/ && /1800[1]/ {print $1}' | xargs -r kill`，而且**停止和启动分开两条命令**。
-- **Docker**：构建必须加 `--network host`（本机网桥不可用），运行叠加 `deploy/docker-compose.hostnet.yml`。8080 端口被别的服务占用，本项目用 18080。磁盘空间紧张，构建后 `docker image prune -f`。
+- **两个环境都要控内存**：部署服务器 HW-SGP 内存紧张，字体/镜像构建曾因内存压力失败，构建前先确认没有遗留进程；开发机内存也常被占满，pyright 变慢（正常十几秒）或 Chromium 崩溃时，先停掉不用的本地 vite / uvicorn。
+- **停止本地进程**：`pkill -f` / `pgrep -f` 会匹配到命令自身把 shell 杀掉。用 `ps -eo pid,args | awk '/[u]vicorn/ && /pdftr/ {print $1}' | xargs -r kill`，而且**停止和启动分开两条命令**。
+- **Docker（服务器）**：构建用 `--network host`（旧环境网桥不可用留下的保险做法）；运行用默认 `deploy/docker-compose.yml`，只在网桥确实不可用时才叠加 hostnet。web 只监听宿主机 `127.0.0.1:18765`，由 1Panel OpenResty 反代（18080 的旧隧道已废弃）。磁盘紧张，构建后 `docker image prune -f`，但保留 `before-*` 回滚镜像。
 - **heredoc 写前端代码**：`\u` 转义会被写成真实字符，正则转义请用 Python 脚本写入。
 - **pdf.js**：用 `pdfjs-dist/legacy/build`（默认构建在稍旧的 Chrome 上整页画不出来）；CCITT / JBIG2 / JPEG 2000 图片要从 `wasmUrl` 加载解码器，前端用纯 JS 解码器放在 `/pdfjs/`（`vite.config.ts` 里的插件按原名输出），不给就会把扫描页画成空白。
 - **KaTeX 新版类名**：片段是 `.katex-base`、`.katex-strut`（不是旧版的 `.base`）。行内公式与 `<sub>/<sup>` 设了不计入行高，避免行距不齐。
@@ -143,6 +154,7 @@ docker exec pdf-translator-app-1 python -c "$CHECK" \
 
 ## 9. 文档索引
 
+- `docs/WORKLOG.md`：跨对话交接记录（最近完成、线上版本、下一步）；接手先看最新条目
 - `docs/00-research.md`：调研（沉浸式翻译 / BabelDOC 原理、开源与商业方案、解析服务、术语库）
 - `docs/01-tech-stack.md`：技术选型
 - `docs/02-spikes.md`：验证实验记录（解析、对齐、导出、成本、翻译质量、提示词）
@@ -153,13 +165,15 @@ docker exec pdf-translator-app-1 python -c "$CHECK" \
 - `docs/07-statistics-and-submission-audit-design.md`：统计与提交明细设计（公开7天汇总、跨日浏览器去重、管理员鉴权、标题/IP账本与保留边界；实施进度见文首）
 - `README.md`：面向用户的功能、部署与常见问题
 
-## 10. 当前状态与待办（2026-10-29）
+## 10. 当前状态与待办（2026-11-23）
 
-**已上线（v0.2.0 之后）**：使用指南页（`/guide`）、目录跳转高亮、术语库页面（`/glossary`）、阅读器“术语”面板与批量重翻；“阅读”视图已按用户要求移除（不要加回）。
+**线上最新（`d3491b5`）**：使用指南页（`/guide`）、目录跳转高亮、术语库页面（`/glossary`）、阅读器“术语”面板与批量重翻、任务与批次选择 PDF 下载类型（双语 / 仅译文）；“阅读”视图已按用户要求移除（不要加回）。
+
+**本地 `main` 已提交、待部署（`ce78ffe`）**：首页统一任务卡片（单篇与同次上传的多篇共用模板）、按上传时间倒序、逐篇重试 / 取消 / 删除、逐篇“编辑译文”入口；批次与单篇共用下载格式选择。这组提交只改前端与文档，部署时只需重建 web。
 
 **v0.2.0**：保版式翻译与网页阅读（对照 / 译文 / 原文）、逐段修改与按步撤回、公式编辑校验与预览、用户术语库（导入、AI 识别、确认）、Anthropic 协议与模型列表、批量上传与分阶段排队、取消任务、只翻部分页、扫描件翻译、导出 PDF（中文版 / 双语对照）保留链接并可续传、阅读器分段加载、目录侧栏与页码跳转、键盘操作、解析自动重试、完成提醒、手机适配、24 小时保留与提醒、重复上传提醒（本机）。
 
-**等维护者**：网站名称与 logo（“PDF 保版式翻译”要换，按“品牌名 + 在线可编辑的 PDF 翻译”组织，等定名）；固定域名隧道（需要 Cloudflare 上的域名，并运行 `cloudflared tunnel login` 授权）。
+**等维护者**：网站名称与 logo（“PDF 保版式翻译”要换，按“品牌名 + 在线可编辑的 PDF 翻译”组织，等定名）。固定域名已完成（https://pdf.667786.xyz/）。
 
 **候选待办**（来自整体分析，尚未开工，开工前先写设计文档）：
 - 示例文档：不填 Key 先看效果（需维护者挑一篇允许转载的公开论文）
