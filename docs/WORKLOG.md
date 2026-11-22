@@ -2,7 +2,13 @@
 
 > 这份文件用于跨对话继续开发。每完成一个完整功能，更新“当前状态”“最近完成”和“下一步”，再单独提交 Git。
 >
-> 最后更新：2026-11-19（Asia/Shanghai）
+> 最后更新：2026-11-23（Asia/Shanghai）
+
+### 部署：统一任务卡片与逐篇编辑入口上线（2026-11-23）
+
+- 首页统一任务卡片、逐篇重试与逐篇“编辑译文”入口已部署到 HW-SGP（源码与 web 镜像 `d6e5198`）。
+- 部署前进行中任务为空；数据库备份 `pre-task-cards-d6e5198-20261123.db` 完整性 ok；旧 web 镜像保留为 `before-task-cards-20261123`。
+- 只重建 web（本轮无后端改动，app 保持 `d3491b5`）。公网 `/api/health` 200，首页引用新 `/assets/index-C0eRKL2B.js` 且包含新入口文案，`/guide` 200。
 
 ### 首页逐篇编辑入口（2026-11-19）
 
@@ -74,14 +80,14 @@
 
 - 仓库：`D:\\01\\pdf-translator`
 - 分支：`main`
-- 本地功能代码以 `git log -1 -- docs/WORKLOG.md` 为准，本轮更新统一任务列表和逐篇 PDF 下载。
+- 本地功能代码以 `git log -1 -- docs/WORKLOG.md` 为准，本轮记录统一任务卡片上线与部署。
 - 最新交接文档版本以 `git log -1 -- docs/WORKLOG.md` 为准。
 - GitHub：<https://github.com/weandy/pdf-translator>
 - 线上地址：<https://pdf.667786.xyz/>
 - 线上部署：Docker，宿主机 `127.0.0.1:18765` 反向代理到 web 容器
-- 线上源码版本：`d3491b5`
-- 线上 app 镜像：`d3491b5`
-- 线上 web 镜像：`d3491b5`
+- 线上源码版本：`d6e5198`
+- 线上 app 镜像：`d3491b5`（本轮未重建）
+- 线上 web 镜像：`d6e5198`
 - 数据库：Docker 命名卷中的 SQLite `/data/app.db`
 - 任务文件：`/data/jobs/`
 - 管理入口：`/weandy/login`（实际路径由 `PDFTR_ADMIN_PATH` 控制）
