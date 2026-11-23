@@ -80,10 +80,15 @@ def _page(page: pymupdf.Page) -> CharPage:
 def page_count(pdf: Path | bytes) -> int:
     """打开失败（不是 PDF、已加密等）时抛 ValueError。"""
     try:
-        # 上传已有完整字节，直接校验内存流，避免 Windows 临时文件共享与坏文件句柄问题。
-        with pymupdf.open(stream=pdf, filetype="pdf") if isinstance(pdf, bytes) else pymupdf.open(pdf) as doc:
+        with (
+            pymupdf.open(stream=pdf, filetype="pdf")
+            if isinstance(pdf, bytes)
+            else pymupdf.open(pdf, filetype="pdf") as doc
+        ):
             if doc.needs_pass:
                 raise ValueError("PDF 已加密，请先移除密码")
             return len(doc)
-    except (pymupdf.FileDataError, RuntimeError) as e:
-        raise ValueError("无法打开文件，请确认是有效的 PDF") from e
+    except (pymupdf.FileDataError, RuntimeError):
+        # PyMuPDF 打开坏文件时，异常栈持有原生文件句柄。先退出异常处理，Windows 才能删除临时文件。
+        invalid_pdf = ValueError("无法打开文件，请确认是有效的 PDF")
+    raise invalid_pdf
