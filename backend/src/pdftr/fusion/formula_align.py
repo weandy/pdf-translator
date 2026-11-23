@@ -20,12 +20,16 @@ from pdftr.fusion.text_fix import chars_in, text_of
 
 _FORMULA = re.compile(r"\$\$?([^$]+?)\$\$?")
 _MAX_HEIGHT = 3.2  # 行内公式的高度最多约 3 个字号（跨一次行，或带上下标、分式）
+_NORMAL_GLYPH_HEIGHT = 2.0  # Elsevier 正文和下标的字框约为字号的 1.64 倍。
 
 
 _CONNECTIVE = r"(?:If|When|Where|Then|And|Or|For|With|Let)"
-_LEADING_TEXT = re.compile(rf"^(?:\\(?:mathrm|text)\s*\{{({_CONNECTIVE})\}}|({_CONNECTIVE})(?=\s|$))\s*")
-_SPLIT_WORD = re.compile(r"^(?:\\(?:mathrm|text)\s*\{\{?([A-Za-z])\}?\}|([A-Za-z]))\s*(?:\{:\}|:|\\colon)\s*")
-_TRAILING_MARK = re.compile(r"(?<![\\.,;:])(?:\\colon|[,;:.])$")
+_LEADING_TEXT = re.compile(rf"^(?:\\(?:mathrm|text)\s*\{{([A-Za-z\s]+)\}}|({_CONNECTIVE})(?=\s|$))\s*")
+_SPLIT_WORD = re.compile(
+    r"^(?:\\(?:mathrm|text)\s*\{\s*(\{\s*[A-Za-z]\s*\}|[A-Za-z])\s*\}|([A-Za-z]))"
+    r"\s*(?:\{\s*:\s*\}|:|\\colon(?![A-Za-z]))\s*"
+)
+_TRAILING_MARK = re.compile(r"(?<![\\.,;:])(?:\\colon|(?:\\(?:mathrm|text)\s*)?\{\s*:\s*\}|([,;:.]))$")
 _TRAILING_FRAGMENT = re.compile(r"\b[A-Za-z]*[a-z][A-Z][A-Za-z]*$")
 
 
@@ -36,22 +40,24 @@ def _content_parts(content: str) -> list[str]:
     for i in range(1, len(raw), 2):
         latex, after = raw[i].strip(), raw[i + 1]
         if lead := _LEADING_TEXT.match(latex):
-            word = lead.group(1) or lead.group(2)
-            parts[-1] = " ".join(filter(None, (parts[-1].rstrip(), word))) + " "
-            latex = latex[lead.end() :]
+            word = "".join((lead.group(1) or lead.group(2)).split())
+            if re.fullmatch(_CONNECTIVE, word):
+                parts[-1] = " ".join(filter(None, (parts[-1].rstrip(), word))) + " "
+                latex = latex[lead.end() :]
         before = parts[-1].rstrip()
         if _TRAILING_FRAGMENT.search(before) and (lead := _SPLIT_WORD.match(latex)):
-            letter = lead.group(1) or lead.group(2)
+            letter = (lead.group(1) or lead.group(2)).strip("{}").strip()
             if letter.isupper() and lead.end() < len(latex):
                 parts[-1] = before + letter + ": "
                 latex = latex[lead.end() :]
-        if (mark := _TRAILING_MARK.search(latex)) and mark.start() > 0:
-            symbol = ":" if mark.group() == r"\colon" else mark.group()
-            latex = latex[: mark.start()].rstrip()
-            after = symbol + after
-            if latex.isdecimal():
-                parts[-1] += latex
-                latex = ""
+        if mark := _TRAILING_MARK.search(latex):
+            body = latex[: mark.start()].rstrip()
+            if body and not body.endswith(("_", "^", "{", "\\")):
+                after = (mark.group(1) or ":") + after
+                latex = body
+                if latex.isdecimal():
+                    parts[-1] += latex
+                    latex = ""
         if latex:
             parts.extend((latex, after))
         else:
@@ -210,7 +216,8 @@ def visual_lines(chars: Sequence[Char]) -> list[list[Char]]:
 def _plausible(span: list[int], chars: Sequence[Char], latex: str, body: float) -> bool:
     if not span:
         return False
-    normal = [chars[k] for k in span if chars[k].bbox.height <= 1.6 * chars[k].size] or [chars[k] for k in span]
+    normal = [chars[k] for k in span if chars[k].bbox.height <= _NORMAL_GLYPH_HEIGHT * chars[k].size]
+    normal = normal or [chars[k] for k in span]
     height = max(c.bbox.y1 for c in normal) - min(c.bbox.y0 for c in normal)  # 根号等超高字框不计入
     # LaTeX 里的命令名（\mathbb、\frac）会多算字母，按 3 倍再加余量放宽；超出说明把正文也圈进来了
     letters = sum(1 for c in re.sub(r"\\[A-Za-z]+", "", latex) if c.isalnum())
@@ -230,7 +237,7 @@ def _box(chars: Sequence[Char]) -> Rect:
 def _formula_box(part: Sequence[Char], centers: Sequence[float], first: int, last: int) -> Rect:
     """左右覆盖全部字形，上下按字框和相邻视觉行的中线共同约束。"""
     box = _box(part)
-    normal = _box([c for c in part if c.bbox.height <= 1.6 * c.size] or part)
+    normal = _box([c for c in part if c.bbox.height <= _NORMAL_GLYPH_HEIGHT * c.size] or part)
     top, bottom = normal.y0, normal.y1
     if first:
         top = max(top, (centers[first - 1] + centers[first]) / 2)
@@ -252,7 +259,9 @@ def clean_formula_lines(block: LayoutBlock, chars: Sequence[Char]) -> LayoutBloc
     """MinerU 已给行级公式时，只重新定位确实吞字的行，其余沿用原坐标。"""
     lines: list[LayoutLine] = []
     for line in block.lines:
-        if not any(span.kind == "inline_formula" for span in line.spans):
+        if not any(span.kind == "inline_formula" for span in line.spans) or any(
+            span.kind == "text" and "$" in span.content for span in line.spans
+        ):
             lines.append(line)
             continue
         content = " ".join(
@@ -261,7 +270,7 @@ def clean_formula_lines(block: LayoutBlock, chars: Sequence[Char]) -> LayoutBloc
         if _content_parts(content) == _FORMULA.split(content):
             lines.append(line)
             continue
-        line_chars = chars_in(chars, line.bbox, tol=0)
+        line_chars = chars_in(chars, line.bbox, tol=1.0)
         refined, total, found = refine_block(
             block.model_copy(update={"bbox": line.bbox, "content": content}), line_chars
         )

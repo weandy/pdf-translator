@@ -23,12 +23,16 @@ _PLACEHOLDER = re.compile(r"<m\d+/>")
 _FRONT_HEADINGS = {"highlights", "articleinfo", "abstract", "keywords", "introduction"}
 _CAPTION_PREFIX = re.compile(r"^(?:fig(?:ure)?|table|algorithm|scheme)\b", re.I)
 _SPACED_TITLE = re.compile(r"[A-Za-z](?:[ \t]+[A-Za-z]){3,}")
-_NUMBER_MARK = re.compile(r"(?:\^\s*\{\s*(\d+\s*[,;:.])\s*\}|(\d+\s*[,;:.]))")
+_NUMBER_MARK = re.compile(r"(?:\^\{(\d+[,;:.])\}|(\d+[,;:.]))")
 _CROSS_REFERENCE = re.compile(
-    r"(Eq\.|Fig\.|Sec\.|Section|Figure|Table|Algorithm|Scheme)\s*(\(\d+[a-z]?\)|\d+[a-z]?)\s*([,;:.]?)", re.I
+    r"(Eq\.|Fig\.|Sec\.|Section|Figure|Table|Algorithm|Scheme)(\(\d+[a-z]?\)|\d+[a-z]?)([,;:.]?)", re.I
 )
-_TEXT_MACRO = re.compile(r"\\(?:operatorname|mathrm|text|textrm)\s*\{([^{}]+)\}")
-_UNIT = re.compile(r"\\(?:mathrm|mathbf)\s*\{(s|ms|ns|us|min|h|Hz|kHz|MHz|GHz|m|cm|mm|km|kg|g|mg|K|Pa|kPa)\}([,;:.]?)")
+_TEXT_MACRO = re.compile(r"\\(?:operatorname|mathrm|text|textrm)\{([^{}]+)\}")
+_REFERENCE_DELIMITERS = re.compile(r"\\left(?=\()|\\right(?=\))")
+_UNIT = re.compile(
+    r"(?P<wrapped>\{)?\\(?:mathrm|mathbf)\{(?P<symbol>s|ms|ns|us|min|h|Hz|kHz|MHz|GHz|m|cm|mm|km|kg|g|mg|K|Pa|kPa)"
+    r"\}(?(wrapped)\})(?P<mark>[,;:.]?)"
+)
 
 
 def _merge_bold(text: str) -> str:
@@ -104,16 +108,17 @@ def _span_source(span: Span, *, inline_bold: bool, inline_italic: bool) -> str:
 
 def textual_formula(latex: str, before: str = "") -> str | None:
     """回收有明确文本语法的误标，正体或粗体单位还要求前面有数值。"""
-    latex = latex.strip()
-    plain = re.sub(r"\\(mathrm|text|textrm)|[\s{}^]", "", latex)
+    compact = "".join(latex.split())
+    plain = re.sub(r"\\(mathrm|text|textrm)|[{}^]", "", compact)
     if _ORDINAL.fullmatch(plain):
         return plain
-    if number := _NUMBER_MARK.fullmatch(latex):
-        return re.sub(r"\s+", "", number.group(1) or number.group(2))
-    if ref := _CROSS_REFERENCE.fullmatch(_TEXT_MACRO.sub(r"\1", latex)):
+    if number := _NUMBER_MARK.fullmatch(compact):
+        return number.group(1) or number.group(2)
+    reference = _REFERENCE_DELIMITERS.sub("", _TEXT_MACRO.sub(r"\1", compact))
+    if ref := _CROSS_REFERENCE.fullmatch(reference):
         return f"{ref.group(1)} {ref.group(2)}{ref.group(3)}"
-    if (unit := _UNIT.fullmatch(latex)) and re.search(r"\d\s*$", before):
-        return unit.group(1) + unit.group(2)
+    if (unit := _UNIT.fullmatch(compact)) and re.search(r"\d\s*$", before):
+        return unit["symbol"] + unit["mark"]
     return None
 
 
@@ -195,10 +200,10 @@ def front_matter_ids(doc: Document) -> set[str]:
     title = titles[-1] if titles else next((b for b in blocks if b.type is BlockType.TITLE), None)
     if title is None:
         return set()
-    heading = next(
+    heading = min(
         (b for b in blocks if b.order > title.order and b.type is BlockType.TITLE
          and re.sub(r"[^a-z]", "", block_source(b, {}).lower()) in _FRONT_HEADINGS),
-        None,
+        key=lambda b: b.order, default=None,
     )  # fmt: skip
     if heading is None:
         return set()

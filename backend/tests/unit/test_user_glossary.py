@@ -68,7 +68,7 @@ def test_gb18030_file():
 
 def test_user_terms_win_over_library_and_extracted():
     library = TermMatcher({"attention mechanism": "注意机制", "feature map": "特征图"})
-    found = Extraction(terms={"attention mechanism": "注意机制", "loss": "损失", "LOSS": "耗损"})
+    found = Extraction(terms={"attention mechanism": "注意机制", "loss": "损失", "LOSS": "耗损"}, use_library=True)
     selection = TermSelection(found, {"Attention Mechanism": "注意力机制", "GA": "遗传算法"}, lambda: library)
     source = "The attention mechanism and GA use a feature map."
     assert selection.match_user(source) == {"Attention Mechanism": "注意力机制", "GA": "遗传算法"}
@@ -82,7 +82,7 @@ def test_conflicting_library_subphrases_are_suppressed_by_paper_and_user():
         "Operator": "运算符", "search operator": "搜索运算符", "neural network": "神经网络",
         "graph neural": "图网络", "saddle point": "鞍点",
     })  # fmt: skip
-    found = Extraction(terms={"local search operator": "局部搜索算子"})
+    found = Extraction(terms={"local search operator": "局部搜索算子"}, use_library=True)
     selection = TermSelection(found, {"graph neural network": "图神经网络"}, lambda: library)
     assert selection.match_paper(source) == {"local search operator": "局部搜索算子"}
     assert selection.match_library(source) == {"neural network": "神经网络", "saddle point": "鞍点"}
@@ -90,6 +90,16 @@ def test_conflicting_library_subphrases_are_suppressed_by_paper_and_user():
     def forbidden() -> TermMatcher:
         raise AssertionError("停用公共词库时无需加载")
 
-    selection = TermSelection(Extraction(use_library=False), {"operator": "算子"}, forbidden)
+    selection = TermSelection(Extraction(), {"operator": "算子"}, forbidden)
     assert selection.match_user(source) == {"operator": "算子"}
     assert selection.match_library(source) == {}
+
+
+def test_library_deduplication_uses_normalized_paper_and_user_terms():
+    source = "Low-level heuristics use feature maps and a saddle point."
+    found = Extraction(terms={"low-level heuristics": "底层启发式"}, use_library=True)
+    library = TermMatcher({"low-level heuristic": "底层启发式", "feature map": "特征图", "saddle point": "鞍点"})
+    selection = TermSelection(found, {"feature maps": "特征图"}, lambda: library)
+    assert selection.match_paper(source) == {"low-level heuristics": "底层启发式"}
+    assert selection.match_user(source) == {"feature maps": "特征图"}
+    assert selection.match_library(source) == {"saddle point": "鞍点"}

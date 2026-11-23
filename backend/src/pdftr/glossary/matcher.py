@@ -32,13 +32,15 @@ def _acronym(term: str) -> bool:
 
 
 class TermMatcher:
-    def __init__(self, terms: Mapping[str, str], min_length: int = 3) -> None:
+    def __init__(self, terms: Mapping[str, str], min_length: int = 4) -> None:
         # 太短的词条（如 “AI”“ML”）容易误命中，交给模型自己处理
         self._table: dict[str, tuple[str, str, bool]] = {}
         for term, target in terms.items():
             words = _WORD.findall(term)
-            if words and len(words) <= MAX_WORDS and len(term) >= min_length:
-                self._table.setdefault(_key(words), (term, target, _acronym(term)))
+            acronym = _acronym(term)
+            minimum = min(min_length, 3) if acronym else min_length
+            if words and len(words) <= MAX_WORDS and len(term) >= minimum:
+                self._table.setdefault(_key(words), (term, target, acronym))
 
     def __len__(self) -> int:
         return len(self._table)
@@ -84,7 +86,8 @@ class TermSelection:
         self._user = TermMatcher(user_terms, min_length=2)
         self._paper = TermMatcher(self.paper, min_length=2)
         self._library = load_library() if found.use_library else None
-        self._higher_keys = paper_keys | user_keys.keys()
+        normalized = {_key(_WORD.findall(term)) for term in (*self.paper, *user_terms)}
+        self._higher_keys = paper_keys | user_keys.keys() | normalized
         self._phrase_targets: dict[str, set[str]] = defaultdict(set)
         if self._library:
             for term, target in (self.paper | dict(user_terms)).items():
@@ -101,7 +104,7 @@ class TermSelection:
 
     def match_library(self, text: str) -> dict[str, str]:
         def allowed(key: str, term: str, target: str) -> bool:
-            return term.casefold() not in self._higher_keys and all(
+            return self._higher_keys.isdisjoint((term.casefold(), key)) and all(
                 target in higher for higher in self._phrase_targets.get(key, ())
             )
 

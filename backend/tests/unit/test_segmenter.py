@@ -1,6 +1,8 @@
+import pytest
+
 from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import Block, BlockStyle, BlockType, Document, InlineFormula, Page, Span
-from pdftr.translation.segmenter import _join, segment
+from pdftr.translation.segmenter import _join, front_matter_ids, segment, textual_formula
 
 BOX = Rect.of([0, 0, 100, 10])
 STYLE = BlockStyle(font_size=10)
@@ -83,8 +85,6 @@ def test_references_and_page_filter():
 
 
 def test_ordinal_formulas_become_text():
-    from pdftr.translation.segmenter import textual_formula
-
     assert textual_formula(r"1 ^ { \mathrm { s t } }") == "1st"
     assert textual_formula(r"2^{nd}") == "2nd"
     assert textual_formula("g") is None
@@ -122,6 +122,19 @@ def test_front_matter_between_title_and_abstract_is_kept_original():
     assert [s.block_ids for s in segment(doc)] == [["p0-b0"], ["p0-b2"], ["p0-b3"]]
 
 
+def test_front_matter_uses_structural_heading_with_lowest_order():
+    blocks = [
+        _block("p0-b4", 0, BlockType.TITLE, [_text("Abstract")]),
+        _block("p0-b3", 0, BlockType.TEXT, [_text("First highlight.")]),
+        _block("p0-b0", 0, BlockType.TITLE, [_text("A Synthetic Study")]),
+        _block("p0-b1", 0, BlockType.TEXT, [_text("Jane Example, Local Institute")]),
+        _block("p0-b2", 0, BlockType.TITLE, [_text("H I G H L I G H T S")]),
+    ]
+    doc = Document(job_id="synthetic", pages=[Page(index=0, width=600, height=800, blocks=blocks)])
+    assert front_matter_ids(doc) == {"p0-b1"}
+    assert any(seg.source == "First highlight." for seg in segment(doc))
+
+
 def test_nontranslatable_block_breaks_continuation_chain():
     doc = _doc()
     first, tail = doc.pages[1].blocks
@@ -154,8 +167,6 @@ def test_italic_runs_merge_across_lines_and_hyphenation():
 
 
 def test_recover_numeric_references_and_units_without_touching_math_variables():
-    from pdftr.translation.segmenter import textual_formula
-
     assert textual_formula(r"^{6,}") == "6,"
     assert textual_formula(r"^{3,}") == "3,"
     assert textual_formula(r"\operatorname{Eq.}(24)") == "Eq. (24)"
@@ -176,3 +187,17 @@ def test_recover_numeric_references_and_units_without_touching_math_variables():
     (seg,) = segment(doc)
     assert seg.source == "See Fig. 6, Section 3, and Eq. (24) for 1800 s, with <m1/> and <m2/>"
     assert seg.formulas == {"m1": "n,", "m2": "s_t"}
+
+
+@pytest.mark.parametrize(
+    ("latex", "before", "expected"),
+    [
+        (r"\operatorname { E q . } \left( 2 4 \right)", "defined as ", "Eq. (24)"),
+        (r"{ \mathbf { s } } ,", "set to 1800 ", "s,"),
+        (r"^ { 1 2 , }", "According to Fig. ", "12,"),
+        (r"{ \mathbf { s } } ,", "the symbol ", None),
+        *[(math, "1800 ", None) for math in ("n ,", "s ,", "t ,", r"\pi ,", "s _ { t }", "2 ^ { 3 , }")],
+    ],
+)
+def test_textual_formula_recovers_spaced_mineru_text_only(latex, before, expected):
+    assert textual_formula(latex, before) == expected

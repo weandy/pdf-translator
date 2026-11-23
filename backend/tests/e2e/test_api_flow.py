@@ -25,6 +25,7 @@ from pdftr.glossary import sources
 from pdftr.glossary.matcher import TermMatcher
 from pdftr.parsing.mineru_normalize import normalize
 from pdftr.pipeline import usecases
+from pdftr.pipeline.runner import load_context
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 TEXTS = [
@@ -634,16 +635,17 @@ def test_selected_content_pages_missing_layout_are_reported(client: TestClient, 
     assert [page["missing_layout"] for page in doc["pages"]] == [False, True, True, False, False]
 
 
-@pytest.mark.parametrize("use_library", [True, False])
-def test_glossary_selection_matches_runner_retranslation_panel_and_cli(tmp_path, monkeypatch, use_library):
+@pytest.mark.parametrize("model_state", ["启用", "停用", None], ids=["enabled", "disabled", "missing"])
+def test_glossary_selection_matches_runner_retranslation_panel_and_cli(tmp_path, monkeypatch, model_state):
+    use_library = model_state == "启用"
     library = {"paragraph": "篇章", "next column": "下一栏"}
     seen: list[tuple[str, str]] = []
 
     class TermChat(FakeChat):
         async def complete(self, system, user, opts):
             if "抽取需要全文统一译法的专业术语" in user:
-                state = "启用" if use_library else "停用"
-                return ChatResult(text=f"领域：运筹调度\nAI公共词库：{state}\nfunction=函数\nnormal paragraph=常规段落")
+                gate = f"AI公共词库：{model_state}\n" if model_state is not None else ""
+                return ChatResult(text=f"领域：自然语言处理\n{gate}function=函数\nnormal paragraph=常规段落")
             seen.append((system, user))
             return await super().complete(system, user, opts)
 
@@ -688,10 +690,19 @@ def test_glossary_selection_matches_runner_retranslation_panel_and_cli(tmp_path,
         check_prompts("函数对象")
         if use_library:
             artifact.write_text(
-                json.dumps({"domain": "工业工程与强化学习调度", "terms": {}}, ensure_ascii=False), encoding="utf-8"
+                json.dumps({"domain": "自然语言处理", "terms": {"normal paragraph": "常规段落"}}, ensure_ascii=False),
+                encoding="utf-8",
             )
             legacy = client.get(f"/api/jobs/{job_id}/terms").json()
-            assert {row["source"].casefold() for row in legacy} == {"function", "next page"}
+            assert {row["source"].casefold() for row in legacy} == {"function", "next page", "normal paragraph"}
+            context, selection = load_context(container.pipeline.deps, job_id, {"next page": "续页"})
+            assert context.title == "A Synthetic Title" and context.domain == "自然语言处理"
+            assert selection.match_paper("normal paragraph") == {"normal paragraph": "常规段落"}
+            artifact.rename(tmp_path / "legacy-glossary.json")
+            missing = client.get(f"/api/jobs/{job_id}/terms").json()
+            assert {row["source"].casefold() for row in missing} == {"function", "next page"}
+            context, selection = load_context(container.pipeline.deps, job_id, {"next page": "续页"})
+            assert context.title == "A Synthetic Title" and selection.library_size == 0
 
     pdf = tmp_path / "paper.pdf"
     pdf.write_bytes(make_pdf())

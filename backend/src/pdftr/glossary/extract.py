@@ -5,7 +5,7 @@
 
 import re
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from pdftr.domain.llm import ChatModel, ChatOptions, ChatUsage
 
@@ -29,46 +29,16 @@ PROMPT = """阅读下面的论文信息，按顺序输出：
 章节标题（仅供判断领域）：{headings}"""
 
 
-_APPLICATION = re.compile(
-    r"工业工程|运筹|调度|物理|生物|医学|医疗|临床|化学|材料|金融|经济|社科|社会科学|土木|农业|能源|"
-    r"industrial engineering|operations research|scheduling|physics|biolog|medicin|medical|clinical|chemistry|"
-    r"materials science|finance|economics|social science|civil engineering|agricultur",
-    re.I,
-)
-_AI = re.compile(
-    r"人工智能|机器学习|深度学习|自然语言处理|计算机视觉|强化学习|计算机科学|"
-    r"artificial intelligence|machine learning|deep learning|natural language processing|computer vision|"
-    r"reinforcement learning|computer science|\b(?:AI|ML|DL|NLP|CV|RL|CS)\b",
-    re.I,
-)
-_CORE = re.compile(r"算法|理论|架构|algorithm|theor|architecture", re.I)
-_APPLICATION_CLAUSE = re.compile(r"用于|应用于|应用在|面向|\b(?:applied to|applications? (?:to|in)|for)\b", re.I)
-
-
-def _library_default(domain: str) -> bool:
-    if not _APPLICATION.search(domain):
-        return True  # 历史结果领域不明时沿用原来的词库行为。
-    topic = _APPLICATION_CLAUSE.split(domain, maxsplit=1)[0]
-    return bool(_AI.search(topic) and _CORE.search(topic) and not _APPLICATION.search(topic))
-
-
 class Extraction(BaseModel):
     domain: str = ""
     terms: dict[str, str] = Field(default_factory=dict)
-    use_library: bool = True
+    use_library: bool = False
     usage: ChatUsage = Field(default_factory=ChatUsage)
-
-    @model_validator(mode="before")
-    @classmethod
-    def infer_library(cls, data: object) -> object:
-        if isinstance(data, dict) and "use_library" not in data:
-            return {**data, "use_library": _library_default(str(data.get("domain", "")))}
-        return data
 
 
 def parse(text: str) -> Extraction:
     domain, terms = "", {}
-    use_library: bool | None = None
+    use_library = False
     for raw in text.splitlines():
         line = raw.strip().lstrip("-*• ").strip()
         if m := re.match(r"^领域\s*[:：]\s*(.+)$", line):
@@ -79,9 +49,7 @@ def parse(text: str) -> Extraction:
             k, v = (p.strip() for p in line.split("=", 1))
             if k and v and len(k) <= 80:
                 terms[k] = v
-    return Extraction(
-        domain=domain, terms=terms, use_library=_library_default(domain) if use_library is None else use_library
-    )
+    return Extraction(domain=domain, terms=terms, use_library=use_library)
 
 
 async def extract_terms(chat: ChatModel, *, title: str, abstract: str, intro: str, headings: list[str]) -> Extraction:

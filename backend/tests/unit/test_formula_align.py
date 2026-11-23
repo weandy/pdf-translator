@@ -1,10 +1,12 @@
 """块级解析结果（只有块内容、行内公式写成 $LaTeX$）的公式定位。"""
 
+import pytest
+
 from pdftr.domain.chars import Char
 from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import BlockType
-from pdftr.domain.layout import LayoutBlock
-from pdftr.fusion.formula_align import locate_formulas, refine_block
+from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutSpan
+from pdftr.fusion.formula_align import _content_parts, clean_formula_lines, locate_formulas, refine_block
 
 
 def _chars(lines: list[str], size: float = 10.0) -> list[Char]:
@@ -110,10 +112,10 @@ def test_block_formula_cleanup_with_and_without_pdf_characters():
 
 
 def test_formula_cleanup_preserves_math_dots_and_variables():
-    content = r"Start $x_{.}$, $x^{.}$, $3.14$, $a\cdots$, $a\ldots$, $x\colon y$, $n,$ and $If x$."
+    content = r"Start $x_{.}$, $x^{.}$, $3.14$, $a\cdots$, $a\ldots$, $x\colon y$, $x _ { : }$, $n,$ and $If x$."
     block = LayoutBlock(type=BlockType.TEXT, order=0, bbox=Rect.of([0, 0, 250, 20]), content=content)
     refined, total, _ = refine_block(block, [])
-    assert total == 8
+    assert total == 9
     assert [s.content for s in refined.lines[0].spans if s.kind == "inline_formula"] == [
         "x_{.}",
         "x^{.}",
@@ -121,6 +123,7 @@ def test_formula_cleanup_preserves_math_dots_and_variables():
         r"a\cdots",
         r"a\ldots",
         r"x\colon y",
+        "x _ { : }",
         "n",
         "x",
     ]
@@ -141,3 +144,71 @@ def test_formula_box_is_clamped_to_both_adjacent_visual_rows():
     (formula,) = [s for line in refined.lines for s in line.spans if s.kind == "inline_formula"]
     assert found == 1
     assert (formula.bbox.y0, formula.bbox.y1) == (11.5, 20.5)
+
+
+@pytest.mark.parametrize(
+    ("content", "parts"),
+    [
+        (
+            r"Value Network v: ReL $\mathrm { { U } } { : } 5 0 0 \times 3 0 0 \times 1 0 0 ,$ number",
+            ["Value Network v: ReLU: ", r"5 0 0 \times 3 0 0 \times 1 0 0", ", number"],
+        ),
+        (r"$\mathrm { I f } r _ { t } ( \theta )$ deviates", ["If ", r"r _ { t } ( \theta )", " deviates"]),
+        *[
+            (rf"$\mathrm {{ D }} _ {{ 1 }} {colon}$ A new solution", ["", r"\mathrm { D } _ { 1 }", ": A new solution"])
+            for colon in (r"\mathrm { : }", r"\text { : }", "{ : }", r"\colon")
+        ],
+    ],
+)
+def test_content_parts_clean_spaced_mineru_formula_boundaries(content, parts):
+    assert _content_parts(content) == parts
+
+
+def test_formula_box_keeps_elsevier_glyphs_until_adjacent_row_midpoints():
+    chars = _chars(["Previous line", "Let st+1 be the result", "Next line"], size=8.0)
+    for i, char in enumerate(chars):
+        center = 10 + char.line * 10.5
+        height, size = 13.1, 8.0
+        if char.line == 1 and 35 <= char.bbox.x0 <= 45:  # t、+、1
+            center += 2
+            height = 5.0 if char.c == "+" else 9.1
+            size = 5.6
+        chars[i] = char.model_copy(update={
+            "bbox": Rect.of([char.bbox.x0, center - height / 2, char.bbox.x1, center + height / 2]), "size": size,
+        })  # fmt: skip
+    block = LayoutBlock(
+        type=BlockType.TEXT, order=0, bbox=Rect.of([0, 0, 250, 40]),
+        content="Previous line Let $s_{t+1}$ be the result Next line",
+    )  # fmt: skip
+    refined, total, found = refine_block(block, chars)
+    (formula,) = [s for line in refined.lines for s in line.spans if s.kind == "inline_formula"]
+    assert (total, found) == (1, 1)
+    assert (formula.bbox.y0, formula.bbox.y1) == pytest.approx((15.25, 25.75))
+    assert formula.bbox.height == pytest.approx(10.5)
+
+
+def test_clean_formula_lines_preserves_literal_dollar_in_text_span():
+    box = Rect.of([0, 0, 200, 10])
+    spans = [
+        LayoutSpan(kind="text", content="It costs $50 when", bbox=box),
+        LayoutSpan(kind="inline_formula", content="x,", bbox=box),
+        LayoutSpan(kind="inline_formula", content=r"\mathrm { I f } y", bbox=box),
+        LayoutSpan(kind="text", content="is positive.", bbox=box),
+    ]
+    block = LayoutBlock(type=BlockType.TEXT, order=0, bbox=box, lines=[LayoutLine(bbox=box, spans=spans)])
+    assert clean_formula_lines(block, []).lines == block.lines
+
+
+def test_clean_formula_lines_locates_characters_just_outside_mineru_line_box():
+    # 字符中心比 MinerU 行框顶边高 0.5pt，仍应走原生字符定位。
+    box = Rect.of([0, 5.5, 200, 10])
+    spans = [
+        LayoutSpan(kind="inline_formula", content=r"\mathrm { I f } x", bbox=box),
+        LayoutSpan(kind="text", content="changes", bbox=box),
+    ]
+    block = LayoutBlock(type=BlockType.TEXT, order=0, bbox=box, lines=[LayoutLine(bbox=box, spans=spans)])
+    (line,) = clean_formula_lines(block, _chars(["If x changes"])).lines
+    assert [(span.kind, span.content) for span in line.spans] == [
+        ("text", "If"), ("inline_formula", "x"), ("text", "changes"),
+    ]  # fmt: skip
+    assert line.spans[1].located

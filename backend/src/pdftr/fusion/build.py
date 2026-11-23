@@ -39,8 +39,10 @@ _LABEL_WORD = re.compile(r"[A-Za-z]{3,}")  # 至少有一个 3 个字母以上�
 _CHAIN_BARRIERS = {BlockType.TITLE, BlockType.FOOTNOTE, BlockType.REFERENCE}
 _SENTENCE_END = re.compile(r"""[.?!:;。？！：；](?:\s*['"’”»）)\]}])*$""")
 _CONTINUATION_START = re.compile(r"^[a-z,;:)\]，、；：）]")
-_UNFINISHED = re.compile(
-    r"\b(?:a|an|the|to|of|for|in|on|at|by|with|without|from|under|and|or|as|that|which|nonidentical)$", re.I
+_UNFINISHED = re.compile(r"\b(?:a|an|the|to|of|for|in|on|at|by|with|without|from|under|and|or|as|that|which)$", re.I)
+_ACRONYM_TAIL = re.compile(
+    r"(?!(?:FIG(?:URE)?|TABLE|ALGORITHM|SCHEME|EQ|SEC(?:TION)?|CHAPTER|APPENDIX)\b)"
+    r"[A-Z]{2,}(?:\s+[a-z]+(?:[-'][a-z]+)*){1,3}\."
 )
 _TOP_FRACTION = 0.35
 _MAX_SIZE_GAP = 1.5
@@ -170,7 +172,6 @@ def _supplement_continuations(pages: list[Page]) -> int:
     def eligible(prev: Block, nxt: Block) -> bool:
         return (
             prev.id not in used
-            and groups[prev.id] == groups[nxt.id]
             and bool(text[prev.id])
             and not _SENTENCE_END.search(text[prev.id])
             and abs(prev.style.font_size - nxt.style.font_size) <= _MAX_SIZE_GAP
@@ -197,8 +198,9 @@ def _supplement_continuations(pages: list[Page]) -> int:
         right = [b for b in body if _column(b, page) == 1]
         first_column = [b for b in body if _column(b, page) != 1]
         first = min(first_column, key=lambda b: b.bbox.y0, default=None)
+        first_peers = left if first is not None and _column(first, page) == 0 else first_column
         right_top = min(right, key=lambda b: b.bbox.y0, default=None) if left else None
-        for nxt, peers in ((first, first_column), (right_top, right)):
+        for nxt, peers in ((first, first_peers), (right_top, right)):
             if nxt is None or nxt.continues_from or nxt.bbox.y0 > _TOP_FRACTION * page.height or _indented(nxt, peers):
                 continue
             if nxt is first:
@@ -212,12 +214,24 @@ def _supplement_continuations(pages: list[Page]) -> int:
             unfinished = (
                 _UNFINISHED.search(tail) or tail.count("(") > tail.count(")") or tail.count("[") > tail.count("]")
             )
-            if prev is not None and eligible(prev, nxt) and (
-                _CONTINUATION_START.match(head) or (unfinished and len(head.split()) <= 6)
-            ) and link(prev, nxt):  # fmt: skip
+            continuation = (
+                _CONTINUATION_START.match(head)
+                or (unfinished and len(head.split()) <= 6)
+                or _ACRONYM_TAIL.fullmatch(head)
+            )
+            if (
+                prev is not None and groups[prev.id] == groups[nxt.id]
+                and eligible(prev, nxt) and continuation and link(prev, nxt)
+            ):  # fmt: skip
                 count += 1
             if nxt is right_top and nxt.continues_from is None and re.match(r"[a-z]", head):
-                candidates = [b for b in left if b.order > nxt.order and eligible(b, nxt)]
+                # 解析顺序已倒置，按左栏内实际位于候选后方的结构块截断。
+                barriers = [b for b in page.blocks if b.type in _CHAIN_BARRIERS and _column(b, page) == 0]
+                candidates = [
+                    b
+                    for b in left
+                    if b.order > nxt.order and eligible(b, nxt) and not any(h.bbox.y0 > b.bbox.y0 for h in barriers)
+                ]
                 if len(candidates) == 1 and link(candidates[0], nxt):
                     count += 1
         previous = body[-1] if body else None

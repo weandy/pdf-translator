@@ -82,7 +82,7 @@ def make_background(pdf: Path, blocks: Iterable[Block], out: Path, scanned: set[
 
 
 def _trim_formula_edges(pix: pymupdf.Pixmap, zoom: float) -> pymupdf.Pixmap:
-    """只裁掉窄边带内贴边、且与主体有连续空白行隔开的残影。"""
+    """清除贴边且与主体隔开一段空白的残影，保留公式底边的基线参照。"""
     data, stride = pix.samples, pix.stride
 
     def ink(y: int) -> bool:
@@ -93,7 +93,7 @@ def _trim_formula_edges(pix: pymupdf.Pixmap, zoom: float) -> pymupdf.Pixmap:
         ))  # fmt: skip
 
     rows = [ink(y) for y in range(pix.height)]
-    band = min(int(1.0 * zoom), pix.height // 6)
+    band = min(int(2.0 * zoom), pix.height // 4)
     gap = max(2, round(0.5 * zoom))
 
     def trim(edge: list[bool]) -> int:
@@ -107,8 +107,9 @@ def _trim_formula_edges(pix: pymupdf.Pixmap, zoom: float) -> pymupdf.Pixmap:
     top, bottom = trim(rows), trim(rows[::-1])
     if not (top or bottom) or not any(rows[top : pix.height - bottom]):
         return pix
-    height = pix.height - top - bottom
-    return pymupdf.Pixmap(pymupdf.csRGB, pix.width, height, data[top * stride : (top + height) * stride], True)
+    # 排版以图片底边对齐基线，底部残影行只清透明度并保留高度。
+    kept = data[top * stride : (pix.height - bottom) * stride]
+    return pymupdf.Pixmap(pymupdf.csRGB, pix.width, pix.height - top, kept + bytes(bottom * stride), True)
 
 
 def crop_formula(page: pymupdf.Page, bbox: Rect, zoom: float = 4.0) -> tuple[bytes, float, float] | None:

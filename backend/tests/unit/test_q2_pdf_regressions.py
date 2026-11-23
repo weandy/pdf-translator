@@ -91,7 +91,11 @@ def test_cross_column_join_respects_structural_barriers(tmp_path, between, linke
         ("We operate under nonidentical", "TOU tariffs.", True),
         ("We operate at different times.", "independent paragraph.", False),
         ("We operate at different times.”", "independent paragraph.", False),
+        ("We operate under nonidentical", "This paragraph stands alone.", False),
         ("We operate under nonidentical", "Entirely new paragraph starts with many more unrelated words.", False),
+        ("We operate under nonidentical", "TABLE data.", False),
+        ("We operate under nonidentical", "TOU tariffs?", False),
+        ("We operate under nonidentical", "TOU tariffs and related charges.", False),
     ],
 )
 def test_cross_page_join_over_figure(tmp_path, tail, head, linked):
@@ -105,6 +109,21 @@ def test_cross_page_join_over_figure(tmp_path, tail, head, linked):
     )
     doc, _ = fuse("synthetic", layout, extract(original), used_cloud=False)
     assert doc.pages[1].blocks[1].continues_from == ("p0-b0" if linked else None)
+
+
+def test_left_column_continuation_uses_its_own_margin(tmp_path):
+    original = tmp_path / "wide.pdf"
+    layout = _synthetic(
+        original,
+        [
+            [(TEXT, 330, 640, "We operate under nonidentical")],
+            [(TEXT, 50, 80, "TOU tariffs."), (TEXT, 20, 200, "This paragraph spans both columns.")],
+        ],
+    )
+    layout.pages[1].blocks[1].bbox = Rect.of([20, 189, 560, 203])
+    doc, report = fuse("synthetic", layout, extract(original), used_cloud=False)
+    assert doc.pages[1].blocks[0].continues_from == "p0-b0"
+    assert report.continuations == 1
 
 
 def test_reverse_column_join_fills_original_block_coordinates(tmp_path):
@@ -147,18 +166,39 @@ def test_reverse_join_requires_uniqueness_and_rejects_cycles(tmp_path):
     assert _supplement_continuations(doc.pages) == 0 and first.continues_from is None
 
 
+@pytest.mark.parametrize(
+    ("barrier", "y", "linked"),
+    [(TITLE, 300, True), (TITLE, 710, False), (BlockType.FOOTNOTE, 710, False), (BlockType.REFERENCE, 710, False)],
+)
+def test_reverse_join_respects_left_column_barriers_by_position(tmp_path, barrier, y, linked):
+    original = tmp_path / "reverse-barrier.pdf"
+    layout = _synthetic(original, [[
+        (TEXT, 330, 80, "as possible in every round."),
+        (barrier, 50, y, "Structural barrier"),
+        (TEXT, 50, 650, "Calculate the answer as quickly"),
+    ]])  # fmt: skip
+    doc, report = fuse("synthetic", layout, extract(original), used_cloud=False)
+    assert doc.pages[0].blocks[0].continues_from == ("p0-b2" if linked else None)
+    assert report.continuations == int(linked)
+
+
 def _ink_rows(pix: pymupdf.Pixmap) -> list[bool]:
     alpha = pix.samples[3::4]
     return [any(alpha[y * pix.width : (y + 1) * pix.width]) for y in range(pix.height)]
 
 
-def test_compact_formula_crop_removes_only_detached_edge_ink(tmp_path):
+@pytest.mark.parametrize("top", [5, 6])
+def test_compact_formula_crop_removes_only_detached_edge_ink(tmp_path, top):
     original = tmp_path / "formula.pdf"
     bbox = Rect.of([40, 50, 80, 64])
+    bottom = 6
     with pymupdf.open() as pdf:
         page = pdf.new_page(width=160, height=100)
         # 模拟上下行伸入裁图首尾的笔画，以及贴近主体的分数线、下标与重音。
-        for rect in [(42, 49, 43, 50.5), (58, 54, 60, 55), (55, 55, 65, 56), (57, 56, 62, 61), (74, 63.5, 75, 66)]:
+        for rect in [
+            (42, 49, 43, 50 + top / 4), (58, 54, 60, 55), (55, 55, 65, 56),
+            (57, 56, 62, 61), (74, 64 - bottom / 4, 75, 66),
+        ]:  # fmt: skip
             page.draw_rect(pymupdf.Rect(rect), color=None, fill=(0, 0, 0))
         pdf.save(original)
 
@@ -173,13 +213,17 @@ def test_compact_formula_crop_removes_only_detached_edge_ink(tmp_path):
         page = pdf[0]
         raw = page.get_pixmap(matrix=pymupdf.Matrix(4, 4), clip=pymupdf.Rect(39.7, 50, 80.3, 64), alpha=True)
         png, width, height = _formula_images(pdf, seg)["m1"]
-    assert _ink_rows(raw)[0] and _ink_rows(raw)[-1]
+    raw_rows = _ink_rows(raw)
+    assert raw_rows[: top + 1] == [True] * top + [False]
+    assert raw_rows[-bottom - 1 :] == [False] + [True] * bottom
     assert crop_png(original, 0, bbox) == png
     trimmed = pymupdf.Pixmap(png)
     assert (width, height) == (trimmed.width / 4, trimmed.height / 4)
     assert not _ink_rows(trimmed)[0] and not _ink_rows(trimmed)[-1]
+    assert trimmed.height == raw.height - top
+    assert trimmed.samples[-bottom * trimmed.stride :] == bytes(bottom * trimmed.stride)
+    assert _ink_rows(trimmed)[:-bottom] == raw_rows[top:-bottom]
     assert sum(_ink_rows(trimmed)) == 7 * 4
-    assert trimmed.height == raw.height - 4
 
 
 def test_export_normalizes_legacy_spacing_and_keeps_link_geometry(tmp_path):

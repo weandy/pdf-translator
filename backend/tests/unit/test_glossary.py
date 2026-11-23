@@ -13,7 +13,7 @@ from pdftr.glossary.normalize import normalize_terms
 
 
 def test_parse_extraction():
-    text = "领域：机器学习优化\n- ADAM=ADAM\nstochastic optimization=随机优化\n乱写的一行\n"
+    text = "领域：机器学习优化\nAI公共词库：启用\n- ADAM=ADAM\nstochastic optimization=随机优化\n乱写的一行\n"
     found = parse(text)
     assert found.domain == "机器学习优化" and found.use_library
     assert found.terms == {"ADAM": "ADAM", "stochastic optimization": "随机优化"}
@@ -187,20 +187,27 @@ def test_uppercase_acronyms_match_only_explicit_uppercase():
     assert matcher.match("CLIP, BERT, and GAN.") == {"CLIP": "模型", "BERT": "编码模型", "GAN": "生成对抗网络"}
 
 
+def test_matcher_keeps_three_letter_acronyms_but_excludes_short_common_words():
+    matcher = TermMatcher({"map": "映射", "set": "集合", "run": "运行", "GAN": "生成对抗网络"})
+    assert matcher.match("map, set, run, and gan") == {}
+    assert matcher.match("GAN") == {"GAN": "生成对抗网络"}
+
+
 @pytest.mark.parametrize(
-    ("domain", "expected"),
+    "domain",
     [
-        ("工业工程：使用强化学习算法解决作业车间调度", False),
-        ("强化学习用于作业车间调度", False),
-        ("深度学习算法理论，应用于医学影像", True),
-        ("Materials science and AI", False),
-        ("自然语言处理", True),
-        ("论文领域不明", True),
+        "工业工程：使用强化学习算法解决作业车间调度",
+        "深度学习算法理论，应用于医学影像",
+        "强化学习理论与 LLM 请求调度",
+        "自然语言处理",
+        "论文领域不明",
     ],
 )
-def test_library_gate_on_legacy_artifacts_and_missing_model_line(domain, expected):
-    assert Extraction.model_validate({"domain": domain}).use_library is expected
-    assert parse(f"领域：{domain}\nnode=节点").use_library is expected
-    assert Extraction.model_validate({"domain": domain, "use_library": not expected}).use_library is not expected
+def test_library_gate_on_legacy_artifacts_and_missing_model_line(domain):
+    legacy = Extraction.model_validate({"domain": domain, "terms": {"node": "节点"}})
+    assert not legacy.use_library
+    assert legacy.domain == domain and legacy.terms == {"node": "节点"}
+    assert not parse(f"领域：{domain}\nnode=节点").use_library
+    assert Extraction.model_validate({"domain": domain, "use_library": True}).use_library
     assert parse(f"领域：{domain}\nAI公共词库：启用\nnode=节点").use_library
     assert not parse(f"领域：{domain}\nAI公共词库：停用\nnode=节点").use_library
