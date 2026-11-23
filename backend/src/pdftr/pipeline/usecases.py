@@ -12,6 +12,8 @@ import shutil
 import tempfile
 import threading
 import time
+from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import BinaryIO, Literal
@@ -40,9 +42,9 @@ from pdftr.glossary.user_import import ParsedGlossary, parse_upload
 from pdftr.pipeline.memory import release_memory
 from pdftr.pipeline.runner import Pipeline, load_context, load_document
 from pdftr.pipeline.secrets import Secrets
-from pdftr.pipeline.workers import finish_on_cancel
+from pdftr.pipeline.workers import finish_on_cancel, run_thread
 from pdftr.rendering.background import crop_png
-from pdftr.rendering.export import ExportMode, Side, export_pdf, page_links, place_links
+from pdftr.rendering.export import ExportMode, Side, export_pdf_to_path, page_links, place_links
 from pdftr.rendering.links import VERSION as LINKS_VERSION
 from pdftr.rendering.links import PdfLink
 from pdftr.translation.batching import placeholder_problems
@@ -235,11 +237,12 @@ def get_job(pipeline: Pipeline, job_id: str) -> Job:
 
 def delete_job(pipeline: Pipeline, job_id: str) -> None:
     """删除任务及其全部文件。进行中的任务要等结束后才能删（后台线程可能还在写文件）。"""
-    get_job(pipeline, job_id)
-    if pipeline.is_running(job_id):
-        raise UserError("任务进行中，结束后才能删除")
-    pipeline.deps.store.delete_job(job_id)
-    _cleanup_artifacts(pipeline, job_id)
+    with pipeline.deletion_access(job_id) as allowed:
+        if not allowed:
+            raise UserError("任务进行中，结束后才能删除")
+        get_job(pipeline, job_id)
+        pipeline.deps.store.delete_job(job_id)
+        _cleanup_artifacts(pipeline, job_id)
 
 
 def _cleanup_artifacts(pipeline: Pipeline, job_id: str) -> bool:
@@ -267,10 +270,11 @@ def purge_expired(pipeline: Pipeline, retention_hours: int, now: datetime | None
             job.expires_at = now + timedelta(hours=retention_hours)
             pipeline.deps.store.save_job(job)
             continue
-        if job.expires_at > now or pipeline.is_running(job.id):
-            continue
-        store.delete_job(job.id)
-        removed += 1
+        if job.expires_at <= now:
+            with pipeline.deletion_access(job.id) as allowed:
+                if allowed:
+                    store.delete_job(job.id)
+                    removed += 1
     if retention_hours > 0:
         known = {job.id for job in store.all_jobs()}
         cutoff = now - timedelta(hours=retention_hours)
@@ -291,12 +295,16 @@ def purge_expired(pipeline: Pipeline, retention_hours: int, now: datetime | None
 EXPORT_CACHE_VERSION = 3  # 整块粗体正文改用普通译文字体，旧导出文件不能继续命中
 
 
-def export_job(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "right") -> tuple[str, Path]:
-    """导出纯译文或双语对照 PDF，返回（建议的文件名, 文件路径）。包含用户的修改。
+@dataclass(frozen=True)
+class _Export:
+    job: Job
+    mode: ExportMode
+    side: Side
+    segments: list[Segment]
+    path: Path
 
-    结果按“方式 + 当前译文”缓存成文件：再次下载不用重新生成，并能以 HTTP Range 分段下载、中断后续传；
-    译文有修改时摘要变化，自动重新生成（同一方式的旧文件删掉）。
-    """
+
+def _export_snapshot(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side) -> _Export:
     job = get_job(pipeline, job_id)
     if job.status is not JobStatus.DONE:
         raise UserError("任务完成后才能下载")
@@ -305,21 +313,64 @@ def export_job(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "
     state = json.dumps([EXPORT_CACHE_VERSION, [(s.id, s.target, s.status.value) for s in segments]], ensure_ascii=False)
     digest = hashlib.sha256(state.encode()).hexdigest()[:16]
     folder = deps.artifacts.job_dir(job_id) / "exports"
-    out = folder / f"{mode}-{side}-{digest}.pdf"
-    doc = load_document(deps, job_id)
-    if not out.exists():
-        data = export_pdf(deps.artifacts.path(job_id, "original.pdf"), deps.artifacts.path(job_id, "background.pdf"),
-                          doc, segments, mode, deps.font_dir, side,
-                          _raw_links(pipeline, job_id, doc, segments))  # fmt: skip
-        release_memory()
-        folder.mkdir(parents=True, exist_ok=True)
-        for old in folder.glob(f"{mode}-{side}-*.pdf"):
-            old.unlink(missing_ok=True)
-        tmp = out.with_suffix(".part")
-        tmp.write_bytes(data)
-        tmp.replace(out)
+    return _Export(job, mode, side, segments, folder / f"{mode}-{side}-{digest}.pdf")
+
+
+def _export_result(doc: Document, export: _Export) -> tuple[str, Path]:
     title = paper_title(doc.pages, fallback=doc.meta.title)
-    return download_filename(title, job.filename, bilingual=mode == "dual"), out
+    return download_filename(title, export.job.filename, bilingual=export.mode == "dual"), export.path
+
+
+def _render_export(pipeline: Pipeline, export: _Export) -> tuple[str, Path]:
+    job_id, out = export.job.id, export.path
+    with pipeline.export_access(job_id) as allowed:
+        if not allowed:
+            raise NotFound("任务不存在")
+        # 排队等待名额时任务可能已删除或重试，先确认正式工件仍可用。
+        if get_job(pipeline, job_id).status is not JobStatus.DONE:
+            raise UserError("任务完成后才能下载")
+        deps = pipeline.deps
+        doc = load_document(deps, job_id)
+        if not out.exists():
+            try:
+                export_pdf_to_path(
+                    deps.artifacts.path(job_id, "original.pdf"), deps.artifacts.path(job_id, "background.pdf"),
+                    doc, export.segments, export.mode, deps.font_dir, export.side,
+                    _raw_links(pipeline, job_id, doc, export.segments), out=out,
+                )  # fmt: skip
+            finally:
+                release_memory()
+            if _export_snapshot(pipeline, job_id, export.mode, export.side).path == out:
+                for old in out.parent.glob(f"{export.mode}-{export.side}-*.pdf"):
+                    if old != out:
+                        # Windows 上正在下载的文件可能仍打开，留给下一次生成或保留期清理。
+                        with suppress(PermissionError):
+                            old.unlink(missing_ok=True)
+        return _export_result(doc, export)
+
+
+def _lookup_export(
+    pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side
+) -> tuple[_Export, tuple[str, Path] | None]:
+    with pipeline.export_access(job_id) as allowed:
+        if not allowed:
+            raise NotFound("任务不存在")
+        export = _export_snapshot(pipeline, job_id, mode, side)
+        cached = _export_result(load_document(pipeline.deps, job_id), export) if export.path.exists() else None
+        return export, cached
+
+
+def export_job(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "right") -> tuple[str, Path]:
+    """兼容同步调用，按格式和译文快照复用磁盘缓存。"""
+    export, cached = _lookup_export(pipeline, job_id, mode, side)
+    return cached if cached is not None else _render_export(pipeline, export)
+
+
+async def prepare_export(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "right") -> tuple[str, Path]:
+    export, cached = await run_thread(_lookup_export, pipeline, job_id, mode, side)
+    if cached is not None:
+        return cached
+    return await pipeline.export_once(export.path, lambda: _render_export(pipeline, export))
 
 
 def cancel_job(pipeline: Pipeline, job_id: str) -> Job:

@@ -8,8 +8,8 @@ import asyncio
 import json
 import logging
 import threading
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +28,7 @@ from pdftr.parsing.port import LayoutParser, ParseError
 from pdftr.pipeline.events import EventBus
 from pdftr.pipeline.memory import release_memory
 from pdftr.pipeline.secrets import Secrets, SecretStore
+from pdftr.pipeline.workers import run_thread
 from pdftr.rendering.background import make_background
 from pdftr.storage.port import ArtifactStore, JobStore
 from pdftr.translation.cost import add_cost
@@ -100,29 +101,38 @@ class Slots:
 
     def __init__(self, size: int, waiting: Callable[[int], str]) -> None:
         self._sem = asyncio.Semaphore(size)
-        self._queue: list[Job] = []
+        self._queue: dict[object, tuple[Job, Callable[[Job, str], None]] | None] = {}
         self._waiting = waiting  # 排在第 n 位时显示的说明
 
     @asynccontextmanager
-    async def hold(self, job: Job, notify: Callable[[Job, str], None]) -> AsyncIterator[None]:
-        if self._sem.locked():
-            self._queue.append(job)
-            self._refresh(notify)
-            try:
-                await self._sem.acquire()
-            finally:
-                self._queue.remove(job)
-                self._refresh(notify)
-        else:
-            await self._sem.acquire()
+    async def hold(
+        self, job: Job | None = None, notify: Callable[[Job, str], None] | None = None
+    ) -> AsyncIterator[None]:
+        acquired = False
         try:
+            if self._sem.locked():
+                ticket = object()
+                self._queue[ticket] = (job, notify) if job is not None and notify is not None else None
+                try:
+                    self._refresh()
+                    await self._sem.acquire()
+                    acquired = True
+                finally:
+                    del self._queue[ticket]
+                    self._refresh()
+            else:
+                await self._sem.acquire()
+                acquired = True
             yield
         finally:
-            self._sem.release()
+            if acquired:
+                self._sem.release()
 
-    def _refresh(self, notify: Callable[[Job, str], None]) -> None:
-        for n, job in enumerate(self._queue, start=1):
-            notify(job, self._waiting(n))
+    def _refresh(self) -> None:
+        for n, entry in enumerate(self._queue.values(), start=1):
+            if entry is not None:
+                job, notify = entry
+                notify(job, self._waiting(n))
 
 
 class Pipeline:
@@ -133,6 +143,7 @@ class Pipeline:
         parse = Slots(deps.max_concurrent_jobs, lambda n: f"排队等待解析，排在第 {n} 位")
         local = Slots(1, lambda n: f"排队等待处理，前面还有 {n} 篇")
         llm = Slots(deps.max_concurrent_translations, lambda n: f"等待翻译，前面还有 {n} 篇")
+        self._local = local
         self._slots = {"parse": parse, "fuse": local, "segment": local, "glossary": llm, "translate": llm,
                        "render": local}  # fmt: skip
         self.receiving = 0  # 正在接收且尚未调度的上传，只在事件循环读写
@@ -140,6 +151,10 @@ class Pipeline:
         self._cancelling: set[str] = set()  # 用户要求取消的任务（与服务停止时的取消区分开）
         self._mutations: set[str] = set()  # 已完成任务的编辑/重翻/撤回互斥标记
         self._mutation_guard = threading.Lock()
+        self._artifact_guard = threading.Lock()
+        self._exporting: dict[str, int] = {}
+        self._deleting: set[str] = set()
+        self._exports: dict[Path, asyncio.Task[tuple[str, Path]]] = {}
 
     # ---- 调度 ----
     def submit(self, job: Job, secrets: Secrets) -> None:
@@ -159,6 +174,58 @@ class Pipeline:
         self._cancelling.add(job_id)
         task.cancel()
         return True
+
+    @asynccontextmanager
+    async def local_slot(self) -> AsyncIterator[None]:
+        """导出与本机处理阶段共享同一个重任务名额。"""
+        async with self._local.hold():
+            yield
+
+    async def export_once(self, path: Path, generate: Callable[[], tuple[str, Path]]) -> tuple[str, Path]:
+        task = self._exports.get(path)
+        if task is None:
+
+            async def render() -> tuple[str, Path]:
+                async with self.local_slot():
+                    return await run_thread(generate)
+
+            def finished(done: asyncio.Task[tuple[str, Path]]) -> None:
+                self._exports.pop(path, None)
+                if not done.cancelled():
+                    done.exception()  # 超时或断开后可能已没有等待方
+
+            task = asyncio.create_task(render())
+            self._exports[path] = task
+            task.add_done_callback(finished)
+        return await asyncio.shield(task)
+
+    @contextmanager
+    def export_access(self, job_id: str) -> Iterator[bool]:
+        with self._artifact_guard:
+            allowed = job_id not in self._deleting
+            if allowed:
+                self._exporting[job_id] = self._exporting.get(job_id, 0) + 1
+        try:
+            yield allowed
+        finally:
+            if allowed:
+                with self._artifact_guard:
+                    self._exporting[job_id] -= 1
+                    if self._exporting[job_id] == 0:
+                        del self._exporting[job_id]
+
+    @contextmanager
+    def deletion_access(self, job_id: str) -> Iterator[bool]:
+        with self._artifact_guard:
+            allowed = job_id not in self._deleting and job_id not in self._exporting and not self.is_running(job_id)
+            if allowed:
+                self._deleting.add(job_id)
+        try:
+            yield allowed
+        finally:
+            if allowed:
+                with self._artifact_guard:
+                    self._deleting.remove(job_id)
 
     def active_count(self) -> int:
         """排队中与执行中的任务数。"""
@@ -278,9 +345,9 @@ class Pipeline:
             return
         layout = LayoutResult.model_validate_json(self.deps.artifacts.path(job.id, "layout.json").read_text("utf-8"))
         pdf = self.deps.artifacts.path(job.id, "original.pdf")
-        chars = await asyncio.to_thread(extract, pdf)
+        chars = await run_thread(extract, pdf)
         try:
-            doc, report = await asyncio.to_thread(fuse, job.id, layout, chars, used_cloud=True)
+            doc, report = await run_thread(fuse, job.id, layout, chars, used_cloud=True)
         except InvalidLayoutPages as e:
             raise StageError(str(e)) from e
         if report.missing_layout_pages:
@@ -356,7 +423,7 @@ class Pipeline:
         ids = {bid for s in self.deps.store.segments(job.id) for bid in s.block_ids}
         blocks = [b for b in doc.blocks() if b.id in ids]
         scanned = {p.index for p in doc.pages if p.kind is PageKind.SCANNED}
-        await asyncio.to_thread(make_background, self.deps.artifacts.path(job.id, "original.pdf"), blocks,
+        await run_thread(make_background, self.deps.artifacts.path(job.id, "original.pdf"), blocks,
                                 self.deps.artifacts.path(job.id, "background.pdf"), scanned)  # fmt: skip
 
 

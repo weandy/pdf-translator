@@ -147,11 +147,12 @@ def export_container(tmp_path, monkeypatch):
     pipeline.deps.artifacts.path("0123456789abcdef", "ir.json").write_text(doc.model_dump_json(), encoding="utf-8")
     renders = []
 
-    def render(*args):
+    def render(*args, out):
         renders.append(True)
-        return b"%PDF-synthetic-export"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"%PDF-synthetic-export")
 
-    monkeypatch.setattr(usecases, "export_pdf", render)
+    monkeypatch.setattr(usecases, "export_pdf_to_path", render)
     monkeypatch.setattr(usecases, "_raw_links", lambda *args: [])
     yield container, doc, renders
     assert isinstance(pipeline.deps.store, SqliteStore)
@@ -199,3 +200,53 @@ def test_http_download_header_contains_safe_utf8_title_and_resumable_body(export
     assert response.status_code == 206 and response.content == b"%PDF"
     disposition = response.headers["content-disposition"]
     assert unquote(disposition.split("filename*=UTF-8''", 1)[1]) == "合成标题_A_B_双语对照.pdf"
+
+
+def test_concurrent_exports_share_generation_and_cached_exports_bypass_local_slot(export_container, monkeypatch):
+    import asyncio
+    import threading
+
+    container, _, _ = export_container
+    pipeline = container.pipeline
+    job_id = "0123456789abcdef"
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def render(*args, **kwargs):
+        calls.append(kwargs["out"])
+        started.set()
+        assert release.wait(2)
+        kwargs["out"].parent.mkdir(parents=True, exist_ok=True)
+        kwargs["out"].write_bytes(b"%PDF-synthetic-export")
+
+    monkeypatch.setattr(usecases, "export_pdf_to_path", render)
+
+    async def run():
+        with_slot = asyncio.Event()
+
+        async def take_slot():
+            async with pipeline.local_slot():
+                with_slot.set()
+
+        first = asyncio.create_task(usecases.prepare_export(pipeline, job_id, "mono"))
+        try:
+            assert await asyncio.to_thread(started.wait, 1)
+            peer = asyncio.create_task(usecases.prepare_export(pipeline, job_id, "mono"))
+            local = asyncio.create_task(take_slot())
+            await asyncio.sleep(0)
+            assert not with_slot.is_set()
+            with pytest.raises(usecases.UserError, match="进行中"):
+                await asyncio.to_thread(usecases.delete_job, pipeline, job_id)
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+        finally:
+            release.set()
+        result = await asyncio.wait_for(peer, 2)
+        await asyncio.wait_for(local, 2)
+        assert result[1].read_bytes() == b"%PDF-synthetic-export"
+        async with pipeline.local_slot():
+            assert await asyncio.wait_for(usecases.prepare_export(pipeline, job_id, "mono"), 1) == result
+        assert calls == [result[1]]
+
+    asyncio.run(run())

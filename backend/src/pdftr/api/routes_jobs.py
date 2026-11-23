@@ -115,27 +115,15 @@ def get_file(job_id: str, name: Literal["original.pdf", "background.pdf"], p: Pi
     return FileResponse(path, media_type="application/pdf", headers={"Cache-Control": "private, max-age=3600"})
 
 
-# 导出时每份约占 200 MB 内存，同时只做一份，避免小机器内存不够
-_export_slot = asyncio.Semaphore(1)
-_export_tasks: set[asyncio.Task[tuple[str, Path]]] = set()
 EXPORT_TIMEOUT_S = 300
-
-
-async def _prepare_export(
-    p: Pipeline, job_id: str, mode: Literal["mono", "dual"], side: Literal["left", "right"]
-) -> tuple[str, Path]:
-    async with _export_slot:
-        return await asyncio.to_thread(usecases.export_job, p, job_id, mode, side)
 
 
 async def _export_with_timeout(
     p: Pipeline, job_id: str, mode: Literal["mono", "dual"], side: Literal["left", "right"]
 ) -> tuple[str, Path]:
-    task = asyncio.create_task(_prepare_export(p, job_id, mode, side))
-    _export_tasks.add(task)
-    task.add_done_callback(_export_tasks.discard)
     try:
-        return await asyncio.wait_for(asyncio.shield(task), timeout=EXPORT_TIMEOUT_S)
+        async with asyncio.timeout(EXPORT_TIMEOUT_S):
+            return await usecases.prepare_export(p, job_id, mode, side)
     except TimeoutError as exc:
         raise HTTPException(status_code=504, detail="PDF 准备超过 5 分钟，请稍后重试") from exc
 

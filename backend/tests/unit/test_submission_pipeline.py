@@ -302,3 +302,43 @@ def test_upload_enforces_size_with_bounded_reads_and_removes_temp(environment, t
         )
     assert not store.all_jobs() and not artifacts.root.exists()
     assert not list(tmp_path.glob(".upload-*.part"))
+
+
+def test_cancelled_render_holds_local_slot_and_blocks_delete_until_thread_exits(environment, monkeypatch):
+    import threading
+
+    pipeline, store, artifacts = environment
+    current = Job(id="0000000000000001", filename="synthetic.pdf", stage="render")
+    store.create_job(current, CONTEXT)
+    doc = Document(job_id=current.id, pages=[])
+    artifacts.path(current.id, "ir.json").write_text(doc.model_dump_json(), encoding="utf-8")
+    reached, release = threading.Event(), threading.Event()
+
+    def render(*args):
+        reached.set()
+        assert release.wait(2)
+
+    monkeypatch.setattr(runner, "make_background", render)
+
+    async def run():
+        pipeline.submit(current, SECRETS)
+        try:
+            assert await asyncio.to_thread(reached.wait, 1)
+            assert pipeline.cancel(current.id)
+            await asyncio.sleep(0)
+            assert pipeline.cancel(current.id)
+            await asyncio.sleep(0)
+            assert pipeline.is_running(current.id)
+            with pytest.raises(usecases.UserError, match="进行中"):
+                usecases.delete_job(pipeline, current.id)
+            with pytest.raises(TimeoutError):
+                async with asyncio.timeout(0.01), pipeline.local_slot():
+                    pytest.fail("背景线程尚未退出")
+        finally:
+            release.set()
+        assert await pipeline.wait_all(2)
+        assert store.get_job(current.id).status is JobStatus.CANCELLED
+        async with pipeline.local_slot():
+            pass
+
+    asyncio.run(run())

@@ -12,6 +12,7 @@ import pymupdf
 
 from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import Block, BlockType
+from pdftr.rendering.artifacts import pdf_destination
 
 SHRINK = 0.5  # 块框略收缩，避免误删相邻的公式字符（S5）
 COVER_PAD = 1.0  # 扫描页盖住原文的矩形向外扩一点：解析器的块框紧贴字形，字的边缘会露出来
@@ -58,7 +59,7 @@ def make_background(pdf: Path, blocks: Iterable[Block], out: Path, scanned: set[
             labels[b.page].append(_label_band(b.bbox))
         else:
             by_page[b.page].append(b.bbox.shrink(SHRINK))
-    with pymupdf.open(pdf) as doc:
+    with pdf_destination(out) as tmp, pymupdf.open(pdf) as doc:
         for page_no in sorted(set(by_page) | set(labels)):
             if page_no >= len(doc):
                 continue
@@ -76,10 +77,7 @@ def make_background(pdf: Path, blocks: Iterable[Block], out: Path, scanned: set[
                 page.apply_redactions(images=_IMAGE_NONE, graphics=graphics, text=_TEXT_REMOVE)
             for box, color in covers:
                 page.draw_rect(box, color=None, fill=color, overlay=True)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        tmp = out.with_suffix(".part")
         doc.save(tmp, garbage=3, deflate=True)
-        tmp.replace(out)
     return sum(len(v) for v in by_page.values()) + sum(len(v) for v in labels.values())
 
 

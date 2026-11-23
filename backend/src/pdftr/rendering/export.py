@@ -14,6 +14,7 @@ from typing import Literal
 import pymupdf
 
 from pdftr.domain.ir import Block, BlockType, Document, Segment
+from pdftr.rendering.artifacts import pdf_destination
 from pdftr.rendering.links import PdfLink, extract_links, locate
 from pdftr.rendering.typeset import LINE_HEIGHTS, drop_fake_scripts, wants_indent
 from pdftr.rendering.typesetter import FontSet, Placed, Token, Typesetter
@@ -254,6 +255,39 @@ def export_pdf(
     links: list[PdfLink] | None = None,
 ) -> bytes:
     """返回导出的 PDF 字节。font_dir 缺字体时用内置字体。links：原文链接（调用方已缓存时传入，省得重读）。"""
+    return _export(original, background, doc, segments, mode, font_dir, side, links,
+                   lambda pdf: pdf.tobytes(garbage=3, deflate=True))  # fmt: skip
+
+
+def export_pdf_to_path(
+    original: Path,
+    background: Path,
+    doc: Document,
+    segments: list[Segment],
+    mode: ExportMode,
+    font_dir: Path | None = None,
+    side: Side = "right",
+    links: list[PdfLink] | None = None,
+    *,
+    out: Path,
+) -> None:
+    """生产导出直接写盘，避免 Python 持有完整 PDF 字节串。"""
+    with pdf_destination(out) as tmp:
+        _export(original, background, doc, segments, mode, font_dir, side, links,
+                lambda pdf: pdf.save(tmp, garbage=3, deflate=True))  # fmt: skip
+
+
+def _export[T](
+    original: Path,
+    background: Path,
+    doc: Document,
+    segments: list[Segment],
+    mode: ExportMode,
+    font_dir: Path | None,
+    side: Side,
+    links: list[PdfLink] | None,
+    save: Callable[[pymupdf.Document], T],
+) -> T:
     raw = links if links is not None else page_links(original, doc, segments)
     links = place_links(raw, doc, segments)
     with pymupdf.open(original) as src, pymupdf.open(background) as translated:
@@ -270,28 +304,26 @@ def export_pdf(
                 if link.block_id is not None:
                     for rect in _translated_rects(link, placed):
                         _insert(translated[link.page], link, rect)
-            return translated.tobytes(garbage=3, deflate=True)
+            return save(translated)
 
-        out = pymupdf.open()
-        for i in range(len(src)):
-            w, h = src[i].rect.width, src[i].rect.height
-            page = out.new_page(width=w * 2, height=h)
-            left, right = (translated, src) if side == "left" else (src, translated)
-            page.show_pdf_page(pymupdf.Rect(0, 0, w, h), left, i)
-            page.show_pdf_page(pymupdf.Rect(w, 0, w * 2, h), right, i)
+        with pymupdf.open() as out:
+            for i in range(len(src)):
+                w, h = src[i].rect.width, src[i].rect.height
+                page = out.new_page(width=w * 2, height=h)
+                left, right = (translated, src) if side == "left" else (src, translated)
+                page.show_pdf_page(pymupdf.Rect(0, 0, w, h), left, i)
+                page.show_pdf_page(pymupdf.Rect(w, 0, w * 2, h), right, i)
 
-        # 拼页不带链接：两半各自加回，跳转目标落在同一半。各页宽度可能不同（横版页），偏移按各自那一页算
-        def shifts(page_no: int) -> tuple[float, float]:
-            """（原文这一半的横向偏移, 译文这一半的横向偏移）"""
-            width = src[page_no].rect.width
-            return (width, 0.0) if side == "left" else (0.0, width)
+            # 拼页不带链接：两半各自加回，跳转目标落在同一半。各页宽度可能不同（横版页），偏移按各自那一页算
+            def shifts(page_no: int) -> tuple[float, float]:
+                """（原文这一半的横向偏移, 译文这一半的横向偏移）"""
+                width = src[page_no].rect.width
+                return (width, 0.0) if side == "left" else (0.0, width)
 
-        for link in links:
-            page, r = out[link.page], link.rect
-            (dx_src, dx_tr), dest = shifts(link.page), shifts(link.dest_page or 0)
-            _insert(page, link, pymupdf.Rect(r.x0 + dx_src, r.y0, r.x1 + dx_src, r.y1), dest[0])
-            for rect in _translated_rects(link, placed):
-                _insert(page, link, pymupdf.Rect(rect.x0 + dx_tr, rect.y0, rect.x1 + dx_tr, rect.y1), dest[1])
-        data = out.tobytes(garbage=3, deflate=True)
-        out.close()
-        return data
+            for link in links:
+                page, r = out[link.page], link.rect
+                (dx_src, dx_tr), dest = shifts(link.page), shifts(link.dest_page or 0)
+                _insert(page, link, pymupdf.Rect(r.x0 + dx_src, r.y0, r.x1 + dx_src, r.y1), dest[0])
+                for rect in _translated_rects(link, placed):
+                    _insert(page, link, pymupdf.Rect(rect.x0 + dx_tr, rect.y0, rect.x1 + dx_tr, rect.y1), dest[1])
+            return save(out)
