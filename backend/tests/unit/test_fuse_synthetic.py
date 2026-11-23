@@ -7,16 +7,29 @@ import pymupdf
 import pytest
 
 from pdftr.domain.chars import CharPage
+from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import BlockType, PageKind, SegmentStatus
-from pdftr.domain.layout import LayoutResult
+from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutPage, LayoutResult, LayoutSpan
 from pdftr.extraction.chars import extract
 from pdftr.fusion.build import fuse
 from pdftr.parsing.mineru_normalize import normalize
 from pdftr.rendering.background import make_background
-from pdftr.rendering.export import export_pdf_to_path
+from pdftr.rendering.export import _formula_images, _safe_bottom, export_pdf_to_path
+from pdftr.translation.prompt import PROMPT_VERSION, expand_formulas
 from pdftr.translation.segmenter import segment
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "mineru_layout_min.json"
+
+
+def layout_block(order: int, kind: BlockType, coords: list[float], text: str = "") -> LayoutBlock:
+    box = Rect.of(coords)
+    lines = [LayoutLine(bbox=box, spans=[LayoutSpan(kind="text", content=text, bbox=box)])] if text else []
+    return LayoutBlock(order=order, type=kind, bbox=box, lines=lines)
+
+
+def single_page_layout(*blocks: LayoutBlock) -> LayoutResult:
+    return LayoutResult(parser="synthetic", pages=[LayoutPage(index=0, width=600, height=800, blocks=list(blocks))])
+
 
 # (页, x, 基线 y, 文字)：与夹具中各行的框对应
 TEXTS = [
@@ -82,6 +95,122 @@ def test_fuse(pdf: Path):
     assert orphan.spans[0].text == "This orphan line was missed by the parser"
     assert orphan.translatable
     assert orphan.style.font_size == pytest.approx(9, abs=0.1)
+
+
+def test_native_pua_uses_exact_original_crop_and_ambiguous_pua_keeps_the_block(tmp_path):
+    path = tmp_path / "synthetic-symbol.pdf"
+    with pymupdf.open() as pdf:
+        pdf.new_page(width=600, height=800).insert_text((50, 100), "Read Z and continue.", fontsize=10)
+        pdf.save(path)
+    (page,) = extract(path)
+    (glyph,) = [c for c in page.chars if c.c == "Z"]
+    glyph.c = "\ue246"
+    block = layout_block(0, BlockType.TEXT, [48, 87, 145, 105], "Read \ue246 and continue.")
+    doc, _ = fuse("synthetic", single_page_layout(block), [page], used_cloud=False)
+    (seg,) = segment(doc)
+    assert seg.source == "Read <m1/> and continue."
+    assert seg.formula_refs["m1"].bbox == glyph.bbox and seg.formulas == {"m1": ""}
+    assert expand_formulas(seg.source, seg.formulas) == "Read <m1>[symbol]</m1> and continue."
+    assert expand_formulas("<m9/>", {}) == "<m9></m9>" and PROMPT_VERSION == "v3"
+    with pymupdf.open(path) as pdf:
+        assert pymupdf.Pixmap(_formula_images(pdf, seg)["m1"][0]).alpha
+    assert '"origin_y"' not in doc.model_dump_json()
+
+    page.chars.append(glyph.model_copy())
+    ambiguous, _ = fuse("synthetic", single_page_layout(block), [page], used_cloud=False)
+    assert not ambiguous.blocks()[0].translatable and not ambiguous.blocks()[0].formulas
+
+    # 同一 span 内出现两次相同 PUA 且数量与字形一一对应时，按顺序分别裁图。
+    path_dup = tmp_path / "synthetic-symbol-dup.pdf"
+    with pymupdf.open() as pdf:
+        pdf.new_page(width=600, height=800).insert_text((50, 100), "Read Z then Z end.", fontsize=10)
+        pdf.save(path_dup)
+    (page_dup,) = extract(path_dup)
+    z_glyphs = [c for c in page_dup.chars if c.c == "Z"]
+    for g in z_glyphs:
+        g.c = "\ue246"
+    dup_block = layout_block(0, BlockType.TEXT, [48, 87, 165, 105], "Read \ue246 then \ue246 end.")
+    dup_doc, _ = fuse("synthetic", single_page_layout(dup_block), [page_dup], used_cloud=False)
+    (dup_seg,) = segment(dup_doc)
+    assert dup_seg.source == "Read <m1/> then <m2/> end."
+    assert dup_seg.formula_refs["m1"].bbox == z_glyphs[0].bbox
+    assert dup_seg.formula_refs["m2"].bbox == z_glyphs[1].bbox
+
+
+def test_missed_display_formula_protects_background_and_ordinary_orphans_still_translate(tmp_path):
+    path = tmp_path / "synthetic-orphans.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=600, height=800)
+        page.insert_text((50, 100), "A translated paragraph ends here.", fontsize=10)
+        page.insert_text((105, 140), "z  = (z  , z  )", fontsize=10)
+        page.insert_text((110, 136), "top", fontsize=7)
+        page.insert_text((137, 136), "top", fontsize=7)
+        page.insert_text((155, 136), "top", fontsize=7)
+        page.insert_text((105, 158), "z  = max(z  , f (x))   z  = min(z  , f (x))", fontsize=10)
+        page.insert_text((110, 154), "top", fontsize=7)
+        page.insert_text((110, 161), "1", fontsize=7)
+        page.insert_text((146, 154), "top", fontsize=7)
+        page.insert_text((146, 161), "1", fontsize=7)
+        page.insert_text((196, 154), "top", fontsize=7)
+        page.insert_text((196, 161), "2", fontsize=7)
+        page.insert_text((232, 154), "top", fontsize=7)
+        page.insert_text((232, 161), "2", fontsize=7)
+        page.insert_text((340, 140), "(17)", fontsize=10)
+        page.insert_text((52, 195), "Levels of test inputs.", fontsize=10)
+        pdf.save(path)
+    layout = single_page_layout(
+        layout_block(0, BlockType.TEXT, [49, 89, 240, 104], "A translated paragraph ends here.")
+    )
+    doc, _ = fuse("synthetic", layout, extract(path), used_cloud=False)
+    blocks = doc.blocks()
+    para = blocks[0]
+    formulas = [b for b in blocks if b.type is BlockType.FORMULA]
+    orphan_texts = [b for b in blocks if b.type is BlockType.TEXT and b.orphan]
+    assert len(formulas) >= 2 and all(not f.translatable and f.latex is None for f in formulas)
+    assert any(f.bbox.x1 > 340 for f in formulas)
+    assert [b.spans[0].text for b in orphan_texts] == ["Levels of test inputs."]
+    out = tmp_path / "synthetic-orphans-background.pdf"
+    make_background(path, [b for b in blocks if b.translatable], out)
+    with pymupdf.open(out) as pdf:
+        assert "(17)" in pdf[0].get_text()
+        assert "max(" in pdf[0].get_text()
+        top_formula = min(formulas, key=lambda f: f.bbox.y0)
+        assert _safe_bottom(pdf[0], pymupdf.Rect(49, 89, 240, 104), 240, para, blocks) == top_formula.bbox.y0
+
+
+def test_caption_scope_algorithm_bounds_and_caption_size(tmp_path):
+    path = tmp_path / "synthetic-layout.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=600, height=800)
+        page.insert_text((30, 280), "Figure 1. Results.", fontsize=7.25)
+        pdf.save(path)
+    layout = single_page_layout(
+        layout_block(0, BlockType.FIGURE, [30, 80, 310, 240]),
+        layout_block(1, BlockType.CAPTION, [40, 220, 150, 260], "(a) Inside chart"),
+        layout_block(2, BlockType.CAPTION, [155, 242, 250, 250], "(b) Outside chart"),
+        layout_block(3, BlockType.CAPTION, [28, 270, 160, 285], "Figure 1. Results."),
+        layout_block(4, BlockType.CODE, [30, 320, 270, 380]),
+        layout_block(5, BlockType.TEXT, [40, 308, 220, 324], "<b>Algorithm 2</b> Sample procedure"),
+        layout_block(6, BlockType.TEXT, [40, 292, 220, 307], "Algorithm 3 Reference outside"),
+        layout_block(7, BlockType.TEXT, [15, 307, 220, 319], "Algorithm 4 Partially aligned"),
+    )
+    doc, _ = fuse("synthetic", layout, extract(path), used_cloud=False)
+    blocks = doc.blocks()
+    assert [b.translatable for b in blocks] == [False, False, True, True, False, False, True, True]
+    assert blocks[2].style.font_size == blocks[2].spans[0].size == blocks[3].style.font_size == 7.25
+    assert any(blocks[2].id in s.block_ids for s in segment(doc))
+
+
+def test_fusion_recovers_inline_abstract_for_metadata_and_preserves_its_segment():
+    layout = single_page_layout(
+        layout_block(0, BlockType.TITLE, [20, 20, 330, 40], "A Synthetic Article"),
+        layout_block(1, BlockType.TEXT, [20, 42, 320, 52], "A. Testwriter, Example Institute"),
+        layout_block(2, BlockType.TEXT, [20, 69, 320, 80], "<i><b>Abstract</b></i>—We use a synthetic example."),
+    )
+    pages = [CharPage(index=0, width=600, height=800, kind=PageKind.SCANNED)]
+    doc, _ = fuse("synthetic", layout, pages, used_cloud=False)
+    assert doc.meta.abstract == "We use a synthetic example."
+    assert [s.block_ids for s in segment(doc)] == [["p0-b0"], ["p0-b2"]]
 
 
 def test_block_without_chars_estimates_size_from_line_height(tmp_path: Path):

@@ -4,6 +4,7 @@ import unicodedata
 from collections.abc import Sequence
 
 from pdftr.domain.chars import Char
+from pdftr.domain.text import RICH_TAG
 
 
 def _visible(text: str) -> str:
@@ -18,13 +19,16 @@ def _style_ranges(text: str, chars: Sequence[Char], *, attribute: str) -> tuple[
     """
     ordered = sorted(chars, key=lambda c: (c.line, c.bbox.x0))
     pdf = "".join(_visible(c.c) for c in ordered)
-    wanted = "".join(_visible(c) for c in text)
+    tag_positions = {i for m in RICH_TAG.finditer(text) for i in range(m.start(), m.end())}
+    wanted = "".join(_visible(c) for i, c in enumerate(text) if i not in tag_positions)
     if not wanted or pdf != wanted:
         return False, []
     weights = [bool(getattr(c, attribute)) for c in ordered for _ in _visible(c.c)]
     mask = [False] * len(text)
     offset = 0
     for i, c in enumerate(text):
+        if i in tag_positions:
+            continue
         n = len(_visible(c))
         if n:
             mask[i] = all(weights[offset : offset + n])
@@ -41,7 +45,7 @@ def _style_ranges(text: str, chars: Sequence[Char], *, attribute: str) -> tuple[
         if i > 0 and end < len(text) and mask[i - 1] and mask[end]:
             mask[i:end] = [True] * (end - i)
         i = end
-    visible = [value for c, value in zip(text, mask, strict=True) if not c.isspace()]
+    visible = [mask[i] for i, c in enumerate(text) if i not in tag_positions and not c.isspace()]
     if all(visible):
         return True, []
     ranges: list[tuple[int, int]] = []

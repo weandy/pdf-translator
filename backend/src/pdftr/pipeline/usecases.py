@@ -49,6 +49,7 @@ from pdftr.rendering.links import VERSION as LINKS_VERSION
 from pdftr.rendering.links import PdfLink
 from pdftr.translation.batching import placeholder_problems, rich_text_problems
 from pdftr.translation.cost import PRICES, is_deepseek_peak
+from pdftr.translation.segmenter import BAD_SOURCE_MESSAGE, bad_source
 from pdftr.translation.service import TranslateOptions, translate
 
 log = logging.getLogger(__name__)
@@ -316,7 +317,7 @@ def purge_expired(pipeline: Pipeline, retention_hours: int, now: datetime | None
 
 
 # 导出 PDF 的生成方式（排版、字体、链接等）变了就加一，让已缓存的导出文件失效
-EXPORT_CACHE_VERSION = 7  # 公式底边清透明并保留排版基线
+EXPORT_CACHE_VERSION = 8  # 跨块切分禁则与逐行字距上限
 
 
 @dataclass(frozen=True)
@@ -430,6 +431,8 @@ def retry_job(pipeline: Pipeline, job_id: str, secrets: Secrets) -> Job:
     if not pipeline.begin_mutation(job_id):
         raise UserError("任务正在修改，请稍后再试")
     try:
+        if bad_source(pipeline.deps.store.segments(job_id)):
+            raise UserError(BAD_SOURCE_MESSAGE)
         if job.stage == "done":
             job.stage = "translate"  # 已完成但有失败段落：只重跑翻译和背景页
         job.status, job.error = JobStatus.QUEUED, ""
@@ -722,6 +725,8 @@ async def retranslate_segments(
         befores = {s.id: s.model_copy() for s in segs}
         for s in segs:
             s.status = SegmentStatus.PENDING
+        if bad_source(segs):
+            raise UserError(BAD_SOURCE_MESSAGE)
         deps = pipeline.deps
         ctx, selection = await asyncio.to_thread(load_context, deps, job_id, terms)
         async with chat_session(deps.chat_factory(secrets)) as chat:

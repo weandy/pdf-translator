@@ -9,6 +9,7 @@ from pdftr.domain.chars import Char
 from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import Block, BlockStyle, BlockType, Document, InlineFormula, Page, Span
 from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutPage, LayoutResult, LayoutSpan
+from pdftr.domain.text import visible_length
 from pdftr.extraction.chars import extract
 from pdftr.fusion.build import fuse
 from pdftr.fusion.emphasis import bold_ranges, italic_ranges
@@ -129,7 +130,7 @@ def test_cross_page_chain_formulas_and_numeric_only_still_work():
     assert seg.formulas == {"m1": "x"}
     assert seg.source.count("<b>") == seg.source.count("</b>") == 1
     assert sum(p.chars for p in seg.parts) == sum(
-        len(block_source(b, {"m1": "m1"}).replace("<b>", "").replace("</b>", "")) for b in [first, second]
+        visible_length(block_source(b, {"m1": "m1"})) for b in [first, second]
     )
 
 
@@ -145,6 +146,7 @@ def test_extract_fuse_segment_keeps_mixed_bold_without_modifying_body(tmp_path):
         pdf.save(path)
     pages = extract(path)
     page = pages[0]
+    assert {c.origin_y for c in page.chars} == {100.0}
     assert any(c.bold for c in page.chars)
     assert any(not c.bold and not c.c.isspace() for c in page.chars)
     box = Rect(x0=min(c.bbox.x0 for c in page.chars), y0=min(c.bbox.y0 for c in page.chars),
@@ -170,3 +172,11 @@ def test_extract_fuse_segment_keeps_mixed_bold_without_modifying_body(tmp_path):
     assert different.blocks()[0].spans[0].text == parser_body
     assert not different.blocks()[0].spans[0].bold_ranges
     assert segment(different)[0].source == parser_body
+
+
+def test_real_script_tag_does_not_shift_following_emphasis_indices():
+    text = "H<sub>2</sub>O remains visible"
+    bold, ranges = bold_ranges(text, chars("H2O remains visible", "visible"))
+    assert not bold and ranges == [(text.index("visible"), len(text))]
+    item = span(text, bold_ranges=ranges)
+    assert block_source(block([item]), {}) == "H<sub>2</sub>O remains <b>visible</b>"

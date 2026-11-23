@@ -15,6 +15,27 @@ describe("行内公式两侧的富文本样式", () => {
   });
   afterEach(async () => act(async () => root.unmount()));
 
+  it("长英文标识符只在词内斜杠与下划线后插入断行机会", async () => {
+    const text = "long_variable/part _private";
+    await act(async () => root.render(<InlineMathText text={text} formulas={{}} fallbackUrl={() => ""} />));
+    expect(host.querySelectorAll("wbr")).toHaveLength(2);
+    expect(host.textContent).toBe(text);
+  });
+
+  it("有原图坐标的空公式直接裁图", async () => {
+    await act(async () =>
+      root.render(
+        <InlineMathText
+          text="前文<m1/>后文"
+          formulas={{ m1: { latex: "", bbox: { x0: 1, y0: 1, x1: 5, y1: 5 } } }}
+          fallbackUrl={() => "/synthetic/symbol.png"}
+        />,
+      ),
+    );
+    expect(host.querySelector("img")?.getAttribute("src")).toBe("/synthetic/symbol.png");
+    expect(host.querySelector(".katex")).toBeNull();
+  });
+
   it("公式后的中文和西文保留粗体，格式结束后普通正文不被加粗", async () => {
     await act(async () =>
       root.render(

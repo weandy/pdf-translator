@@ -65,7 +65,7 @@ function anchor(link: InlineLink | undefined, children: ReactNode[], key: string
 }
 
 /** 长词（如 Python/OR-Tools）在 / 之后允许断行（与导出 PDF 一致；浏览器默认只在连字符后断）。 */
-const SLASH_BREAK = /(?<=[A-Za-z0-9]\/)(?=[A-Za-z0-9])/;
+const SLASH_BREAK = /(?<=[A-Za-z0-9][/_])(?=[A-Za-z0-9])/;
 
 function highlighted(text: string, key: string, needle: string): ReactNode[] {
   const value = needle.trim();

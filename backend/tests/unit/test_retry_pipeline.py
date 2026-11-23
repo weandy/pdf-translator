@@ -56,7 +56,7 @@ def setup_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, chat: Repair
         pass
 
     monkeypatch.setattr(pipeline, "_render", render)
-    job = Job(id="synthetic", filename="synthetic.pdf", stage="translate")
+    job = Job(id="0123456789abcdef", filename="synthetic.pdf", stage="translate")
     store.save_job(job)
     store.replace_segments(
         job.id,
@@ -102,6 +102,37 @@ def test_incomplete_translation_is_not_done_and_resume_only_translates_failed(tm
 
     try:
         asyncio.run(scenario())
+    finally:
+        close_pipeline(pipeline)
+
+
+def test_legacy_bad_sources_are_rejected_before_the_model_and_keep_stored_work(tmp_path, monkeypatch):
+    chat = RepairChat()
+    pipeline, job = setup_pipeline(tmp_path, monkeypatch, chat)
+    hard, easy = pipeline.deps.store.segments(job.id)
+    hard.source = "A fa<sup>s</sup>ter co<sub>l</sub>or mo<sup>d</sup>el uses x<sub>i</sub>."
+    hard.status = SegmentStatus.FAILED
+    easy.source = "Water H<sub>2</sub>O and a reference<sup>1</sup>."
+    easy.status, easy.target = SegmentStatus.EDITED, "人工修订"
+    pipeline.deps.store.save_segments([hard, easy])
+    original = pipeline.deps.artifacts.path(job.id, "ir.json")
+    original.parent.mkdir(parents=True, exist_ok=True)
+    original.write_text('{"legacy":true}', encoding="utf-8")
+
+    async def scenario():
+        pipeline.submit(job, SECRETS)
+        assert await pipeline.wait_all(3)
+        failed = pipeline.deps.store.get_job(job.id)
+        assert failed is not None and failed.status is JobStatus.FAILED
+        assert "请重新上传文档以使用新版解析" in failed.error
+        with pytest.raises(usecases.UserError, match="请重新上传文档以使用新版解析"):
+            usecases.retry_job(pipeline, job.id, SECRETS)
+
+    try:
+        asyncio.run(scenario())
+        assert pipeline.deps.store.segments(job.id) == [hard, easy]
+        assert original.read_text(encoding="utf-8") == '{"legacy":true}'
+        assert not chat.calls
     finally:
         close_pipeline(pipeline)
 

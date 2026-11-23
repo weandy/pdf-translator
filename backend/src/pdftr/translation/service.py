@@ -32,6 +32,7 @@ from pdftr.translation.batching import (
 from pdftr.translation.cost import add_cost
 from pdftr.translation.port import TranslationCache
 from pdftr.translation.prompt import PROMPT_VERSION, DocContext, expand_formulas, system_prompt, user_prompt
+from pdftr.translation.segmenter import BAD_SOURCE_MESSAGE, bad_source
 
 Quality = Literal["default", "careful"]
 TermLookup = Callable[[str], dict[str, str]]
@@ -131,6 +132,8 @@ async def translate(
     opts: TranslateOptions | None = None,
     on_progress: Progress | None = None,
 ) -> tuple[list[Segment], TranslateReport]:
+    if bad_source(segments):
+        raise ChatError(BAD_SOURCE_MESSAGE)
     o = opts or TranslateOptions()
     loop = asyncio.get_running_loop()
     total_deadline = loop.time() + o.total_timeout_s if o.total_timeout_s is not None else None

@@ -9,6 +9,7 @@ import statistics
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from itertools import pairwise
 
 from pdftr.domain.chars import Char, CharPage
 from pdftr.domain.document_name import paper_title
@@ -26,12 +27,22 @@ from pdftr.domain.ir import (
     Span,
 )
 from pdftr.domain.layout import LayoutBlock, LayoutResult
+from pdftr.domain.text import INLINE_ABSTRACT, RICH_TAG, SECTION_NUMBER, is_pua
 from pdftr.fusion.align import align
 from pdftr.fusion.emphasis import bold_ranges, italic_ranges
-from pdftr.fusion.formula_align import clean_formula_lines, refine_block
+from pdftr.fusion.formula_align import MATH_FONT, MATH_WORDS, clean_formula_lines, refine_block, visual_lines
 from pdftr.fusion.relocate import relocate
 from pdftr.fusion.style import block_style
-from pdftr.fusion.text_fix import chars_in, choose, text_of
+from pdftr.fusion.text_fix import (
+    chars_in,
+    choose,
+    is_broken,
+    main_metrics,
+    recover_dropped_chars,
+    script_glyph,
+    strip_fake_scripts,
+    text_of,
+)
 
 ORPHAN_MIN_LETTERS = 6
 LABEL_GAP = 1.5  # 同一行里相距超过 1.5 个字高的文字（如横排的图例）拆成不同标签
@@ -46,6 +57,11 @@ _ACRONYM_TAIL = re.compile(
 )
 _TOP_FRACTION = 0.35
 _MAX_SIZE_GAP = 1.5
+_ALGORITHM = re.compile(r"^Algorithm\s+\d+\b", re.I)
+_SUBCAPTION = re.compile(r"^\([a-z]\)(?:\s|[A-Z]|$)", re.I)
+_PUA_RUN = re.compile(r"[\ue000-\uf8ff\U000f0000-\U0010ffff]+")
+_EQUATION_NUMBER = re.compile(r"\(\d+\)$")
+_MATH_OPERATOR = re.compile(r"[=≈≃≠≤≥∞∑∫∏√±×÷∂∈∉⋅−+^<>∧∨∩∪]")
 
 
 class InvalidLayoutPages(ValueError):
@@ -98,6 +114,7 @@ def fuse(
     pages: list[Page] = []
     selected = set(pages_to_translate) if pages_to_translate is not None else pdf_indexes
     by_index = {page.index: page for page in relocated.pages}
+    native_captions: set[str] = set()
     for cp in sorted(char_pages, key=lambda page: page.index):
         if cp.kind is not PageKind.NATIVE:
             report.non_native_pages.append(cp.index)
@@ -122,17 +139,30 @@ def fuse(
                 report.formulas_unlocated += total - found
             elif any(s.kind == "inline_formula" for line in lb.lines for s in line.spans):
                 lb = clean_formula_lines(lb, chars)
-            blocks.append(_block(cp, lb, chars, rel.links, report))
-        blocks += _orphan_blocks(cp, orphans, start=len(lp.blocks), report=report)
-        figure_chars = [c for lb, chars in zip(lp.blocks, per_block, strict=True) if lb.type is BlockType.FIGURE
-                        for c in chars]  # fmt: skip
-        blocks += _figure_labels(cp, figure_chars, start=len(blocks), report=report)
+            block = _block(cp, lb, chars, rel.links, report)
+            blocks.append(block)
+            if block.type is BlockType.CAPTION and any(not c.c.isspace() for c in chars):
+                native_captions.add(block.id)
+        protected_captions = _protect_layout_scope(blocks)
+        start = max((b.order for b in blocks), default=-1) + 1
+        if cp.kind is PageKind.NATIVE:
+            protected, orphans = _orphan_formulas(cp, orphans, start)
+            blocks.extend(protected)
+            start += len(protected)
+        missing = _orphan_blocks(cp, orphans, start=start, report=report)
+        blocks.extend(missing)
+        figure_chars = [
+            c for lb, chars in zip(lp.blocks, per_block, strict=True) if lb.type is BlockType.FIGURE
+            for c in chars if not any(box.contains_point(*c.bbox.center) for box in protected_captions)
+        ]  # fmt: skip
+        blocks += _figure_labels(cp, figure_chars, start=start + len(missing), report=report)
         pages.append(
             Page(index=cp.index, width=cp.width, height=cp.height, rotation=cp.rotation, kind=cp.kind, blocks=blocks)
         )
 
     report.continuations += _supplement_continuations(pages)
     _even_scan_sizes(pages)
+    _even_caption_sizes(pages, native_captions)
     report.pages = len(pages)
     doc = Document(job_id=job_id, pages=pages, meta=_meta(pages, layout.parser, used_cloud))
     return doc, report
@@ -162,6 +192,8 @@ def _supplement_continuations(pages: list[Page]) -> int:
     used = {b.continues_from for b in blocks.values() if b.continues_from is not None}
     text = {b.id: _plain(b) for b in blocks.values() if b.type is BlockType.TEXT and b.translatable and not b.orphan}
     groups: dict[str, int] = {}
+    page_of = {p.index: p for p in pages}
+    formulas = {p.index: [b for b in p.blocks if b.type is BlockType.FORMULA and b.orphan] for p in pages}
     group = 0
     for page in pages:
         for b in sorted(page.blocks, key=lambda b: b.order):
@@ -170,11 +202,19 @@ def _supplement_continuations(pages: list[Page]) -> int:
             groups[b.id] = group
 
     def eligible(prev: Block, nxt: Block) -> bool:
+        def same_column(a: Block, b: Block) -> bool:
+            return a.bbox.x0 < b.bbox.x1 and b.bbox.x0 < a.bbox.x1
+
+        prev_barrier = any(same_column(b, prev) and b.bbox.y0 >= prev.bbox.y1 for b in formulas[prev.page])
+        next_barrier = any(same_column(b, nxt) and b.bbox.y1 <= nxt.bbox.y0 for b in formulas[nxt.page])
+        # 跨栏与跨页的自然阅读边界分别取前栏末尾和后栏开头。
+        across = prev.page != nxt.page or _column(prev, page_of[prev.page]) != _column(nxt, page_of[nxt.page])
         return (
             prev.id not in used
             and bool(text[prev.id])
             and not _SENTENCE_END.search(text[prev.id])
             and abs(prev.style.font_size - nxt.style.font_size) <= _MAX_SIZE_GAP
+            and not (across and (prev_barrier or next_barrier))
         )
 
     def link(prev: Block, nxt: Block) -> bool:
@@ -251,6 +291,48 @@ def _even_scan_sizes(pages: list[Page]) -> None:
             span.size = size
 
 
+def _protect_layout_scope(blocks: list[Block]) -> list[Rect]:
+    figures = [b.bbox for b in blocks if b.type is BlockType.FIGURE]
+    code = [b.bbox for b in blocks if b.type is BlockType.CODE]
+    protected_captions: list[Rect] = []
+    for block in blocks:
+        box = block.bbox
+        if block.type is BlockType.CAPTION and any(
+            (overlap := box.intersection(figure)) is not None and overlap.area >= 0.5 * box.area for figure in figures
+        ):
+            block.translatable = False
+            protected_captions.append(box)
+        if not block.translatable:
+            continue
+        text = RICH_TAG.sub("", _plain(block))
+        if (
+            block.type in {BlockType.TEXT, BlockType.TITLE, BlockType.CAPTION}
+            and len(text) <= 180
+            and len({span.line for span in block.spans}) <= 2
+            and _ALGORITHM.match(text)
+            and any(c.x0 - 6 <= box.x0 and box.x1 <= c.x1 + 6 and -8 <= c.y0 - box.y1 <= 12 for c in code)
+        ):
+            block.translatable = False
+    return protected_captions
+
+
+def _even_caption_sizes(pages: list[Page], backed: set[str]) -> None:
+    """用同页真实字号校准由路径绘制的图外子图题。"""
+    for page in pages:
+        captions = [b for b in page.blocks if b.type is BlockType.CAPTION and b.translatable]
+        measured = [b for b in captions if b.id in backed]
+        if not measured:
+            continue
+        for caption in captions:
+            if caption.id in backed or not _SUBCAPTION.match(RICH_TAG.sub("", _plain(caption))):
+                continue
+            siblings = [b for b in measured if abs(b.bbox.center[1] - caption.bbox.center[1]) <= b.style.font_size]
+            size = round(statistics.median(b.style.font_size for b in siblings or measured), 2)
+            caption.style.font_size = size
+            for span in caption.spans:
+                span.size = size
+
+
 def _size_from_lines(lb: LayoutBlock) -> float:
     """块里提取不到字符（如图表里用路径画出的标题）时按行高估字号。
 
@@ -276,6 +358,50 @@ def _size_for_scan(lb: LayoutBlock) -> float:
     return round(min(max(height / (1.25 * lines), 5.0), 24.0), 2)
 
 
+def _glyph_box(chars: Sequence[Char]) -> Rect:
+    return Rect.of(
+        (
+            min(c.bbox.x0 for c in chars),
+            min(c.bbox.y0 for c in chars),
+            max(c.bbox.x1 for c in chars),
+            max(c.bbox.y1 for c in chars),
+        )
+    )
+
+
+def _pua_fragments(text: str, chars: list[Char]) -> list[tuple[str, list[Char], bool]] | None:
+    """原文与字形中的私用字串数量一一对应且顺序可唯一定位时才裁图。"""
+    glyphs = sorted(chars, key=lambda c: (c.line, c.bbox.x0))
+    raw = "".join(c.c for c in glyphs)
+    if len(raw) != len(glyphs):
+        return None
+    fragments: list[tuple[str, list[Char], bool]] = []
+    start = glyph_start = 0
+    for run in _PUA_RUN.finditer(text):
+        if len(run[0]) > 4 or text.count(run[0]) != raw.count(run[0]):
+            return None
+        pos = raw.find(run[0], glyph_start)
+        if pos < 0:
+            return None
+        end = pos + len(run[0])
+        selected = glyphs[pos:end]
+        # 跨脚本或强调的私用字不能拆开其成对标签。
+        tags = list(RICH_TAG.finditer(text, start, run.start()))
+        if sum(-1 if tag[0].startswith("</") else 1 for tag in tags):
+            return None
+        box = _glyph_box(selected)
+        if (
+            pos < glyph_start or box.area <= 0 or len({c.line for c in selected}) != 1
+            or any(c.bbox.x0 - p.bbox.x1 > max(c.size, p.size) * 0.5 for p, c in pairwise(selected))
+            or any(box.contains_point(*c.bbox.center) for c in glyphs[:pos] + glyphs[end:] if not c.c.isspace())
+        ):  # fmt: skip
+            return None
+        fragments.extend(((text[start : run.start()], glyphs[glyph_start:pos], False), ("", selected, True)))
+        start, glyph_start = run.end(), end
+    fragments.append((text[start:], glyphs[glyph_start:], False))
+    return fragments
+
+
 def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], links: dict, report: FusionReport) -> Block:
     scanned = cp.kind is PageKind.SCANNED
     style = block_style(
@@ -285,8 +411,10 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], links: dict, report
     )
     spans: list[Span] = []
     formulas: list[InlineFormula] = []
+    unresolved = False
     for li, line in enumerate(lb.lines):
         formula_boxes = [s.bbox for s in line.spans if s.kind == "inline_formula" and s.located]
+        text_candidates = [s.bbox for s in line.spans if s.kind == "text"]
         for s in line.spans:
             if s.kind == "inline_formula":
                 key = f"m{len(formulas) + 1}"
@@ -296,17 +424,43 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], links: dict, report
             report.text_spans += 1
             span_chars = chars_in(chars, s.bbox, exclude=formula_boxes) if cp.kind is PageKind.NATIVE else []
             pdf_text = text_of(span_chars)
-            text, replaced = choose(s.content, pdf_text)
-            report.text_replaced += replaced
-            if text:
-                bold, ranges = bold_ranges(text, span_chars)
-                italic, italic_ranges_ = italic_ranges(text, span_chars)
-                span_style = block_style(span_chars, fallback_size=style.font_size, title=lb.type is BlockType.TITLE)
+            stripped = strip_fake_scripts(s.content, span_chars)
+            recovered = recover_dropped_chars(stripped, pdf_text)
+            text, replaced = choose(recovered, pdf_text)
+            report.text_replaced += replaced or recovered != stripped
+            fragments = [(text, span_chars, False)]
+            if _PUA_RUN.search(text):
+                cropped = _pua_fragments(text, span_chars)
+                if cropped is not None and any(
+                    not s.bbox.contains_point(*c.bbox.center)
+                    or sum(box.contains_point(*c.bbox.center) for box in text_candidates) != 1
+                    for _, glyphs, crop in cropped if crop for c in glyphs
+                ):  # fmt: skip
+                    cropped = None
+                if cropped is None:
+                    unresolved = True
+                else:
+                    fragments = cropped
+            for piece, piece_chars, crop in fragments:
+                box = _glyph_box(piece_chars) if len(fragments) > 1 and piece_chars else s.bbox
+                if crop:
+                    key = f"m{len(formulas) + 1}"
+                    formulas.append(InlineFormula(key=key, latex="", bbox=box, located=True))
+                    spans.append(Span(kind="formula", formula=key, line=li, bbox=box, size=style.font_size))
+                    continue
+                if not piece.strip():
+                    continue
+                plain = RICH_TAG.sub("", piece).strip()
+                if plain and all(c.isspace() or is_broken(c) for c in plain):
+                    unresolved = True
+                bold, ranges = bold_ranges(piece, piece_chars)
+                italic, italic_ranges_ = italic_ranges(piece, piece_chars)
+                span_style = block_style(piece_chars, fallback_size=style.font_size, title=lb.type is BlockType.TITLE)
                 spans.append(
                     Span(
-                        text=text,
+                        text=piece,
                         line=li,
-                        bbox=s.bbox,
+                        bbox=box,
                         size=span_style.font_size,
                         bold=bold,
                         bold_ranges=ranges,
@@ -328,8 +482,103 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], links: dict, report
         latex=lb.latex,
         continues_from=block_id(*prev) if prev else None,
         style=style,
-        translatable=lb.type in TRANSLATABLE_TYPES and not lb.discarded and any(s.text.strip() for s in spans),
+        translatable=(
+            lb.type in TRANSLATABLE_TYPES and not lb.discarded and not unresolved and any(s.text.strip() for s in spans)
+        ),
     )
+
+
+def _math_reference_metrics(chars: list[Char]) -> tuple[float, float | None]:
+    """上下标密集的公式行里小字可能超过半数；按较大主簇确定主字号和基线，避免中位数掉进下标。"""
+    sizes = sorted(c.size for c in chars)
+    size, baseline = main_metrics(chars)
+    high = sizes[min(len(sizes) - 1, int(len(sizes) * 0.75))]
+    if high >= 1.15 * size:
+        major = [c for c in chars if 0.88 * high < c.size <= 1.14 * high]
+        if major:
+            size = statistics.median(c.size for c in major)
+            bases = [c.origin_y for c in major if c.origin_y is not None]
+            baseline = statistics.median(bases) if bases else None
+    return size, baseline
+
+
+def _math_region(chars: list[Char], numbered: bool) -> bool:
+    if not chars or any(is_broken(c.c) and not is_pua(c.c) for c in chars):
+        return False
+    size, baseline = _math_reference_metrics(chars)
+    math_fonts = sum(bool(MATH_FONT.search(c.font)) for c in chars) >= 0.55 * len(chars)
+    text = "".join(c.c for c in chars)
+    operator = bool(_MATH_OPERATOR.search(text))
+    unpaired = text.count("(") != text.count(")") or text.count("[") != text.count("]")
+    alnum_scripts = [script_glyph(c, size, baseline) for c in chars if c.c.isalnum()]
+    jump = any(alnum_scripts) and not all(alnum_scripts)
+    ordinary = 0
+    for match in re.finditer(r"[A-Za-z]+", text):
+        word = chars[match.start() : match.end()]
+        # rawdict 可能省略词间空格，同时用字形间距断开。
+        runs: list[list[Char]] = [[]]
+        for glyph in word:
+            if runs[-1] and glyph.bbox.x0 - runs[-1][-1].bbox.x1 > 0.25 * size:
+                runs.append([])
+            runs[-1].append(glyph)
+        for run in runs:
+            scripts = [script_glyph(c, size, baseline) for c in run]
+            token = "".join(c.c for c in run)
+            if (
+                len(token) >= 3
+                and not any(scripts)
+                and token.lower() not in MATH_WORDS
+                and not (token.isupper() and len(token) <= 3)
+            ):
+                ordinary += 1
+    return ordinary < 2 and (
+        (numbered and (operator or jump or math_fonts or unpaired))
+        or (math_fonts and (operator or jump or unpaired))
+        or (jump and operator)
+    )
+
+
+def _orphan_formulas(cp: CharPage, orphans: list[Char], start: int) -> tuple[list[Block], list[Char]]:
+    """按基线重建数学区域，保留原像素并阻挡译文下溢。"""
+    blocks: list[Block] = []
+    used: set[int] = set()
+    for row in visual_lines([c for c in orphans if c.upright]):
+        visible = [c for c in row if not c.c.isspace()]
+        if len(visible) < 3:
+            continue
+        size, baseline = _math_reference_metrics(visible)
+        runs: list[list[Char]] = [[visible[0]]]
+        for left, right in pairwise(visible):
+            if right.bbox.x0 - left.bbox.x1 > max(4 * size, cp.width * 0.06):
+                runs.append([])
+            runs[-1].append(right)
+        # 式号可以是 PyMuPDF 的另一行，必须与主体共基线且位于主体右侧。
+        number = runs[-1]
+        numbered = (
+            len(runs) >= 2
+            and _EQUATION_NUMBER.fullmatch("".join(c.c for c in number)) is not None
+            and all(not script_glyph(c, size, baseline) for c in number)
+        )
+        body_all = [c for run in runs[:-1] for c in run]
+        regions = [(visible, body_all, True)] if numbered else [(run, run, False) for run in runs]
+        for region, body, with_number in regions:
+            if not _math_region(body, with_number):
+                continue
+            order = start + len(blocks)
+            blocks.append(
+                Block(
+                    id=block_id(cp.index, order),
+                    page=cp.index,
+                    type=BlockType.FORMULA,
+                    bbox=_glyph_box(region),
+                    order=order,
+                    style=block_style(region),
+                    translatable=False,
+                    orphan=True,
+                )
+            )
+            used.update(id(c) for c in region)
+    return blocks, [c for c in orphans if id(c) not in used]
 
 
 def _orphan_blocks(cp: CharPage, orphans: list[Char], start: int, report: FusionReport) -> list[Block]:
@@ -457,7 +706,13 @@ def _meta(pages: list[Page], parser: str, used_cloud: bool) -> DocMeta:
     title = paper_title(pages)
     abstract = ""
     for i, b in enumerate(blocks):
-        if b.type is BlockType.TITLE and "".join(_plain(b).split()).lower().rstrip(":：") == "abstract":
+        text = RICH_TAG.sub("", _plain(b))
+        if b.type is BlockType.TEXT and (lead := INLINE_ABSTRACT.match(text)) and text[:8].casefold() == "abstract":
+            abstract = text[lead.end() :].strip()
+            if abstract:
+                break
+        heading = "".join(SECTION_NUMBER.sub("", text).split()).casefold().rstrip(":：")
+        if b.type is BlockType.TITLE and heading == "abstract":
             abstract = next((_plain(x) for x in blocks[i + 1 :] if x.type is BlockType.TEXT and _plain(x)), "")
             break
     if not abstract:  # 没有“Abstract”标题时，取第一段足够长的正文（S10：BERT 论文即如此）

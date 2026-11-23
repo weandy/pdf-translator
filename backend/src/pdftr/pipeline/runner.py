@@ -34,7 +34,7 @@ from pdftr.storage.port import ArtifactStore, JobStore
 from pdftr.translation.cost import add_cost
 from pdftr.translation.port import TranslationCache
 from pdftr.translation.prompt import DocContext
-from pdftr.translation.segmenter import segment
+from pdftr.translation.segmenter import BAD_SOURCE_MESSAGE, bad_source, segment
 from pdftr.translation.service import TranslateOptions, default_concurrency, translate
 
 log = logging.getLogger(__name__)
@@ -423,6 +423,8 @@ class Pipeline:
             return
         doc = load_document(self.deps, job.id)
         segs = self.deps.store.segments(job.id)
+        if bad_source(segs):
+            raise StageError(BAD_SOURCE_MESSAGE)
         headings = [s.source for s in segs if (b := doc.block(s.block_ids[0])) and b.type is BlockType.TITLE]
         body = " ".join(s.source for s in segs)
         intro = next((s.source for s in segs if len(s.source.split()) >= 30 and s.source != doc.meta.abstract), "")
@@ -438,6 +440,8 @@ class Pipeline:
 
     async def _translate(self, job: Job, secrets: Secrets) -> None:
         segs = self.deps.store.segments(job.id)
+        if bad_source(segs):
+            raise StageError(BAD_SOURCE_MESSAGE)
         ctx, terms = await asyncio.to_thread(load_context, self.deps, job.id, job.options.user_terms)
 
         def progress(done: int, total: int, note: str = "") -> None:

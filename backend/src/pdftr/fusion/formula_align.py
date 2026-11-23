@@ -10,13 +10,15 @@
 import difflib
 import re
 import statistics
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 
 from pdftr.domain.chars import Char
 from pdftr.domain.geometry import Rect
 from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutSpan
-from pdftr.fusion.text_fix import chars_in, text_of
+from pdftr.domain.text import RICH_TAG
+from pdftr.fusion.text_fix import chars_in, main_metrics, text_of
 
 _FORMULA = re.compile(r"\$\$?([^$]+?)\$\$?")
 _MAX_HEIGHT = 3.2  # 行内公式的高度最多约 3 个字号（跨一次行，或带上下标、分式）
@@ -31,14 +33,129 @@ _SPLIT_WORD = re.compile(
 )
 _TRAILING_MARK = re.compile(r"(?<![\\.,;:])(?:\\colon|(?:\\(?:mathrm|text)\s*)?\{\s*:\s*\}|([,;:.]))$")
 _TRAILING_FRAGMENT = re.compile(r"\b[A-Za-z]*[a-z][A-Z][A-Za-z]*$")
+_LEADING_PROSE = re.compile(
+    r"^(?:\\(?:mathrm|text)\s*\{\s*(?P<latin>(?:i\s*\.\s*e\s*\.|e\s*\.\s*g\s*\.)\s*,)\s*\}|"
+    r"(?P<reference>(?:E\s*q\s*\.|\\(?:mathrm|text|operatorname)\s*\{\s*E\s*q\s*\.\s*\})"
+    r"\s*(?:\\left\s*)?\(\s*\d+(?:\s*[a-z])?\s*(?:\\right\s*)?\)\s*,))\s*"
+)
+_TAIL_SCRIPT = re.compile(r";\s*(?:\{\s*\^\s*(?:\{(\d+)\}|(\d+))\s*\}|\^\s*\{(\d+)\}|\(\s*(\d+)\s*\))$")
+_TAIL_POSSESSIVE = re.compile(r"(?:'|\{\s*'\s*\}|\\prime|\^\s*\{\s*\\prime\s*\})\s*s$")
+_TAIL_WORD = re.compile(r"\\(?:mathrm|text)\s*\{\s*([a-z](?:\s*[a-z]){2,})\s*\}$")
+_TAIL_SUB_SEMICOLON = re.compile(r"_\s*\{\s*;\s*\}$")
+MATH_WORDS = frozenset(
+    "arccos arcsin arctan arg cos cosh cot coth csc deg det dim erf exp gcd inf ker lcm lim liminf limsup "
+    "log max min mod Pr prob rank sec sign sgn sin sinh sup tan tanh trace tr grad div curl diag span "
+    "abs ceil floor norm card var cov std mean med median argmax argmin const "
+    "mol rad deg rpm min sec hour day byte bit kwh mwh mpa kpa mhz khz ghz ohm dba ppm ppb".lower().split()
+)
+_TEX_TOKEN = re.compile(r"\\(?:begin|end)\{[^{}]+\}|\\(?:left|right)\s*[.|]|\\(?:[a-zA-Z]+|.)|.", re.S)
+_OPEN = {
+    "(": ")",
+    "[": "]",
+    "{": "}",
+    r"\{": r"\}",
+    r"\langle": r"\rangle",
+    r"\lvert": r"\rvert",
+    r"\lVert": r"\rVert",
+    r"\left|": r"\right|",
+}
+_CLOSE = frozenset(_OPEN.values())
+_EDGE_OPEN = re.compile(r"^(?:\\left\s*)?([(\[])")
+_EDGE_CLOSE = re.compile(r"(?:\\(?:left|right)\s*)?([()\[\]])$")
+_INTERVAL = re.compile(r"^[\[(][^;]*,[^;]*[)\]]$")
+MATH_FONT = re.compile(
+    r"(?:STIX.*Math|CMSY|CMMI|CMEX|CMR\d|LMMath|LatinModernMath|CambriaMath|MathJax|Symbol|MSAM|MSBM)", re.I
+)
 
 
-def _content_parts(content: str) -> list[str]:
+def _delimiters(latex: str) -> tuple[set[int], list[tuple[int, str]]]:
+    """扫描 LaTeX 外层边界。转义间距和环境内的分号不属于正文。"""
+    stack: list[tuple[int, str, str]] = []
+    surface: set[int] = set()
+    unmatched: list[tuple[int, str]] = []
+    for match in _TEX_TOKEN.finditer(latex):
+        token, pos = match[0].replace(" ", "") if match[0].startswith("\\") else match[0], match.start()
+        if not stack:
+            surface.add(pos)
+        if token in _OPEN:
+            stack.append((pos, token, _OPEN[token]))
+        elif token.startswith(r"\begin{"):
+            stack.append((pos, token, r"\end{" + token[7:]))
+        elif token in _CLOSE or token.startswith(r"\end{"):
+            if stack and (
+                stack[-1][2] == token
+                or (token in {")", "]"} and stack[-1][1] in {"(", "["} and "," in latex[stack[-1][0] : pos])
+            ):
+                stack.pop()
+            else:
+                unmatched.append((pos, token))
+    unmatched.extend((pos, token) for pos, token, _ in stack)
+    return surface, unmatched
+
+
+def _independent(latex: str) -> bool:
+    if not latex or _delimiters(latex)[1] or re.search(r"^[=<>;,*/]|[=<>;,+\-*/]$", latex):
+        return False
+    return bool(re.search(r"\d|[=<>_^+*/−-]|\\[A-Za-z]+|[()[\]]", latex) or re.fullmatch(r"[A-Za-zα-ωΑ-Ω]", latex))
+
+
+def _boundary_parts(latex: str) -> tuple[str, list[str], str]:
+    prefix = suffix = ""
+    if (lead := _LEADING_PROSE.match(latex)) and lead.end() < len(latex):
+        if lead["latin"]:
+            prefix = "".join(lead["latin"].split()) + " "
+        else:
+            ref = "".join(lead["reference"].split())
+            ref = re.sub(r"\\(?:mathrm|text|operatorname)\{Eq\.\}", "Eq.", ref)
+            ref = re.sub(r"\\(?:left|right)", "", ref)
+            prefix = re.sub(r"Eq\.\((\d+[a-z]?)\)", r"Eq. (\1)", ref) + " "
+        latex = latex[lead.end() :]
+    surface, _ = _delimiters(latex)
+    for pattern in (_TAIL_SCRIPT, _TAIL_POSSESSIVE, _TAIL_WORD):
+        tail = pattern.search(latex)
+        if tail is None or tail.start() not in surface:
+            continue
+        body = latex[: tail.start()].rstrip()
+        if not body or body.endswith(("_", "^", "\\")):
+            continue
+        if pattern is _TAIL_SCRIPT:
+            number = next(n for n in tail.groups() if n is not None)
+            suffix = f"; ({number})" if tail[4] else f"; <sup>{number}</sup>"
+        elif pattern is _TAIL_POSSESSIVE:
+            suffix = "'s"
+        else:
+            word = "".join(tail[1].split())
+            if word in MATH_WORDS or body.endswith((r"\,", r"\;", r"\!")):
+                continue
+            suffix = " " + word
+        latex = body
+        break
+    if (sub_semi := _TAIL_SUB_SEMICOLON.search(latex)) and sub_semi.start() in surface and sub_semi.start() > 0:
+        latex, suffix = latex[: sub_semi.start()].rstrip(), ";" + suffix
+    if latex and not latex.endswith(r"\right.") and not _INTERVAL.fullmatch(latex):
+        _, unmatched = _delimiters(latex)
+        leading = _EDGE_OPEN.match(latex)
+        if leading and (leading.start(1), leading[1]) in unmatched and leading.end() < len(latex):
+            prefix += leading[1]
+            latex = latex[leading.end() :].lstrip()
+        _, unmatched = _delimiters(latex)
+        closing = _EDGE_CLOSE.search(latex)
+        if closing and (closing.start(1), closing[1]) in unmatched and closing.start() > 0:
+            latex, suffix = latex[: closing.start()].rstrip(), closing[1] + suffix
+    surface, _ = _delimiters(latex)
+    cuts = [i for i, char in enumerate(latex) if char == ";" and i in surface]
+    bounds = [-1, *cuts, len(latex)]
+    pieces = [latex[a + 1 : b].strip() for a, b in pairwise(bounds)]
+    return prefix, pieces if cuts and all(map(_independent, pieces)) else [latex], suffix
+
+
+def _content_parts(content: str, unchanged: dict[int, int] | None = None) -> list[str]:
     """先还原被公式边界吞掉的正文，供字符对齐和扫描页共用。"""
     raw = _FORMULA.split(content)
     parts = [raw[0]]
     for i in range(1, len(raw), 2):
         latex, after = raw[i].strip(), raw[i + 1]
+        original = latex
         if lead := _LEADING_TEXT.match(latex):
             word = "".join((lead.group(1) or lead.group(2)).split())
             if re.fullmatch(_CONNECTIVE, word):
@@ -52,14 +169,20 @@ def _content_parts(content: str) -> list[str]:
                 latex = latex[lead.end() :]
         if mark := _TRAILING_MARK.search(latex):
             body = latex[: mark.start()].rstrip()
-            if body and not body.endswith(("_", "^", "{", "\\")):
+            if body and mark.start() in _delimiters(latex)[0] and not body.endswith(("_", "^", "{", "\\")):
                 after = (mark.group(1) or ":") + after
                 latex = body
                 if latex.isdecimal():
                     parts[-1] += latex
                     latex = ""
         if latex:
-            parts.extend((latex, after))
+            prefix, formulas, suffix = _boundary_parts(latex)
+            parts[-1] += prefix
+            if unchanged is not None and formulas == [original]:
+                unchanged[len(parts) // 2] = i // 2
+            for formula in formulas[:-1]:
+                parts.extend((formula, "; "))
+            parts.extend((formulas[-1], suffix + after))
         else:
             parts[-1] += after
     return parts
@@ -77,7 +200,7 @@ class Located:
 
 
 def _words(text: str) -> list[str]:
-    return [w.lower() for w in re.findall(r"[^\W_]+", text)]
+    return [w.lower() for w in re.findall(r"[^\W_]+", RICH_TAG.sub("", text))]
 
 
 def locate_formulas(content: str, chars: Sequence[Char], rows: Sequence[int] | None = None) -> list[Located]:
@@ -142,6 +265,7 @@ def locate_formulas(content: str, chars: Sequence[Char], rows: Sequence[int] | N
 def _trim(part: list[int], chars: Sequence[Char], before: str, after: str) -> list[int]:
     """公式前后紧挨的标点（如句末的“.”、括号）属于正文：前文结尾、后文开头的标点从公式范围里还回去。"""
     part = list(part)
+    before, after = RICH_TAG.sub("", before), RICH_TAG.sub("", after)
     lead = re.match(r"[^\w]*", after.lstrip()).group(0) if after else ""  # type: ignore[union-attr]
     for c in reversed([c for c in lead if not c.isspace()]):
         if part and chars[part[-1]].c == c:
@@ -176,9 +300,9 @@ def _split(free: list[int], chars: Sequence[Char], separators: list[str]) -> lis
     rest = free
     for sep in separators:
         mark = [c for c in sep if not c.isspace()]
-        cut = next(
-            (p for p in range(len(rest)) if mark and [chars[k].c for k in rest[p : p + len(mark)]] == mark), None
-        )
+        surface, _ = _delimiters("".join(chars[k].c for k in rest))
+        candidates = [p for p in surface if mark and [chars[k].c for k in rest[p : p + len(mark)]] == mark]
+        cut = candidates[0] if len(candidates) == 1 else None
         if cut is None:
             return [free] + [[] for _ in separators]
         parts.append(rest[:cut])
@@ -193,19 +317,28 @@ def visual_lines(chars: Sequence[Char]) -> list[list[Char]]:
     """
 
     def center(cs: list[Char]) -> float:
-        ys = sorted((c.bbox.y0 + c.bbox.y1) / 2 for c in cs)
-        return ys[len(ys) // 2]
+        return statistics.median(c.bbox.center[1] for c in cs)
 
     by_line: dict[int, list[Char]] = {}
     for c in chars:
         by_line.setdefault(c.line, []).append(c)
     groups: list[list[list[Char]]] = []  # 每组若干 PyMuPDF 行，第一个是主行（字最多）
+    metrics = {id(line): main_metrics(line) for line in by_line.values()}
     for line in sorted(by_line.values(), key=center):
-        size = sorted(c.size for c in line)[len(line) // 2]
-        for g in groups:
+        size, baseline = metrics[id(line)]
+        for g in reversed(groups):
             main = max(g, key=len)
-            if abs(center(line) - center(main)) < 0.6 * max(size, sorted(c.size for c in main)[len(main) // 2]):
+            main_size, main_baseline = metrics[id(main)]
+            gap = (
+                abs(baseline - main_baseline)
+                if baseline is not None and main_baseline is not None
+                else abs(center(line) - center(main))
+            )
+            if gap < 0.6 * max(size, main_size):
                 g.append(line)
+                break
+            if center(line) - center(main) > 2 * max(size, main_size):
+                groups.append([line])
                 break
         else:
             groups.append([line])
@@ -255,19 +388,66 @@ def _flush_text(run: list[Char], spans: list[LayoutSpan]) -> None:
     run.clear()
 
 
+_MATH_BRIDGE = re.compile(r",?\s*[A-Za-z]{1,8}")
+
+
+def merge_torn_formulas(line: LayoutLine, chars: Sequence[Char]) -> LayoutLine:
+    """只合并两端括号互补且中间字形唯一归属的公式。"""
+    spans = line.spans.copy()
+    i = 0
+    while i + 2 < len(spans):
+        left, middle, right = spans[i : i + 3]
+        if (
+            (left.kind, middle.kind, right.kind) == ("inline_formula", "text", "inline_formula")
+            and left.located and right.located
+            and [token for _, token in _delimiters(left.content)[1]] == ["("]
+            and [token for _, token in _delimiters(right.content)[1]] == [")"]
+            and _MATH_BRIDGE.fullmatch(middle.content.strip())
+            and left.bbox.center[0] < middle.bbox.center[0] < right.bbox.center[0]
+        ):  # fmt: skip
+            boxes = (left.bbox, middle.bbox, right.bbox)
+            owned: list[list[Char]] = [[], [], []]
+            box = Rect.of((left.bbox.x0, min(b.y0 for b in boxes), right.bbox.x1, max(b.y1 for b in boxes)))
+            for glyph in chars_in(chars, box, tol=0):
+                if glyph.c.isspace():
+                    continue
+                matches = [n for n, b in enumerate(boxes) if b.contains_point(*glyph.bbox.center)]
+                if len(matches) != 1:
+                    break
+                owned[matches[0]].append(glyph)
+            else:
+                inner = owned[1]
+                if (
+                    all(owned)
+                    and text_of(inner).replace(" ", "") == "".join(middle.content.split())
+                    and all(MATH_FONT.search(c.font) for c in inner if c.c.isalpha())
+                    and len(visual_lines([c for group in owned for c in group])) == 1
+                ):
+                    latex = " ".join((left.content.rstrip(), middle.content.strip(), right.content.lstrip()))
+                    spans[i : i + 3] = [left.model_copy(update={"content": latex, "bbox": box})]
+        i += 1
+    return line.model_copy(update={"spans": spans})
+
+
 def clean_formula_lines(block: LayoutBlock, chars: Sequence[Char]) -> LayoutBlock:
     """MinerU 已给行级公式时，只重新定位确实吞字的行，其余沿用原坐标。"""
     lines: list[LayoutLine] = []
     for line in block.lines:
+        if len(line.spans) >= 3 and chars:
+            line = merge_torn_formulas(line, chars)
         if not any(span.kind == "inline_formula" for span in line.spans) or any(
             span.kind == "text" and "$" in span.content for span in line.spans
         ):
             lines.append(line)
             continue
         content = " ".join(
-            f"${span.content.strip()}$" if span.kind == "inline_formula" else span.content for span in line.spans
+            f"${span.content.strip()}$" if span.kind == "inline_formula" else span.content
+            for span in line.spans
+            if span.kind == "text" or span.content.strip()
         )
-        if _content_parts(content) == _FORMULA.split(content):
+        unchanged: dict[int, int] = {}
+        cleaned = _content_parts(content, unchanged)
+        if cleaned == _FORMULA.split(content):
             lines.append(line)
             continue
         line_chars = chars_in(chars, line.bbox, tol=1.0)
@@ -275,8 +455,65 @@ def clean_formula_lines(block: LayoutBlock, chars: Sequence[Char]) -> LayoutBloc
             block.model_copy(update={"bbox": line.bbox, "content": content}), line_chars
         )
         # 原框仍比无锚点的猜测可靠，扫描页则保留新分出的文字和公式。
-        lines.extend(refined.lines if not line_chars or total == found else [line])
+        scripts = _script_payloads(cleaned[::2])
+        restored = _script_payloads(s.content for row in refined.lines for s in row.spans if s.kind == "text")
+        if line_chars and (total != found or scripts != restored):
+            lines.append(line)
+            continue
+        originals = [s for s in line.spans if s.kind == "inline_formula" and s.content.strip()]
+        index = 0
+        for new_line in refined.lines:
+            for j, span in enumerate(new_line.spans):
+                if span.kind == "inline_formula":
+                    if index in unchanged:
+                        new_line.spans[j] = originals[unchanged[index]]
+                    index += 1
+        lines.extend(refined.lines)
     return block.model_copy(update={"lines": lines})
+
+
+_SCRIPTS = re.compile(r"<(sup|sub)>([^<>]+)</\1>")
+
+
+def _script_payloads(parts: Iterable[str]) -> list[tuple[str, str]]:
+    return [(match[1], "".join(match[2].split())) for part in parts for match in _SCRIPTS.finditer(part)]
+
+
+def _tagged_chars(content: str, chars: list[Char], owner: dict[int, int], rows: dict[int, int]) -> dict[int, str]:
+    """用清洗后的正文锚定上下标字形，再将标签写回重建的文字片段。"""
+    plain = ""
+    scripts: list[tuple[int, int, str]] = []
+    for part in _content_parts(content)[::2]:
+        text = re.sub(r"</?[bi]>", "", part)
+        start = 0
+        for match in _SCRIPTS.finditer(text):
+            plain += "".join(text[start : match.start()].split())
+            payload = "".join(match[2].split())
+            scripts.append((len(plain), len(plain) + len(payload), match[1]))
+            plain += payload
+            start = match.end()
+        plain += "".join(text[start:].split())
+    if not scripts:
+        return {}
+    indices = [i for i, c in enumerate(chars) if i not in owner and not c.c.isspace()]
+    actual = "".join(chars[k].c for k in indices)
+    mapping = {
+        a + i: indices[b + i]
+        for a, b, count in difflib.SequenceMatcher(None, plain, actual, autojunk=False).get_matching_blocks()
+        for i in range(count)
+    }
+    tagged: dict[int, str] = {}
+    for lo, hi, tag in scripts:
+        mapped = [mapping.get(i) for i in range(lo, hi)]
+        if not mapped or any(i is None for i in mapped):
+            continue
+        glyphs = [k for k in mapped if k is not None]
+        first, last = glyphs[0], glyphs[-1]
+        if rows[id(chars[first])] != rows[id(chars[last])] or any(k in owner for k in range(first, last)):
+            continue
+        tagged[first] = f"<{tag}>" + chars[first].c
+        tagged[last] = tagged.get(last, chars[last].c) + f"</{tag}>"
+    return tagged
 
 
 def refine_block(block: LayoutBlock, chars: Sequence[Char]) -> tuple[LayoutBlock, int, int]:
@@ -307,6 +544,7 @@ def refine_block(block: LayoutBlock, chars: Sequence[Char]) -> tuple[LayoutBlock
     row_of = {id(c): n for n, row in enumerate(rows) for c in row}
     located = locate_formulas(content, ordered, [row_of[id(c)] for c in ordered])
     owner = {k: n for n, f in enumerate(located) for k in f.chars}  # PDF 字符下标 → 公式编号
+    tagged = _tagged_chars(content, ordered, owner, row_of) if _SCRIPTS.search(content) or ";" in content else {}
 
     lines: list[LayoutLine] = []
     emitted: set[int] = set()
@@ -317,7 +555,7 @@ def refine_block(block: LayoutBlock, chars: Sequence[Char]) -> tuple[LayoutBlock
         for k in idx:
             n = owner.get(k)
             if n is None:
-                run.append(ordered[k])
+                run.append(ordered[k].model_copy(update={"c": tagged[k]}) if k in tagged else ordered[k])
                 continue
             _flush_text(run, spans)
             if n not in emitted:  # 跨行的公式只在第一行出一个片段，框取它在这一行的部分

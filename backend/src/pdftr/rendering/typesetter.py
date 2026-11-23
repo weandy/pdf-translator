@@ -24,7 +24,8 @@ _NO_START = set("，。、；：？！）》」』】〕〉”’…—,.;:?!)]}
 _NO_END = set("（《「『【〔〈“‘([{")
 _TOKEN = re.compile(r"<(/?)(sup|sub|b|i)>|<(m\d+)/>")
 _SCRIPT_SCALE = 0.7  # 上下标字号
-_WORD_BREAK = re.compile(r"(?<=[A-Za-z0-9][/\-–])(?=[A-Za-z0-9])")  # 词内可断行处：/ 与连字符之后
+_WORD_BREAK = re.compile(r"(?<=[A-Za-z0-9][/_\-–])(?=[A-Za-z0-9])")
+MAX_JUSTIFY_EXTRA = 0.25  # 超过四分之一个字号的额外字距会造成明显断层
 
 
 @dataclass
@@ -346,7 +347,9 @@ class Typesetter:
             extra, offset = 0.0, 0.0
             gaps = sum(1 for t in line.tokens[1:] if not t.attach)
             if align == "justify" and not line.last and gaps > 0:
-                extra = max(width - natural, 0.0) / gaps
+                raw_extra = max(width - natural, 0.0) / gaps
+                if raw_extra <= MAX_JUSTIFY_EXTRA * size:
+                    extra = raw_extra
             elif align == "center":
                 offset = max(width - natural, 0.0) / 2
             x = lead + offset

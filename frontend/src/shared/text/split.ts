@@ -1,45 +1,58 @@
 /**
  * 把一个段落的译文按各块原文长度拆开（跨栏/跨页段落），优先在标点处断开，不拆开公式占位符。
- * 拆分方法与 spikes/s5b_mineru_overlay.py 中验证过的一致。
+ * 权重、舍入及行首禁则与后端 rendering/export.py 一致。
  */
 
 const BREAK_AFTER = new Set(["，", "。", "；", "：", "、", "）", "！", "？", ",", ";", ":", ".", ")"]);
+const NO_START = new Set("，。、；：？！）》」』】〕〉”’…—,.;:?!)]}%");
 const SEARCH = 40;
 
-function insidePlaceholder(text: string, pos: number): boolean {
-  const open = text.lastIndexOf("<", pos - 1);
-  return open !== -1 && text.indexOf(">", open) >= pos;
-}
-
-function cutNear(text: string, target: number): number {
+function cutNear(atoms: RegExpMatchArray[], start: number, target: number, limit: number): number {
   for (let d = 0; d <= SEARCH; d++) {
     for (const pos of [target - d, target + d]) {
-      if (pos > 0 && pos < text.length && BREAK_AFTER.has(text[pos - 1] ?? "") && !insidePlaceholder(text, pos)) {
+      if (pos > start && pos <= limit && BREAK_AFTER.has(atoms[pos - 1]?.[0] ?? "")) {
         return pos;
       }
     }
   }
-  // 附近没有标点：退回目标位置，但避开占位符
-  let pos = Math.min(Math.max(target, 1), text.length - 1);
-  while (pos < text.length && insidePlaceholder(text, pos)) pos++;
-  return pos;
+  return Math.min(Math.max(target, start + 1), limit);
 }
 
 export function splitByParts(text: string, partChars: number[]): string[] {
   if (partChars.length <= 1) return [text];
+  const atoms = [...text.matchAll(/<\/?(?:b|i|sup|sub)>|<m\d+\/>|[\s\S]/gu)]
+    .filter((atom) => !/^<\/?(?:b|i|sup|sub)>$/.test(atom[0]));
+  const closingTags = /(?:<\/(?:b|i|sup|sub)>)*/y;
   const total = partChars.reduce((a, b) => a + b, 0) || 1;
   const pieces: string[] = [];
   let start = 0;
+  let offset = 0;
   let cumulative = 0;
   for (let i = 0; i < partChars.length - 1; i++) {
     cumulative += partChars[i] ?? 0;
-    // 第 i 块结束位置 ≈ 译文总长 × 前 i 块原文占比
-    const target = Math.round((text.length * cumulative) / total);
-    const cut = start >= text.length ? text.length : cutNear(text, Math.max(target, start + 1));
-    pieces.push(text.slice(start, cut));
+    if (start >= atoms.length) {
+      pieces.push(text.slice(offset));
+      offset = text.length;
+      continue;
+    }
+    const target = Math.floor((2 * atoms.length * cumulative + total) / (2 * total));
+    const limit = Math.max(start + 1, atoms.length - (partChars.length - i - 1));
+    let cut = cutNear(atoms, start, Math.min(Math.max(target, start + 1), limit), limit);
+    const last = atoms[cut - 1]!;
+    let end = last.index! + last[0].length;
+    for (;;) {
+      closingTags.lastIndex = end;
+      end = closingTags.exec(text) ? closingTags.lastIndex : end;
+      const next = atoms[cut];
+      if (!next || next.index !== end || !NO_START.has(next[0])) break;
+      end += next[0].length;
+      cut++;
+    }
+    pieces.push(text.slice(offset, end));
+    offset = end;
     start = cut;
   }
-  pieces.push(text.slice(start));
+  pieces.push(text.slice(offset));
   return balanceRichParts(pieces);
 }
 

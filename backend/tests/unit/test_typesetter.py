@@ -3,7 +3,7 @@
 import pymupdf
 
 from pdftr.rendering.typeset import drop_fake_scripts
-from pdftr.rendering.typesetter import FontSet, Style, Typesetter
+from pdftr.rendering.typesetter import MAX_JUSTIFY_EXTRA, FontSet, Style, Typesetter
 
 TS = Typesetter(FontSet.load(None))
 SIZE = 10.0
@@ -42,6 +42,34 @@ def test_long_word_breaks_after_slash():
     # 某些宽度下整个 Python/OR-Tools 放不下：允许在 / 或连字符后断开，而不是整词挪到下一行
     ends = {_text(_lines("生成可执行的Python/OR-Tools代码", w * SIZE)[0])[-1] for w in range(7, 13)}
     assert ends & {"/", "-"}
+
+
+def test_underscore_is_a_break_between_latin_letters_only():
+    tokens = TS.tokenize("long_variable_2 _private", "body", SIZE, lambda key: None)
+    assert ["".join(r.text for r in token.runs) for token in tokens] == ["long_", "variable_", "2", " ", "_private"]
+
+
+def test_justification_stops_above_quarter_em():
+    line = _lines("甲乙丙丁", 2 * SIZE)[0]
+    natural = sum(line.glue) + sum(t.width for t in line.tokens)
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        for extra, expected in [(0, SIZE), (SIZE * MAX_JUSTIFY_EXTRA, SIZE * 1.25), (SIZE * 0.251, SIZE)]:
+            placed = []
+            TS.draw(
+                page,
+                pymupdf.TextWriter(page.rect),
+                (0, 0),
+                natural + extra,
+                [line],
+                [10],
+                SIZE,
+                "justify",
+                False,
+                lambda _: None,
+                placed=placed,
+            )
+            assert placed[1].x - placed[0].x == expected
 
 
 def test_last_line_not_justified_and_indent():

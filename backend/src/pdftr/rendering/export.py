@@ -15,11 +15,12 @@ from typing import Literal
 import pymupdf
 
 from pdftr.domain.ir import Block, BlockType, Document, Segment
+from pdftr.domain.text import RICH_ATOM, RICH_TAG
 from pdftr.rendering.artifacts import pdf_destination
 from pdftr.rendering.background import crop_formula
 from pdftr.rendering.links import PdfLink, extract_links, locate
 from pdftr.rendering.typeset import LINE_HEIGHTS, drop_fake_scripts, normalize_cjk_spacing, wants_indent
-from pdftr.rendering.typesetter import FontSet, Line, Placed, Token, Typesetter
+from pdftr.rendering.typesetter import _NO_START, FontSet, Line, Placed, Token, Typesetter
 
 log = logging.getLogger(__name__)
 
@@ -35,35 +36,47 @@ _SEARCH = 40
 CAPTION_NO = re.compile(r"^\s*(?:图|表)\s*[A-Z]?\d+(?:\.\d+)*[.:：．。]?")
 
 
-def _inside_placeholder(text: str, pos: int) -> bool:
-    start = text.rfind("<", 0, pos)
-    return start != -1 and text.find(">", start) >= pos
-
-
-def _cut_near(text: str, target: int) -> int:
+def _cut_near(atoms: list[re.Match[str]], start: int, target: int, limit: int) -> int:
     for d in range(_SEARCH + 1):
         for pos in (target - d, target + d):
-            if 0 < pos < len(text) and text[pos - 1] in _BREAK_AFTER and not _inside_placeholder(text, pos):
+            if start < pos <= limit and atoms[pos - 1][0] in _BREAK_AFTER:
                 return pos
-    pos = min(max(target, 1), len(text) - 1)
-    while pos < len(text) and _inside_placeholder(text, pos):
-        pos += 1
-    return pos
+    return min(max(target, start + 1), limit)
+
+
+_CLOSING_TAGS = re.compile(r"(?:</(?:b|i|sup|sub)>)*")
 
 
 def split_by_parts(text: str, part_chars: list[int]) -> list[str]:
     """把跨栏/跨页段落的译文按各块原文长度拆开，优先在标点处断开（与前端 shared/text/split.ts 一致）。"""
     if len(part_chars) <= 1:
         return [text]
+    atoms = [atom for atom in RICH_ATOM.finditer(text) if not RICH_TAG.fullmatch(atom[0])]
     total = sum(part_chars) or 1
-    pieces, start, cumulative = [], 0, 0
-    for chars in part_chars[:-1]:
+    pieces: list[str] = []
+    start = offset = cumulative = 0
+    for i, chars in enumerate(part_chars[:-1]):
         cumulative += chars
-        target = round(len(text) * cumulative / total)
-        cut = len(text) if start >= len(text) else _cut_near(text, max(target, start + 1))
-        pieces.append(text[start:cut])
+        if start >= len(atoms):
+            pieces.append(text[offset:])
+            offset = len(text)
+            continue
+        # 按可见码点计数，半数向上舍入。给剩余块预留位置，再执行行首禁则。
+        target = (2 * len(atoms) * cumulative + total) // (2 * total)
+        limit = max(start + 1, len(atoms) - (len(part_chars) - i - 1))
+        cut = _cut_near(atoms, start, min(max(target, start + 1), limit), limit)
+        end = atoms[cut - 1].end()
+        while True:
+            if closing := _CLOSING_TAGS.match(text, end):
+                end = closing.end()
+            if cut == len(atoms) or atoms[cut].start() != end or atoms[cut][0] not in _NO_START:
+                break
+            end = atoms[cut].end()
+            cut += 1
+        pieces.append(text[offset:end])
+        offset = end
         start = cut
-    pieces.append(text[start:])
+    pieces.append(text[offset:])
     return _balance_rich_parts(pieces)
 
 

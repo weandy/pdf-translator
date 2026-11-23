@@ -23,6 +23,23 @@ def _block(bid: str, page: int, btype: BlockType, spans: list[Span], **kw) -> Bl
     )  # fmt: skip
 
 
+@pytest.mark.parametrize("heading", ["I. INTRODUCTION", "1. INTRODUCTION", "H I G H L I G H T S"])
+def test_front_matter_stops_at_numbered_heading_or_elsevier_highlights(heading):
+    blocks = [
+        _block("p0-b0", 0, BlockType.TITLE, [_text("A Synthetic Article")]),
+        _block("p0-b1", 0, BlockType.TEXT, [_text("A. Testwriter, Example Institute")]),
+        _block("p0-b2", 0, BlockType.TITLE, [_text(heading)]),
+        _block("p0-b3", 0, BlockType.TEXT, [_text("A paragraph that should be translated.")]),
+    ]
+    doc = Document(job_id="synthetic", pages=[Page(index=0, width=600, height=800, blocks=blocks)])
+    assert front_matter_ids(doc) == {"p0-b1"}
+
+
+def test_unfinished_reference_fragment_is_text_and_math_group_is_preserved():
+    assert textual_formula(r"\left(\operatorname{Eq}.\right.") == "(Eq."
+    assert textual_formula(r"\left(\operatorname{rank}.\right.") is None
+
+
 def _doc() -> Document:
     p0 = [
         _block("p0-b0", 0, BlockType.TITLE, [_text("1 Introduction")]),

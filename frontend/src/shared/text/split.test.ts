@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import { balanceRichParts, parseRich, splitByParts, tokenize } from "@/shared/text/split";
+import fixture from "./split.fixture.json?raw";
+
+const vectors = JSON.parse(fixture) as { text: string; weights: number[]; expected: string[] }[];
 
 describe("splitByParts", () => {
+  it.each(vectors)("与 PDF 导出共用的切分向量 $text", ({ text, weights, expected }) => {
+    expect(splitByParts(text, weights)).toEqual(expected);
+  });
+
   it("单块不拆", () => {
     expect(splitByParts("全部译文", [10])).toEqual(["全部译文"]);
   });

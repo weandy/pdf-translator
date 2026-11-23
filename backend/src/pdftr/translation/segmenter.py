@@ -11,14 +11,15 @@ from collections.abc import Iterable
 
 from pdftr.domain.document_name import paper_title_blocks
 from pdftr.domain.ids import segment_id
-from pdftr.domain.ir import Block, BlockType, Document, FormulaRef, Segment, SegmentPart, Span
+from pdftr.domain.ir import Block, BlockType, Document, FormulaRef, Segment, SegmentPart, SegmentStatus, Span
+from pdftr.domain.text import INLINE_ABSTRACT, RICH_TAG, SECTION_NUMBER, visible_length
 
 # MinerU 会把序数词的上标（如 1^{st}、2^{nd}）识别成公式；模型会正确地把它译成“一阶”“二阶”，
 # 占位符随之“消失”导致校验失败（M3 实测）。这类公式还原成普通文字再翻译。
 _ORDINAL = re.compile(r"^(\d+)(st|nd|rd|th)$")
 
 MIN_WORDS = 1  # 没有英文单词（纯数字、符号）的块不翻译；单词标题如 “Introduction” 要翻
-_FORMAT = re.compile(r"</?(?:b|i|sup|sub)>")
+_FORMAT = RICH_TAG
 _PLACEHOLDER = re.compile(r"<m\d+/>")
 _FRONT_HEADINGS = {"highlights", "articleinfo", "abstract", "keywords", "introduction"}
 _CAPTION_PREFIX = re.compile(r"^(?:fig(?:ure)?|table|algorithm|scheme)\b", re.I)
@@ -29,6 +30,9 @@ _CROSS_REFERENCE = re.compile(
 )
 _TEXT_MACRO = re.compile(r"\\(?:operatorname|mathrm|text|textrm)\{([^{}]+)\}")
 _REFERENCE_DELIMITERS = re.compile(r"\\left(?=\()|\\right(?=\))")
+_REFERENCE_FRAGMENT = re.compile(r"\((?:Eq|Fig|Sec)\.", re.I)
+_LEGACY_WORD_SCRIPT = re.compile(r"(?<=[A-Za-z])<(sub|sup)>([A-Za-z])</\1>(?=[A-Za-z])")
+BAD_SOURCE_MESSAGE = "原文包含大量异常上下标，请重新上传文档以使用新版解析"
 _UNIT = re.compile(
     r"(?P<wrapped>\{)?\\(?:mathrm|mathbf)\{(?P<symbol>s|ms|ns|us|min|h|Hz|kHz|MHz|GHz|m|cm|mm|km|kg|g|mg|K|Pa|kPa)"
     r"\}(?(wrapped)\})(?P<mark>[,;:.]?)"
@@ -89,8 +93,10 @@ def _span_source(span: Span, *, inline_bold: bool, inline_italic: bool) -> str:
                 italic[lo:hi] = [True] * (hi - lo)
     pieces: list[str] = []
     active: list[str] = []
-    for pos in range(start, end):
-        desired = (["b"] if bold[pos] else []) + (["i"] if italic[pos] else [])
+    pos = start
+    while pos < end:
+        markup = _FORMAT.match(text, pos)
+        desired = [] if markup else (["b"] if bold[pos] else []) + (["i"] if italic[pos] else [])
         common = 0
         while common < len(active) and common < len(desired) and active[common] == desired[common]:
             common += 1
@@ -100,7 +106,9 @@ def _span_source(span: Span, *, inline_bold: bool, inline_italic: bool) -> str:
         for tag in desired[common:]:
             pieces.append(f"<{tag}>")
             active.append(tag)
-        pieces.append(text[pos])
+        stop = markup.end() if markup else pos + 1
+        pieces.append(text[pos:stop])
+        pos = stop
     for tag in reversed(active):
         pieces.append(f"</{tag}>")
     return "".join(pieces)
@@ -117,6 +125,9 @@ def textual_formula(latex: str, before: str = "") -> str | None:
     reference = _REFERENCE_DELIMITERS.sub("", _TEXT_MACRO.sub(r"\1", compact))
     if ref := _CROSS_REFERENCE.fullmatch(reference):
         return f"{ref.group(1)} {ref.group(2)}{ref.group(3)}"
+    fragment = reference.removesuffix(r"\right.")
+    if _REFERENCE_FRAGMENT.fullmatch(fragment):
+        return fragment
     if (unit := _UNIT.fullmatch(compact)) and re.search(r"\d\s*$", before):
         return unit["symbol"] + unit["mark"]
     return None
@@ -164,7 +175,7 @@ def block_source(block: Block, key_map: dict[str, str], recovered: dict[str, str
     text = ""
     for li in sorted(lines):
         text = _join(text, _merge_emphasis(" ".join(lines[li])))
-    text = re.sub(r" +(?=[,;:.](?:\s|$))", "", text)
+    text = re.sub(r" +(?=(?:[,;:.)](?:\s|$)|['’]s\b))|(?<=[(\[]) +(?=<m\d+/>)", "", text)
     title = _restore_title(text.strip()) if block.type is BlockType.TITLE else text
     return re.sub(r"\s+", " ", title).strip()
 
@@ -200,14 +211,32 @@ def front_matter_ids(doc: Document) -> set[str]:
     title = titles[-1] if titles else next((b for b in blocks if b.type is BlockType.TITLE), None)
     if title is None:
         return set()
-    heading = min(
-        (b for b in blocks if b.order > title.order and b.type is BlockType.TITLE
-         and re.sub(r"[^a-z]", "", block_source(b, {}).lower()) in _FRONT_HEADINGS),
-        key=lambda b: b.order, default=None,
-    )  # fmt: skip
+
+    def is_heading(block: Block) -> bool:
+        plain = _FORMAT.sub("", block_source(block, {})).strip()
+        if block.type is BlockType.TITLE:
+            return re.sub(r"[^a-z]", "", SECTION_NUMBER.sub("", plain).lower()) in _FRONT_HEADINGS
+        return block.type is BlockType.TEXT and INLINE_ABSTRACT.match(plain) is not None
+
+    heading = min((b for b in blocks if b.order > title.order and is_heading(b)), key=lambda b: b.order, default=None)
     if heading is None:
         return set()
     return {b.id for b in blocks if b.type is BlockType.TEXT and title.order < b.order < heading.order}
+
+
+def bad_source(segments: Iterable[Segment]) -> bool:
+    """历史坏源在一个段落的多个普通词中反复夹入单字母标签。"""
+    for seg in segments:
+        if seg.status in (SegmentStatus.DONE, SegmentStatus.EDITED):
+            continue
+        plain = re.sub(r"</?[bi]>", "", seg.source)
+        words: set[str] = set()
+        for token in plain.split():
+            if _LEGACY_WORD_SCRIPT.search(token) and len(re.findall(r"[A-Za-z]", _FORMAT.sub("", token))) >= 5:
+                words.add(token)
+                if len(words) >= 3:
+                    return True
+    return False
 
 
 def segment(
@@ -258,7 +287,7 @@ def segment(
                 if f.located:  # 扫描页的公式没有精确位置，KaTeX 渲染失败时不裁原图
                     refs[key] = FormulaRef(page=b.page, bbox=f.bbox)
             piece = block_source(b, key_map, recovered)
-            parts.append(SegmentPart(block_id=b.id, chars=len(_FORMAT.sub("", piece))))
+            parts.append(SegmentPart(block_id=b.id, chars=visible_length(piece)))
             text = _join(text, piece)
         if len(re.findall(r"[A-Za-z]{2,}", _PLACEHOLDER.sub(" ", _FORMAT.sub("", text)))) < MIN_WORDS:
             continue

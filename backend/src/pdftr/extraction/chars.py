@@ -51,6 +51,7 @@ def _page(page: pymupdf.Page) -> CharPage:
                 bold = bool(span["flags"] & _FLAG_BOLD) or _font_is_bold(font)
                 italic = bool(span["flags"] & _FLAG_ITALIC) or _font_is_italic(normalized_font)
                 for ch in span["chars"]:
+                    origin = ch.get("origin") or span.get("origin")
                     chars.append(
                         Char(
                             c=ch["c"],
@@ -62,6 +63,7 @@ def _page(page: pymupdf.Page) -> CharPage:
                             italic=italic,
                             line=line_no,
                             upright=upright,
+                            origin_y=origin[1] if origin else None,
                         )
                     )
             line_no += 1

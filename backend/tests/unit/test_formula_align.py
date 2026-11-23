@@ -6,7 +6,13 @@ from pdftr.domain.chars import Char
 from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import BlockType
 from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutSpan
-from pdftr.fusion.formula_align import _content_parts, clean_formula_lines, locate_formulas, refine_block
+from pdftr.fusion.formula_align import (
+    _content_parts,
+    clean_formula_lines,
+    locate_formulas,
+    merge_torn_formulas,
+    refine_block,
+)
 
 
 def _chars(lines: list[str], size: float = 10.0) -> list[Char]:
@@ -21,6 +27,94 @@ def _chars(lines: list[str], size: float = 10.0) -> list[Char]:
 
 def _text(chars, idx) -> str:
     return "".join(chars[k].c for k in idx)
+
+
+@pytest.mark.parametrize(
+    ("latex", "expected"),
+    [
+        ("x=1; y=2", ["", "x=1", "; ", "y=2", ""]),
+        (r"f(x; \theta)", ["", r"f(x; \theta)", ""]),
+        (r"\{x; x>0\}", ["", r"\{x; x>0\}", ""]),
+        (r"x\;y", ["", r"x\;y", ""]),
+        (r"\left|x; y\right|", ["", r"\left|x; y\right|", ""]),
+        (r"\begin{matrix}x;y\end{matrix}", ["", r"\begin{matrix}x;y\end{matrix}", ""]),
+        ("x; {^2}", ["", "x", "; <sup>2</sup>"]),
+        ("x; ^{3}", ["", "x", "; <sup>3</sup>"]),
+        ("x; (4)", ["", "x", "; (4)"]),
+        ("x_{;}", ["", "x", ";"]),
+        ("x_{;a}", ["", "x_{;a}", ""]),
+        ("x's", ["", "x", "'s"]),
+        ("x{' }s", ["", "x", "'s"]),
+        ("x'+s", ["", "x'+s", ""]),
+        (r"\mathrm{i.e.,} x", ["i.e., ", "x", ""]),
+        (r"\mathrm{e.g.,} x", ["e.g., ", "x", ""]),
+        (r"\operatorname{Eq.}(2), x", ["Eq. (2), ", "x", ""]),
+        (r"\mathrm{e.g.}x", ["", r"\mathrm{e.g.}x", ""]),
+        (r"N \mathrm{widgets}", ["", "N", " widgets"]),
+        (r"N_{\mathrm{insp}}", ["", r"N_{\mathrm{insp}}", ""]),
+        (r"x\mathrm{mol}", ["", r"x\mathrm{mol}", ""]),
+        (r"x+\mathrm{sin}", ["", r"x+\mathrm{sin}", ""]),
+        ("(x+1", ["(", "x+1", ""]),
+        ("x+1)", ["", "x+1", ")"]),
+        (r"\left(x+1", ["(", "x+1", ""]),
+        (r"x+1\right)", ["", "x+1", ")"]),
+        (r"D D T = 1 . (", ["", "D D T = 1 .", "("]),
+        (r"\mathrm { i . e . , } O _ { 1 , 2 }", ["i.e., ", r"O _ { 1 , 2 }", ""]),
+        (r"\operatorname { E q . } \left( 4 \right) , h _ { x }", ["Eq. (4), ", r"h _ { x }", ""]),
+        (r"n _ { i } \mathrm { w o r d s }", ["", r"n _ { i }", " words"]),
+        (r"M = ( A , B ) _ { ; }", ["", "M = ( A , B )", ";"]),
+        (r"X _ { 2 } { ' } s", ["", r"X _ { 2 }", "'s"]),
+        ("[0,1)", ["", "[0,1)", ""]),
+        ("(0,1]", ["", "(0,1]", ""]),
+    ],
+)
+def test_formula_boundaries_and_mathematical_negative_examples(latex, expected):
+    assert _content_parts(f"$ {latex} $") == expected
+
+
+def test_clean_formula_line_keeps_scripts_and_an_untouched_formula_box():
+    chars = _chars(["Use x; 2 with z and H2O."])
+    exact = Rect.of([78, 1, 83, 9])
+    bbox = Rect.of([10, 0, 135, 10])
+    spans = [
+        LayoutSpan(kind="text", content="Use", bbox=bbox),
+        LayoutSpan(kind="inline_formula", content="x; {^2}", bbox=Rect.of([30, 0, 55, 10])),
+        LayoutSpan(kind="text", content="with", bbox=bbox),
+        LayoutSpan(kind="inline_formula", content="z", bbox=exact),
+        LayoutSpan(kind="text", content="and H<sub>2</sub>O.", bbox=bbox),
+    ]
+    source = LayoutBlock(type=BlockType.TEXT, bbox=bbox, order=0, lines=[LayoutLine(bbox=bbox, spans=spans)])
+    for row in (chars, []):
+        result = clean_formula_lines(source, row)
+        result_spans = result.lines[0].spans
+        formulas = [s for s in result_spans if s.kind == "inline_formula"]
+        text = " ".join(s.content for s in result_spans if s.kind == "text")
+        assert [s.content for s in formulas] == ["x", "z"]
+        assert "<sup>2</sup>" in text and "H<sub>2</sub>O" in text
+        assert formulas[1].bbox == exact
+        if row:
+            assert formulas[0].bbox == chars[4].bbox
+
+
+def test_torn_formula_requires_unique_math_bridge_and_a_single_visual_row():
+    chars = _chars(["f(x, k)"])
+    for c in chars:
+        c.font = "CMMI10"
+    boxes = [Rect.of([10, 0, 25, 10]), Rect.of([25, 0, 40, 10]), Rect.of([40, 0, 45, 10])]
+    spans = [
+        LayoutSpan(kind=kind, content=text, bbox=box)
+        for kind, text, box in zip(
+            ("inline_formula", "text", "inline_formula"), ("f(x", ", k", ")"), boxes, strict=True
+        )
+    ]
+    line = LayoutLine(bbox=Rect.of([10, 0, 45, 10]), spans=spans)
+    (merged,) = merge_torn_formulas(line, chars).spans
+    assert merged.content == "f(x , k )" and merged.bbox == line.bbox
+    chars[5].font = "Times"
+    assert merge_torn_formulas(line, chars).spans == spans
+    chars[5].font = "CMMI10"
+    spans[1].bbox = Rect.of([20, 0, 40, 10])
+    assert merge_torn_formulas(line, chars).spans == spans
 
 
 def test_formula_found_between_anchor_text():

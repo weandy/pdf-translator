@@ -57,7 +57,13 @@ def system_prompt(ctx: DocContext) -> str:
 
 def expand_formulas(source: str, formulas: dict[str, str]) -> str:
     """<m1/> → <m1>LaTeX</m1>，让模型看到公式内容。"""
-    return re.sub(r"<(m\d+)/>", lambda m: f"<{m.group(1)}>{formulas.get(m.group(1), '')}</{m.group(1)}>", source)
+
+    def expand(match: re.Match[str]) -> str:
+        key = match[1]
+        latex = (formulas[key] or "[symbol]") if key in formulas else ""
+        return f"<{key}>{latex}</{key}>"
+
+    return re.sub(r"<(m\d+)/>", expand, source)
 
 
 def user_prompt(
