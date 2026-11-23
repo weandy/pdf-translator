@@ -16,6 +16,7 @@ class LayoutSpan(BaseModel):
     kind: Literal["text", "inline_formula"]
     content: str  # 文字或 LaTeX
     bbox: Rect
+    located: bool = True  # 块级公式没有可用于裁图的精确坐标
 
 
 class LayoutLine(BaseModel):

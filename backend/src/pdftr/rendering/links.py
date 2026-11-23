@@ -8,7 +8,7 @@
 """
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
 import pymupdf
@@ -29,7 +29,7 @@ WHOLE_BLOCK = 0.6  # 链接框占块面积超过这个比例，视为整块都�
 
 
 class PdfLink(BaseModel):
-    page: int
+    page: int  # 原文链接所在页，重定位后仍保留给原文侧使用
     rect: Rect
     uri: str = ""
     dest_page: int | None = None
@@ -42,6 +42,9 @@ class PdfLink(BaseModel):
     whole: bool = False  # 链接覆盖了整块：译文里找不到对应文字时，给整块译文加链接
     text: str = ""  # 译文里对应的紧凑文字；找不到时为空，译文里不加这个链接
     nth: int = 0  # 是这一块紧凑译文里第几处 text（从 0 起）
+
+    def translated_page(self, block_pages: Mapping[str, int]) -> int:
+        return self.page if self.block_id is None else block_pages.get(self.block_id, self.page)
 
 
 def compact(text: str) -> str:

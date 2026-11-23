@@ -13,14 +13,14 @@ from pdftr.config import Settings
 from pdftr.container import build_container
 from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import BlockType
-from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutPage, LayoutResult, LayoutSpan
+from pdftr.domain.layout import LayoutBlock, LayoutPage, LayoutResult
 from pdftr.domain.llm import ChatOptions, ChatResult
 
 HEADERS = {"X-LLM-Key": "k", "X-Parser-Key": "t"}
 
 
 class FakeChat:
-    """把每行原文变成“译:原文”。"""
+    """返回带原公式占位符的合成中文译文。"""
 
     model = "deepseek-flash"
 
@@ -28,7 +28,11 @@ class FakeChat:
         if "抽取需要全文统一译法的专业术语" in user:
             return ChatResult(text="领域：测试")
         lines = [ln.split("|", 1) for ln in user.splitlines() if "|" in ln and ln.split("|", 1)[0].isdigit()]
-        return ChatResult(text="\n".join(f"{n}|译:{re.sub(r'<(m\d+)>.*?</\1>', r'<\1/>', t)}" for n, t in lines))
+        out = []
+        for number, text in lines:
+            formulas = "".join(f"<{key}/>" for key in re.findall(r"<(m\d+)>", text))
+            out.append(f"{number}|当{formulas}时，读取扫描页。")
+        return ChatResult(text="\n".join(out))
 
     async def list_models(self) -> list[str]:
         return [self.model]
@@ -59,9 +63,7 @@ class ScanParser:
 
     async def parse(self, pdf: Path, pages=None, raw_dir=None, on_progress=None) -> LayoutResult:
         # 识别结果只有块级坐标；行内公式也没有自己的位置
-        spans = [LayoutSpan(kind="text", content=TEXT + " With", bbox=BLOCK),
-                 LayoutSpan(kind="inline_formula", content="x^2", bbox=BLOCK)]  # fmt: skip
-        block = LayoutBlock(type=BlockType.TEXT, bbox=BLOCK, order=0, lines=[LayoutLine(bbox=BLOCK, spans=spans)])
+        block = LayoutBlock(type=BlockType.TEXT, bbox=BLOCK, order=0, content=TEXT + " With $x^2$ here.")
         return LayoutResult(parser="fake", pages=[LayoutPage(index=0, width=500, height=300, blocks=[block])])
 
 
@@ -100,4 +102,6 @@ def test_scanned_page_is_translated_over_a_paper_coloured_cover(tmp_path: Path):
 
         mono = client.get(f"/api/jobs/{job['id']}/export", params={"mode": "mono"})
         with pymupdf.open(stream=mono.content, filetype="pdf") as pdf:
-            assert "译:Scanned" in str(pdf[0].get_text()).replace("\n", "")
+            assert len(pdf) == 1
+            text = re.sub(r"\s+", "", str(pdf[0].get_text()))
+            assert "当$x^2$时" in text

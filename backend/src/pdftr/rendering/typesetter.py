@@ -9,7 +9,7 @@
 """
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -183,7 +183,16 @@ class Typesetter:
         return runs
 
     # ---- 切分 ----
-    def tokenize(self, text: str, role: str, size: float, image_size: ImageSize, caption_no: str = "") -> list[Token]:
+    def tokenize(
+        self,
+        text: str,
+        role: str,
+        size: float,
+        image_size: ImageSize,
+        caption_no: str = "",
+        *,
+        formulas: Mapping[str, str] | None = None,
+    ) -> list[Token]:
         """把译文（含 <sup>/<sub>/<b>/<i> 与 <mN/> 占位符）切成 token。caption_no 为开头的图表编号（黑体）。"""
         tokens: list[Token] = []
         stack: list[str] = []
@@ -194,10 +203,14 @@ class Typesetter:
         for m in _TOKEN.finditer(text, pos):
             tokens += self._text_tokens(text[pos : m.start()], self._style(role, stack), size)
             pos = m.end()
-            if m.group(3):
-                wh = image_size(m.group(3))
+            if key := m.group(3):
+                wh = image_size(key)
                 if wh:
-                    tokens.append(Token("image", width=wh[0], height=wh[1], image=m.group(3)))
+                    tokens.append(Token("image", width=wh[0], height=wh[1], image=key))
+                elif formulas is not None and key in formulas:
+                    tokens += self._text_tokens("$" + formulas[key] + "$", self._style(role, stack), size)
+                else:
+                    tokens += self._text_tokens(m.group(0), self._style(role, stack), size)
             elif m.group(1):
                 if m.group(2) in stack:
                     stack.remove(m.group(2))

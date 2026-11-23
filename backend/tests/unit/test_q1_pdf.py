@@ -1,0 +1,114 @@
+"""用合成双栏 PDF 验证跨页段落、链接和最小字号的页面边界。"""
+
+from pathlib import Path
+
+import pymupdf
+import pytest
+
+from pdftr.domain.geometry import Rect
+from pdftr.domain.ir import Block, BlockStyle, BlockType, Document, Page, Span
+from pdftr.rendering.background import make_background
+from pdftr.rendering.export import ExportMode, Side, export_pdf
+from pdftr.translation.segmenter import segment
+
+
+def _block(page: int, order: int, box: list[float], text: str, prev: str | None = None) -> Block:
+    bbox = Rect.of(box)
+    return Block(
+        id=f"p{page}-b{order}", page=page, order=order, bbox=bbox, type=BlockType.TEXT,
+        style=BlockStyle(font_size=10), spans=[Span(bbox=bbox, text=text, size=10)],
+        continues_from=prev, translatable=True,
+    )  # fmt: skip
+
+
+@pytest.fixture
+def columns(tmp_path: Path) -> tuple[Path, Document]:
+    original = tmp_path / "two-columns.pdf"
+    a = _block(0, 0, [20, 180, 150, 195], "Opening on first page.")
+    b = _block(0, 1, [180, 180, 310, 195], "Continued across columns.", a.id)
+    c = _block(1, 0, [20, 25, 150, 40], "Closing on second page.", b.id)
+    d = _block(1, 1, [180, 25, 310, 40], "Other column.")
+    with pymupdf.open() as pdf:
+        pdf.new_page(width=330, height=220)
+        pdf.new_page(width=460, height=220)
+        for block in (a, b, c, d):
+            pdf[block.page].insert_text((block.bbox.x0, block.bbox.y1 - 4), block.spans[0].text, fontsize=10)
+        pdf[0].insert_link({
+            "kind": pymupdf.LINK_GOTO,
+            "from": pdf[0].search_for("across columns")[0],
+            "page": 1, "to": pymupdf.Point(30, 80),
+        })  # fmt: skip
+        pdf.save(original)
+    document = Document(
+        job_id="columns", pages=[
+            Page(index=0, width=330, height=220, blocks=[a, b]),
+            Page(index=1, width=460, height=220, blocks=[c, d]),
+        ],
+    )  # fmt: skip
+    return original, document
+
+
+@pytest.mark.parametrize("selected", [0, 1])
+def test_page_filter_keeps_other_page_untouched(tmp_path: Path, columns: tuple[Path, Document], selected: int):
+    original, doc = columns
+    segs = segment(doc, pages=[selected])
+    assert {bid for s in segs for bid in s.block_ids} == {b.id for b in doc.pages[selected].blocks}
+    background = tmp_path / "selected.pdf"
+    chosen = {p.block_id for s in segs for p in s.parts}
+    make_background(original, (b for b in doc.blocks() if b.id in chosen), background)
+    with pymupdf.open(background) as pdf, pymupdf.open(original) as before:
+        assert not str(pdf[selected].get_text()).strip()
+        assert pdf[1 - selected].get_text() == before[1 - selected].get_text()
+
+
+@pytest.mark.parametrize(("mode", "side"), [("mono", "right"), ("dual", "right"), ("dual", "left")])
+def test_cross_page_link_uses_relocated_block_page(
+    tmp_path: Path, columns: tuple[Path, Document], mode: ExportMode, side: Side
+):
+    original, doc = columns
+    segs = segment(doc)
+    segs[0].target = "First part remains on this page. Next part ends here. Go across columns on the page."
+    background = tmp_path / "background.pdf"
+    make_background(original, doc.blocks(), background)
+    with pymupdf.open(stream=export_pdf(original, background, doc, segs, mode, side=side), filetype="pdf") as pdf:
+        assert len(pdf) == 2
+        (translated,) = pdf[1].get_links()
+        offset = 460 if mode == "dual" and side == "right" else 0
+        assert offset + 20 < translated["from"].x0 < offset + 150
+        assert translated["page"] == 1 and translated["to"].x == pytest.approx(offset + 30)
+        if mode == "dual":
+            (original_link,) = pdf[0].get_links()
+            assert original_link["from"].x0 > (330 if side == "left" else 0)
+            assert original_link["to"].x == pytest.approx((460 if side == "left" else 0) + 30)
+        else:
+            assert pdf[0].get_links() == []
+
+
+@pytest.mark.parametrize("fits_gap", [True, False])
+def test_minimum_scale_uses_only_safe_space_and_logs_remaining_overflow(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, fits_gap: bool
+):
+    original = tmp_path / "overflow.pdf"
+    start = _block(0, 0, [20, 30, 105, 43], "First block.")
+    right = _block(0, 1, [130, 45, 215, 58], "Right column.")
+    below = _block(0, 2, [20, 93, 105, 107], "Below.")
+    doc = Document(job_id="overflow", pages=[Page(index=0, width=250, height=120, blocks=[start, right, below])])
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=250, height=120)
+        page.insert_text((130, 54), "Right column.", fontsize=10)
+        page.insert_text((20, 103), "Below.", fontsize=10)
+        pdf.save(original)
+    (seg,) = segment(doc, pages=[0])[:1]
+    seg.target = "正文" * (20 if fits_gap else 220) + "结尾"
+    with pymupdf.open(stream=export_pdf(original, original, doc, [seg], "mono"), filetype="pdf") as pdf:
+        assert len(pdf) == 1
+        words = pdf[0].get_text("words")
+        drawn = [word for word in words if "正" in word[4] or "结" in word[4]]
+        assert drawn and max(word[3] for word in drawn) > start.bbox.y1
+        assert max(word[3] for word in drawn) <= below.bbox.y0
+        assert "Right column." in str(pdf[0].get_text())
+        if fits_gap:
+            assert "结尾" in str(pdf[0].get_text())
+            assert "block_id=p0-b0" not in caplog.text
+        else:
+            assert "page=1 block_id=p0-b0" in caplog.text and "pt" in caplog.text

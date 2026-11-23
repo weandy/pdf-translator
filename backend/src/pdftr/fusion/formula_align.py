@@ -216,9 +216,14 @@ def refine_block(block: LayoutBlock, chars: Sequence[Char]) -> tuple[LayoutBlock
     """块级结果 → 带行与片段的块。返回（新块, 公式总数, 找到位置的公式数）。"""
     content = block.content or ""
     visible = [c for c in chars if not c.c.isspace()]
-    if not visible:  # 没有文字层（扫描页等）：整块作为一个片段，公式按原样留在文字里
-        span = LayoutSpan(kind="text", content=_FORMULA.sub(lambda m: m.group(1), content), bbox=block.bbox)
-        return block.model_copy(update={"lines": [LayoutLine(bbox=block.bbox, spans=[span])]}), 0, 0
+    if not visible:  # 扫描页等没有可用于定位的字符，仍按顺序保留公式与正文。
+        parts = _FORMULA.split(content)
+        spans = [
+            LayoutSpan(kind="inline_formula" if i % 2 else "text", content=part, bbox=block.bbox, located=False)
+            for i, part in enumerate(parts)
+            if part.strip()
+        ]
+        return block.model_copy(update={"lines": [LayoutLine(bbox=block.bbox, spans=spans)]}), len(parts) // 2, 0
 
     rows = visual_lines(chars)
     ordered = [c for row in rows for c in row]

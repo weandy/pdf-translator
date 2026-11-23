@@ -1,13 +1,14 @@
 """导出 PDF：在去字背景页上排入译文（纯译文），或与原文左右并排（双语对照）。
 
 只用 PyMuPDF，不需要浏览器，内存占用小。译文由 rendering/typesetter.py 按《中文排版需求》排版后直接写入字形；
-行内公式用原文位置的裁剪图（矢量重绘需要 KaTeX，服务端不具备）；排不下时先收紧行距，再缩小字号。
+行内公式用原文裁图，缺少位置时排入 LaTeX；排不下时先收紧行距，再缩小字号。
 字体按 GB/T 7713.2 附录 B：正文宋体、标题黑体、图表编号黑体，西文用 Times 类字体（见 rendering/fonts.py），
 与网页阅读器一致；按用到的字形子集嵌入。
 """
 
+import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -17,12 +18,15 @@ from pdftr.domain.ir import Block, BlockType, Document, Segment
 from pdftr.rendering.artifacts import pdf_destination
 from pdftr.rendering.links import PdfLink, extract_links, locate
 from pdftr.rendering.typeset import LINE_HEIGHTS, drop_fake_scripts, wants_indent
-from pdftr.rendering.typesetter import FontSet, Placed, Token, Typesetter
+from pdftr.rendering.typesetter import FontSet, Line, Placed, Token, Typesetter
+
+log = logging.getLogger(__name__)
 
 ExportMode = Literal["mono", "dual"]
 Side = Literal["left", "right"]  # 双语对照时译文放在哪一边
 LINE_HEIGHT = 1.2  # 最紧的行距（单行框补高按它计算）
 MIN_SCALE = 0.4  # 放不下时字号最多缩到原来的 40%
+BOTTOM_MARGIN = 4.0
 
 _BREAK_AFTER = set("，。；：、）！？,;:.)")
 _SEARCH = 40
@@ -109,13 +113,36 @@ def _formula_images(original: pymupdf.Document, seg: Segment) -> dict[str, tuple
     """本段落行内公式的裁剪图：占位符 → (PNG, 宽, 高)，宽高为原文中的尺寸（pt）。"""
     out: dict[str, tuple[bytes, float, float]] = {}
     for key, ref in seg.formula_refs.items():
-        if ref.page >= len(original):
+        if not 0 <= ref.page < len(original):
             continue
         b = ref.bbox
         clip = pymupdf.Rect(b.x0 - 0.5, b.y0 - 0.5, b.x1 + 0.5, b.y1 + 0.5) & original[ref.page].rect
+        if clip.is_empty:
+            continue
         pix = original[ref.page].get_pixmap(matrix=pymupdf.Matrix(3, 3), clip=clip, alpha=True)
         out[key] = (pix.tobytes("png"), clip.width, clip.height)
     return out
+
+
+def _safe_bottom(page: pymupdf.Page, box: pymupdf.Rect, block: Block, neighbors: Sequence[Block]) -> float:
+    bottom = max(box.y1, page.rect.y1 - BOTTOM_MARGIN)
+    for other in neighbors:
+        if other.id == block.id:
+            continue
+        r = _box(other) if other.translatable else other.bbox
+        if r.x0 < box.x1 and r.x1 > box.x0 and r.y1 > box.y1:
+            bottom = min(bottom, max(box.y1, r.y0))
+    return bottom
+
+
+def _line_bottom(line: Line, base: float, size: float) -> float:
+    """行距之外也考虑字体下伸、下标和公式图的实际边界。"""
+    return max(
+        (base + size * 0.15 if tok.kind == "image"
+         else max((base - run.rise - run.font.descender * run.size for run in tok.runs), default=base)
+         for tok in line.tokens),
+        default=base,
+    )  # fmt: skip
 
 
 def _place(
@@ -127,26 +154,56 @@ def _place(
     images: dict[str, tuple[bytes, float, float]],
     placed: list[Placed] | None = None,
     translated: bool = True,
+    *,
+    neighbors: Sequence[Block] = (),
 ) -> None:
-    """按原字号依次尝试 1.5→1.2 倍行距，放得下就用；都放不下时用最紧的行距、整体缩小字号。"""
-    box = _box(block)
+    """先收紧行距再缩小字号。最小字号仍放不下时，复核同栏下方的可用空白。"""
+    box = _box(block) & page.rect
+    if box.is_empty:
+        return
     size = block.style.font_size
     r = role(block, translated=translated)
     align = {"label": "center", "heading": "left"}.get(r, "justify")
+
+    def layout(scale: float, pitch: float) -> tuple[list[Line], list[float], float]:
+        lines, bases, height = ts.layout(tokens, box.width / scale, size, pitch, indent)
+        drawn = max((_line_bottom(line, base, size) for line, base in zip(lines, bases, strict=True)), default=0)
+        return lines, bases, max(height, drawn) * scale
+
     scale = 1.0
-    for line_height in LINE_HEIGHTS:
-        lines, bases, height = ts.layout(tokens, box.width, size, line_height, indent)
-        if height <= box.height + 0.5:
+    for pitch in LINE_HEIGHTS:
+        lines, bases, height = layout(scale, pitch)
+        if height <= box.height:
             break
     else:
-        # 在放大的排版框里排版，再整体缩回，相当于缩小字号；二分查找最大的可行比例
-        lo, hi = MIN_SCALE, 1.0
-        for _ in range(10):
-            mid = (lo + hi) / 2
-            _, _, height = ts.layout(tokens, box.width / mid, size, LINE_HEIGHT, indent)
-            lo, hi = (mid, hi) if height * mid <= box.height + 0.5 else (lo, mid)
-        scale = lo
-        lines, bases, _ = ts.layout(tokens, box.width / scale, size, LINE_HEIGHT, indent)
+        lines, bases, height = layout(MIN_SCALE, LINE_HEIGHT)
+        if height > box.height:
+            box.y1 = _safe_bottom(page, box, block, neighbors)
+        if height <= box.height:
+            lo, hi = MIN_SCALE, 1.0
+            for _ in range(10):
+                mid = (lo + hi) / 2
+                _, _, height = layout(mid, LINE_HEIGHT)
+                lo, hi = (mid, hi) if height <= box.height else (lo, mid)
+            scale = lo
+            lines, bases, _ = layout(scale, LINE_HEIGHT)
+        else:
+            scale = MIN_SCALE
+            log.warning(
+                "译文导出溢出 page=%d block_id=%s overflow=%.2fpt",
+                block.page + 1,
+                block.id,
+                height - box.height,
+            )
+            # 只绘制完整可见的行，避免跨过相邻块或页底。
+            count = next(
+                (i for i, (line, base) in enumerate(zip(lines, bases, strict=True))
+                 if _line_bottom(line, base, size) * scale > box.height),
+                len(lines),
+            )  # fmt: skip
+            lines, bases = lines[:count], bases[:count]
+    if not lines:
+        return
     c = block.style.color
     writer = pymupdf.TextWriter(page.rect)
     ts.draw(page, writer, (box.x0, box.y0), box.width / scale, lines, bases, size, align, indent,
@@ -178,6 +235,7 @@ def _typeset_all(src: pymupdf.Document, out: pymupdf.Document, doc: Document, se
     placed: dict[str, list[Placed]] = {}
     ts = Typesetter(FontSet.load(font_dir))
     blocks = {b.id: b for b in doc.blocks()}
+    by_page = {page.index: page.blocks for page in doc.pages}
     for seg in segments:
         images = _formula_images(src, seg)
         texts = split_by_parts(seg.target or seg.source, [p.chars for p in seg.parts] or [len(seg.source)])
@@ -190,11 +248,14 @@ def _typeset_all(src: pymupdf.Document, out: pymupdf.Document, doc: Document, se
             if r == "caption" and n == 0 and seg.target and (m := CAPTION_NO.match(piece)):
                 caption_no = m.group(0)
             size = lambda key, imgs=images: imgs[key][1:] if key in imgs else None  # noqa: E731
-            tokens = ts.tokenize(drop_fake_scripts(piece.strip()), r, block.style.font_size, size, caption_no)
+            tokens = ts.tokenize(
+                drop_fake_scripts(piece.strip()), r, block.style.font_size, size, caption_no, formulas=seg.formulas
+            )
             indent = bool(seg.target) and wants_indent(block, seg, first=n == 0)
             _place(
-                ts, out[block.page], block, tokens, indent, images, placed.setdefault(block.id, []), bool(seg.target)
-            )
+                ts, out[block.page], block, tokens, indent, images, placed.setdefault(block.id, []), bool(seg.target),
+                neighbors=by_page[block.page],
+            )  # fmt: skip
     return placed
 
 
@@ -290,6 +351,7 @@ def _export[T](
 ) -> T:
     raw = links if links is not None else page_links(original, doc, segments)
     links = place_links(raw, doc, segments)
+    block_pages = {b.id: b.page for b in doc.blocks()}
     with pymupdf.open(original) as src, pymupdf.open(background) as translated:
         placed = _typeset_all(src, translated, doc, segments, font_dir)
         translated.subset_fonts()  # 中文字体只保留用到的字形
@@ -303,7 +365,7 @@ def _export[T](
             for link in links:  # 译文块外的链接在背景页里本来就在，只补块内的
                 if link.block_id is not None:
                     for rect in _translated_rects(link, placed):
-                        _insert(translated[link.page], link, rect)
+                        _insert(translated[link.translated_page(block_pages)], link, rect)
             return save(translated)
 
         with pymupdf.open() as out:
@@ -322,8 +384,13 @@ def _export[T](
 
             for link in links:
                 page, r = out[link.page], link.rect
-                (dx_src, dx_tr), dest = shifts(link.page), shifts(link.dest_page or 0)
+                dest = shifts(link.dest_page or 0)
+                dx_src, _ = shifts(link.page)
                 _insert(page, link, pymupdf.Rect(r.x0 + dx_src, r.y0, r.x1 + dx_src, r.y1), dest[0])
+                tr_page = link.translated_page(block_pages)
+                _, dx_tr = shifts(tr_page)
                 for rect in _translated_rects(link, placed):
-                    _insert(page, link, pymupdf.Rect(rect.x0 + dx_tr, rect.y0, rect.x1 + dx_tr, rect.y1), dest[1])
+                    _insert(
+                        out[tr_page], link, pymupdf.Rect(rect.x0 + dx_tr, rect.y0, rect.x1 + dx_tr, rect.y1), dest[1]
+                    )
             return save(out)

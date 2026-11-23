@@ -161,11 +161,11 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], links: dict, report
     spans: list[Span] = []
     formulas: list[InlineFormula] = []
     for li, line in enumerate(lb.lines):
-        formula_boxes = [s.bbox for s in line.spans if s.kind == "inline_formula"]
+        formula_boxes = [s.bbox for s in line.spans if s.kind == "inline_formula" and s.located]
         for s in line.spans:
             if s.kind == "inline_formula":
                 key = f"m{len(formulas) + 1}"
-                formulas.append(InlineFormula(key=key, latex=s.content, bbox=s.bbox, located=not scanned))
+                formulas.append(InlineFormula(key=key, latex=s.content, bbox=s.bbox, located=s.located and not scanned))
                 spans.append(Span(kind="formula", formula=key, line=li, bbox=s.bbox, size=style.font_size))
                 continue
             report.text_spans += 1
