@@ -13,7 +13,7 @@ import {
 import type { BlockData, PageData } from "@/shared/api/client";
 
 function makePage(index: number, height: number, width = 600): PageData {
-  return { index, width, height, kind: "native", blocks: [] };
+  return { index, width, height, kind: "native", missing_layout: false, blocks: [] };
 }
 
 function makeBlock(id: string, x0: number, y0: number, x1: number, y1: number): BlockData {

@@ -19,8 +19,15 @@ const doc = (segments: SegmentData[]): DocumentData => ({
   links: [],
   outline: [],
   pages: [
-    { index: 0, width: 600, height: 800, kind: "native", blocks: [block("p0-b0", 0), block("p0-b1", 0)] },
-    { index: 1, width: 600, height: 800, kind: "native", blocks: [block("p1-b0", 1)] },
+    {
+      index: 0,
+      width: 600,
+      height: 800,
+      kind: "native",
+      missing_layout: false,
+      blocks: [block("p0-b0", 0), block("p0-b1", 0)],
+    },
+    { index: 1, width: 600, height: 800, kind: "native", missing_layout: false, blocks: [block("p1-b0", 1)] },
   ],
   segments,
 });
