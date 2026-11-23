@@ -1,9 +1,10 @@
 /**
- * 阅读器（docs/03-mvp-design.md §4.2）：每一行是同一页的原文与译文，共用一个滚动条，天然对齐。
- * 译文页 = 去字背景页（pdf.js 渲染）+ 叠加层（按 pt 坐标排版，整体 transform 缩放，拟合结果与缩放无关）。
+ * 阅读器（docs/03-mvp-design.md §4.2，docs/08-reader-virtualization-and-text-layer-design.md）：
+ * 每一行是同一页的原文与译文，共用一个滚动条，天然对齐。
+ * 长文档采用基于精确页高的零依赖窗口虚拟化，仅挂载视口及上下缓冲区内的页面。
  */
 import type { PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import "./fonts.css";
 
@@ -11,6 +12,7 @@ import { blockTexts, layoutBox, roleOf, type BlockText } from "@/entities/docume
 import {
   fileUrl,
   formulaUrl,
+  type BlockData,
   type DocumentData,
   type LinkData,
   type OutlineData,
@@ -25,7 +27,15 @@ import { dropFakeScripts, keyActivate, shortLabel, spaceCjkLatin, wantsIndent } 
 import { PdfCanvas, usePdf } from "@/shared/pdf/pdf";
 
 import { OutlinePanel } from "./OutlinePanel";
-import { searchDocument, type SearchHit } from "./search";
+import { buildSearchIndex, querySearchIndex, type SearchHit } from "./search";
+import {
+  buildPageLayout,
+  currentPageAt,
+  DEFAULT_OVERSCAN_PX,
+  PAGE_ROW_GAP,
+  pageJumpTop,
+  visiblePageRange,
+} from "./virtual";
 
 export type ViewMode = "both" | "translated" | "original";
 
@@ -51,6 +61,8 @@ const PADDING = 48; // .pages 左右内边距之和
 const SPINE = 2; // 对照模式两页之间的装订线
 const NARROW = 760; // 视口窄于这个宽度时默认只显示译文
 const POSITIONS = "pdftr.pos.v1"; // 每篇文档上次读到的页（浏览器本地）
+const SEARCH_DEBOUNCE_MS = 150;
+const DEFAULT_VIEWPORT_HEIGHT = 800;
 
 interface JumpTarget {
   page: number;
@@ -85,6 +97,8 @@ export function ReaderView({
   const [mode, setMode] = useState<ViewMode>(() => (window.innerWidth < NARROW ? "translated" : "both"));
   const [zoom, setZoom] = useState<number | null>(null); // null = 自适应宽度
   const [width, setWidth] = useState(1200);
+  const [viewportHeight, setViewportHeight] = useState(DEFAULT_VIEWPORT_HEIGHT);
+  const [windowScrollTop, setWindowScrollTop] = useState(0);
   const [hovered, setHovered] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null); // 刚跳到的标题段落：原文与译文上短暂高亮
   const flashTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -93,13 +107,16 @@ export function ReaderView({
   const [showOutline, setShowOutline] = useState(() => window.innerWidth >= 1280 && doc.outline.length > 0);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [searchIndex, setSearchIndex] = useState(0);
   const [current, setCurrent] = useState(0); // 当前页（0 起）
   const [pageDraft, setPageDraft] = useState<string | null>(null); // 正在输入的页码
   const scroller = useRef<HTMLDivElement>(null);
+  const scrollTopRef = useRef(0);
   const frame = useRef(0);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const restoreTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const searchTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const restored = useRef(false);
 
   // 只加载当前显示方式用得到的 PDF
@@ -110,34 +127,122 @@ export function ReaderView({
   const { byPage, byBlock } = useMemo(() => groupLinks(doc.links), [doc.links]);
   const fontsVersion = useFontsVersion();
 
-  // 从别处（如修改记录）打开的段落不在视野里时，滚到它所在的页；在阅读器里点选的本来就在视野里，不滚动
-  useEffect(() => {
-    const el = scroller.current;
-    const seg = doc.segments.find((s) => s.id === selectedSegment);
-    const page = doc.pages.find((p) => p.blocks.some((b) => b.id === seg?.block_ids[0]));
-    const row = el && page ? el.querySelector<HTMLElement>(`.page-row[data-page="${page.index}"]`) : null;
-    if (!el || !row) return;
-    const view = el.getBoundingClientRect();
-    const box = row.getBoundingClientRect();
-    if (box.bottom < view.top || box.top > view.bottom) row.scrollIntoView({ block: "start" });
-  }, [selectedSegment, doc, revealKey]);
+  // 按文档预构建结构索引，避免交互和滚动时反复全量遍历
+  const { blockById, blocksByPage, pagesBySegment, firstPageBySegment } = useMemo(() => {
+    const bById = new Map<string, BlockData>();
+    const bByPage = new Map<number, BlockData[]>();
+    const pBySeg = new Map<string, Set<number>>();
+    const firstBySeg = new Map<string, number>();
+    for (const page of doc.pages) {
+      const pageBlocks: BlockData[] = [];
+      for (const b of page.blocks) {
+        bById.set(b.id, b);
+        const bt = texts.get(b.id);
+        if (bt) {
+          pageBlocks.push(b);
+          const segId = bt.segment.id;
+          let set = pBySeg.get(segId);
+          if (!set) {
+            set = new Set();
+            pBySeg.set(segId, set);
+          }
+          set.add(page.index);
+        }
+      }
+      bByPage.set(page.index, pageBlocks);
+    }
+    for (const seg of doc.segments) {
+      const firstBlock = bById.get(seg.block_ids[0] ?? "");
+      if (firstBlock) firstBySeg.set(seg.id, firstBlock.page);
+    }
+    return { blockById: bById, blocksByPage: bByPage, pagesBySegment: pBySeg, firstPageBySegment: firstBySeg };
+  }, [doc, texts]);
 
   useEffect(() => {
     const el = scroller.current;
     if (!el) return;
-    const ro = new ResizeObserver(([entry]) => entry && setWidth(entry.contentRect.width));
+    const ro = new ResizeObserver(([entry]) => {
+      if (!entry) return;
+      if (entry.contentRect.width > 0) setWidth(entry.contentRect.width);
+      if (entry.contentRect.height > 0) setViewportHeight(entry.contentRect.height);
+    });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  const maxPageWidth = Math.max(...doc.pages.map((p) => p.width));
+  useEffect(() => {
+    return () => {
+      clearTimeout(flashTimer.current);
+      clearTimeout(jumpTimer.current);
+      clearTimeout(saveTimer.current);
+      clearTimeout(restoreTimer.current);
+      clearTimeout(searchTimer.current);
+      if (frame.current) cancelAnimationFrame(frame.current);
+    };
+  }, []);
+
+  const maxPageWidth = useMemo(
+    () => (doc.pages.length ? Math.max(...doc.pages.map((p) => p.width)) : 600),
+    [doc.pages],
+  );
   const columns = mode === "both" ? 2 : 1;
   const fitZoom = Math.max(0.3, (width - PADDING - (columns - 1) * SPINE) / columns / maxPageWidth);
   const scale = zoom ?? fitZoom;
-  const searchResults = useMemo(() => searchDocument(doc, searchQuery), [doc, searchQuery]);
-  const searchIds = useMemo(() => new Set(searchResults.map((hit) => hit.segmentId)), [searchResults]);
+  const layout = useMemo(() => buildPageLayout(doc.pages, scale, PAGE_ROW_GAP), [doc.pages, scale]);
+  const contentMinWidth = maxPageWidth * scale * columns + (columns - 1) * SPINE;
+
+  const [visibleStart, visibleEnd] = useMemo(
+    () => visiblePageRange(layout, windowScrollTop, viewportHeight, DEFAULT_OVERSCAN_PX),
+    [layout, windowScrollTop, viewportHeight],
+  );
+  const visibleRangeRef = useRef<[number, number]>([visibleStart, visibleEnd]);
+  useEffect(() => {
+    visibleRangeRef.current = [visibleStart, visibleEnd];
+  }, [visibleStart, visibleEnd]);
+
+  const searchIndexData = useMemo(() => buildSearchIndex(doc), [doc]);
+  const searchResults = useMemo(
+    () => querySearchIndex(searchIndexData, debouncedQuery),
+    [searchIndexData, debouncedQuery],
+  );
   const activeSearchIndex = Math.min(searchIndex, Math.max(0, searchResults.length - 1));
   const currentSearchId = searchResults[activeSearchIndex]?.segmentId ?? null;
+
+  // 按页分组搜索命中与术语标记，确保无关页的 props 引用不变
+  const searchIdsByPage = useMemo(() => {
+    const map = new Map<number, Set<string>>();
+    for (const hit of searchResults) {
+      const pages = pagesBySegment.get(hit.segmentId);
+      if (!pages) continue;
+      for (const pageIdx of pages) {
+        let set = map.get(pageIdx);
+        if (!set) {
+          set = new Set();
+          map.set(pageIdx, set);
+        }
+        set.add(hit.segmentId);
+      }
+    }
+    return map;
+  }, [searchResults, pagesBySegment]);
+
+  const markedByPage = useMemo(() => {
+    const map = new Map<number, Set<string>>();
+    if (!marked || marked.size === 0) return map;
+    for (const segId of marked) {
+      const pages = pagesBySegment.get(segId);
+      if (!pages) continue;
+      for (const pageIdx of pages) {
+        let set = map.get(pageIdx);
+        if (!set) {
+          set = new Set();
+          map.set(pageIdx, set);
+        }
+        set.add(segId);
+      }
+    }
+    return map;
+  }, [marked, pagesBySegment]);
 
   useEffect(() => {
     if (!searchOpen) return;
@@ -148,21 +253,28 @@ export function ReaderView({
     return () => document.removeEventListener("keydown", onKey);
   }, [searchOpen]);
 
-  // 跳到某页的某个位置（top 为离页顶的 PDF 点）
+  // 跳到某页的某个位置（top 为离页顶的 PDF 点），不依赖目标页已挂载
   const goTo = useCallback(
     (page: number, top = 0, smooth = true, inset = 56) => {
       const el = scroller.current;
-      const row = el?.querySelector<HTMLElement>(`.page-row[data-page="${page}"]`);
-      if (!el || !row) return;
-      const offset = row.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
-      // 滚动条、侧栏会改变实际页宽；布局已更新但 effect 中的比例可能还未同步。
+      if (!el) return;
+      const paddingTop = Number.parseFloat(window.getComputedStyle(el).paddingTop) || 0;
       const pageWidth = doc.pages.find((p) => p.index === page)?.width;
-      const shownWidth = row.querySelector<HTMLElement>(".page")?.getBoundingClientRect().width;
-      const shownScale = pageWidth && shownWidth ? shownWidth / pageWidth : scale;
-      el.scrollTo({ top: Math.max(offset + top * shownScale - inset, 0), behavior: smooth ? "smooth" : "auto" });
+      const shownWidth = el
+        .querySelector<HTMLElement>(`.page-row[data-page="${page}"] .page`)
+        ?.getBoundingClientRect().width;
+      // 滚动条、侧栏会改变实际页宽；布局已更新但 ResizeObserver 中的比例可能还未同步。
+      const actualScale = pageWidth && shownWidth ? shownWidth / pageWidth : undefined;
+      const targetTop = pageJumpTop(layout, page, top, scale, inset, paddingTop, actualScale);
+      if (targetTop === null) return;
+      el.scrollTo({ top: targetTop, behavior: smooth ? "smooth" : "auto" });
+      scrollTopRef.current = targetTop;
+      setWindowScrollTop(targetTop);
+      setCurrent(page);
     },
-    [scale, doc.pages],
+    [layout, scale, doc.pages],
   );
+
   const jump = useCallback(
     (page: number, top: number) => {
       goTo(page, top);
@@ -173,41 +285,55 @@ export function ReaderView({
     [goTo],
   );
 
-  const jumpSearch = useCallback(
-    (hit: SearchHit) => {
+  const jumpSearchHit = useCallback(
+    (hit: SearchHit, index: number) => {
       const segment = doc.segments.find((s) => s.id === hit.segmentId);
-      const block = doc.pages.flatMap((p) => p.blocks).find((b) => b.id === segment?.block_ids[0]);
+      const block = blockById.get(segment?.block_ids[0] ?? "");
       if (!block) return;
-      setSearchIndex(searchResults.findIndex((item) => item.segmentId === hit.segmentId));
+      setSearchIndex(index);
       jump(block.page, block.bbox.y0);
       setFlash(hit.segmentId);
       clearTimeout(flashTimer.current);
       flashTimer.current = setTimeout(() => setFlash(null), 2400);
     },
-    [doc, jump, searchResults],
+    [doc.segments, blockById, jump],
   );
 
-  const moveSearch = (delta: number) => {
-    if (!searchResults.length) return;
-    const next = (activeSearchIndex + delta + searchResults.length) % searchResults.length;
-    setSearchIndex(next);
-    const hit = searchResults[next];
-    if (hit) jumpSearch(hit);
+  const onSearchChange = (value: string) => {
+    setSearchQuery(value);
+    setSearchIndex(0);
+    clearTimeout(searchTimer.current);
+    if (!value.trim()) {
+      setDebouncedQuery("");
+      return;
+    }
+    searchTimer.current = setTimeout(() => setDebouncedQuery(value), SEARCH_DEBOUNCE_MS);
   };
 
-  // 滚动时算出当前页（工具栏页码、目录高亮），并记下来，下次打开回到这里
+  const moveSearch = (delta: number, overrideHits?: SearchHit[]) => {
+    const list = overrideHits ?? searchResults;
+    if (!list.length) return;
+    const base = overrideHits ? (delta > 0 ? -1 : 0) : activeSearchIndex;
+    const next = (base + delta + list.length) % list.length;
+    const hit = list[next];
+    if (hit) jumpSearchHit(hit, next);
+  };
+
+  // 滚动时按二分几何算出当前页与可见窗口，只有窗口或当前页变化才触发重渲染
   const onScroll = () => {
     if (frame.current) return;
     frame.current = requestAnimationFrame(() => {
       frame.current = 0;
       const el = scroller.current;
       if (!el) return;
-      const limit = el.getBoundingClientRect().top + 80;
-      let page = 0;
-      for (const m of el.querySelectorAll<HTMLElement>(".page-row")) {
-        if (m.getBoundingClientRect().top > limit) break;
-        page = Number(m.dataset.page ?? 0);
+      const nextTop = el.scrollTop;
+      scrollTopRef.current = nextTop;
+      const [prevStart, prevEnd] = visibleRangeRef.current;
+      const [nextStart, nextEnd] = visiblePageRange(layout, nextTop, viewportHeight, DEFAULT_OVERSCAN_PX);
+      if (nextStart !== prevStart || nextEnd !== prevEnd) {
+        setWindowScrollTop(nextTop);
       }
+      const page = currentPageAt(layout, nextTop, 80);
       setCurrent(page);
       clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => savePage(jobId, page), 500);
@@ -228,6 +354,26 @@ export function ReaderView({
     return () => clearTimeout(restoreTimer.current);
   }, [jobId, doc.pages.length]);
 
+  // 从别处（如修改记录）打开的段落不在视野里时，按几何坐标滚到它所在的页
+  const layoutRef = useRef(layout);
+  const viewportHeightRef = useRef(viewportHeight);
+  useEffect(() => {
+    layoutRef.current = layout;
+    viewportHeightRef.current = viewportHeight;
+  }, [layout, viewportHeight]);
+  useEffect(() => {
+    if (!selectedSegment) return;
+    const pageIndex = firstPageBySegment.get(selectedSegment);
+    if (pageIndex === undefined) return;
+    const metric = layoutRef.current.byPageIndex.get(pageIndex);
+    if (!metric) return;
+    const top = scrollTopRef.current;
+    const bottom = top + viewportHeightRef.current;
+    if (metric.bottom < top || metric.top > bottom) {
+      goToRef.current(pageIndex, 0, false, 0);
+    }
+  }, [selectedSegment, firstPageBySegment, revealKey]);
+
   // 从术语面板定位：滚到术语所在位置并只高亮命中的词（只在 spot 变化时跳）。
   const docRef = useRef(doc);
   useEffect(() => {
@@ -238,10 +384,9 @@ export function ReaderView({
     const d = docRef.current;
     const seg = d.segments.find((s) => s.id === spot.id);
     if (!seg) return;
-    const blocks = d.pages.flatMap((p) => p.blocks);
     const block = spot.term
       ? seg.block_ids
-          .map((id) => ({ block: blocks.find((item) => item.id === id), text: texts.get(id) }))
+          .map((id) => ({ block: blockById.get(id), text: texts.get(id) }))
           .find(({ text }) => {
             if (!text) return false;
             const source = spot.term?.source.trim().toLocaleLowerCase();
@@ -251,13 +396,13 @@ export function ReaderView({
                 (target && text.text.toLocaleLowerCase().includes(target)),
             );
           })?.block
-      : blocks.find((b) => b.id === seg.block_ids[0]);
+      : blockById.get(seg.block_ids[0] ?? "");
     if (!block) return;
     // 用户手动定位优先于打开页面时尚未执行的阅读位置恢复。
     clearTimeout(restoreTimer.current);
     // 打开编辑侧栏会触发 ResizeObserver 和自适应缩放，等布局更新后再用最新比例定位。
     let nextFrame = 0;
-    const frame = requestAnimationFrame(() => {
+    const raf = requestAnimationFrame(() => {
       nextFrame = requestAnimationFrame(() => {
         // 手机底部编辑面板会遮住一部分页面，段落起点靠近可见区顶部。
         goToRef.current(block.page, block.bbox.y0, true, window.innerWidth < NARROW ? 12 : 56);
@@ -272,10 +417,10 @@ export function ReaderView({
       });
     });
     return () => {
-      cancelAnimationFrame(frame);
+      cancelAnimationFrame(raf);
       cancelAnimationFrame(nextFrame);
     };
-  }, [spot, texts]);
+  }, [spot, texts, blockById]);
 
   const [picked, setPicked] = useState<number | null>(null); // 刚在目录里点的一项（同一页有好几节时高亮它）
   const goOutline = (item: OutlineData) => {
@@ -286,6 +431,8 @@ export function ReaderView({
     flashTimer.current = setTimeout(() => setFlash(null), 2400);
     if (window.innerWidth < NARROW) setShowOutline(false); // 手机上点完收起
   };
+
+  const mountedPages = visibleEnd >= visibleStart ? doc.pages.slice(visibleStart, visibleEnd + 1) : [];
 
   return (
     <div className="reader">
@@ -383,10 +530,16 @@ export function ReaderView({
               type="search"
               value={searchQuery}
               placeholder="搜索原文或译文"
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => onSearchChange(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
+                if (e.key !== "Enter") return;
+                e.preventDefault();
+                if (debouncedQuery !== searchQuery) {
+                  clearTimeout(searchTimer.current);
+                  setDebouncedQuery(searchQuery);
+                  const immediate = querySearchIndex(searchIndexData, searchQuery);
+                  moveSearch(e.shiftKey ? -1 : 1, immediate);
+                } else {
                   moveSearch(e.shiftKey ? -1 : 1);
                 }
               }}
@@ -394,11 +547,13 @@ export function ReaderView({
             />
           </label>
           <span className="reader-search-count" aria-live="polite">
-            {searchQuery.trim()
+            {debouncedQuery.trim()
               ? searchResults.length
                 ? `${activeSearchIndex + 1} / ${searchResults.length}`
                 : "没有结果"
-              : "输入关键词"}
+              : searchQuery.trim()
+                ? "搜索中…"
+                : "输入关键词"}
           </span>
           <button
             type="button"
@@ -428,7 +583,7 @@ export function ReaderView({
                   <button
                     type="button"
                     className={index === activeSearchIndex ? "search-result on" : "search-result"}
-                    onClick={() => jumpSearch(hit)}
+                    onClick={() => jumpSearchHit(hit, index)}
                   >
                     <span>第 {hit.page + 1} 页</span>
                     <strong>{shortLabel(hit.target || hit.source, 90)}</strong>
@@ -453,40 +608,58 @@ export function ReaderView({
           {(original.error || background.error) && (
             <p className="error">PDF 加载失败：{original.error ?? background.error}</p>
           )}
-          {doc.pages.map((page) => (
-            <PageRow
-              key={page.index}
-              page={page}
-              scale={scale}
-              mode={mode}
-              original={original.doc}
-              background={background.doc}
-              texts={texts}
-              hovered={hovered}
-              flash={flash}
-              marked={marked}
-              selected={selectedSegment}
-              fontsVersion={fontsVersion}
-              side={side}
-              searchIds={searchIds}
-              currentSearchId={currentSearchId}
-              onHover={setHovered}
-              onSelect={onSelectSegment}
-              pageLinks={byPage.get(page.index)}
-              blockLinks={byBlock}
-              jumpTarget={jumpTarget?.page === page.index ? jumpTarget : null}
-              term={spot?.term}
-              onJump={jump}
-            />
-          ))}
+          <div className="pages-canvas" style={{ height: layout.totalHeight, minWidth: contentMinWidth }}>
+            {mountedPages.map((page) => {
+              const metric = layout.byPageIndex.get(page.index);
+              const pageTop = metric?.top ?? 0;
+              const pageHovered = hovered && pagesBySegment.get(hovered)?.has(page.index) ? hovered : null;
+              const pageSelected =
+                selectedSegment && pagesBySegment.get(selectedSegment)?.has(page.index) ? selectedSegment : null;
+              const pageFlash = flash && pagesBySegment.get(flash)?.has(page.index) ? flash : null;
+              const pageCurrentSearch =
+                currentSearchId && pagesBySegment.get(currentSearchId)?.has(page.index) ? currentSearchId : null;
+              return (
+                <PageRow
+                  key={page.index}
+                  page={page}
+                  top={pageTop}
+                  blocks={blocksByPage.get(page.index) ?? EMPTY_BLOCKS}
+                  scale={scale}
+                  mode={mode}
+                  original={original.doc}
+                  background={background.doc}
+                  texts={texts}
+                  hovered={pageHovered}
+                  flash={pageFlash}
+                  marked={markedByPage.get(page.index)}
+                  selected={pageSelected}
+                  fontsVersion={fontsVersion}
+                  side={side}
+                  searchIds={searchIdsByPage.get(page.index)}
+                  currentSearchId={pageCurrentSearch}
+                  onHover={setHovered}
+                  onSelect={onSelectSegment}
+                  pageLinks={byPage.get(page.index)}
+                  blockLinks={byBlock}
+                  jumpTarget={jumpTarget?.page === page.index ? jumpTarget : null}
+                  term={spot?.term}
+                  onJump={jump}
+                />
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
+const EMPTY_BLOCKS: readonly BlockData[] = [];
+
 interface RowProps {
   page: PageData;
+  top: number;
+  blocks: readonly BlockData[];
   scale: number;
   mode: ViewMode;
   original: PDFDocumentProxy | null;
@@ -498,7 +671,7 @@ interface RowProps {
   selected: string | null;
   fontsVersion: number;
   side: "left" | "right";
-  searchIds: ReadonlySet<string>;
+  searchIds: ReadonlySet<string> | undefined;
   currentSearchId: string | null;
   onHover: (id: string | null) => void;
   onSelect: (id: string) => void;
@@ -558,20 +731,6 @@ function LinkLayer({
   );
 }
 
-/** 只在接近可视区时渲染 canvas，大文档也不卡。 */
-function useNearViewport<T extends HTMLElement>(): [React.RefObject<T | null>, boolean] {
-  const ref = useRef<T>(null);
-  const [near, setNear] = useState(false);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const io = new IntersectionObserver(([e]) => setNear(Boolean(e?.isIntersecting)), { rootMargin: "1200px 0px" });
-    io.observe(el);
-    return () => io.disconnect();
-  }, []);
-  return [ref, near];
-}
-
 function JumpMarker({ top, scale }: { top: number; scale: number }) {
   return (
     <div
@@ -604,8 +763,10 @@ function highlightPlainText(text: string, needle: string | undefined, key: strin
   return at === 0 ? text : [...parts, text.slice(at)];
 }
 
-function PageRow({
+const PageRow = memo(function PageRow({
   page,
+  top,
+  blocks,
   scale,
   mode,
   original,
@@ -627,13 +788,11 @@ function PageRow({
   term,
   onJump,
 }: RowProps) {
-  const [ref, near] = useNearViewport<HTMLDivElement>();
   const size = { width: page.width * scale, height: page.height * scale };
-  const blocks = page.blocks.filter((b) => texts.has(b.id));
   const mark = (segId: string) =>
     (segId === selected ? " selected" : segId === hovered ? " hovered" : "") +
     (segId === flash ? " flash" : marked?.has(segId) ? " marked" : "") +
-    (searchIds.has(segId) ? " search-hit" : "") +
+    (searchIds?.has(segId) ? " search-hit" : "") +
     (currentSearchId === segId ? " search-current" : "");
 
   const selectSegment = (id: string) => {
@@ -644,41 +803,39 @@ function PageRow({
   return (
     <div
       className={`page-row${mode === "both" ? "" : " single"}${side === "left" ? " side-left" : ""}`}
-      ref={ref}
       data-page={page.index}
+      style={{ transform: `translateY(${top}px)` }}
     >
       {mode !== "translated" && (
         <div className="page" style={size} aria-label={`原文第 ${page.index + 1} 页`}>
-          {near && original && <PdfCanvas doc={original} page={page.index} scale={scale} />}
+          {original && <PdfCanvas doc={original} page={page.index} scale={scale} />}
           {jumpTarget && <JumpMarker top={jumpTarget.top} scale={scale} />}
-          {near && (
-            <div className="source-text-layer" aria-label={`原文第 ${page.index + 1} 页文字`}>
-              {blocks.map((b) => {
-                const t = texts.get(b.id);
-                return t ? (
-                  <div
-                    key={b.id}
-                    className={`source-text${mark(t.segment.id)}`}
-                    style={{
-                      left: b.bbox.x0 * scale,
-                      top: b.bbox.y0 * scale,
-                      width: (b.bbox.x1 - b.bbox.x0) * scale,
-                      height: (b.bbox.y1 - b.bbox.y0) * scale,
-                      fontSize: b.font_size * scale,
-                    }}
-                    aria-label={t.sourceText}
-                    onClick={() => selectSegment(t.segment.id)}
-                  >
-                    {highlightPlainText(
-                      t.sourceText.replace(/<m\d+\/>/g, "[公式]").replace(/<\/?(?:sup|sub|b|i)>/g, ""),
-                      term?.source,
-                      `source-${b.id}`,
-                    )}
-                  </div>
-                ) : null;
-              })}
-            </div>
-          )}
+          <div className="source-text-layer" aria-label={`原文第 ${page.index + 1} 页文字`}>
+            {blocks.map((b) => {
+              const t = texts.get(b.id);
+              return t ? (
+                <div
+                  key={b.id}
+                  className={`source-text${mark(t.segment.id)}`}
+                  style={{
+                    left: b.bbox.x0 * scale,
+                    top: b.bbox.y0 * scale,
+                    width: (b.bbox.x1 - b.bbox.x0) * scale,
+                    height: (b.bbox.y1 - b.bbox.y0) * scale,
+                    fontSize: b.font_size * scale,
+                  }}
+                  aria-label={t.sourceText}
+                  onClick={() => selectSegment(t.segment.id)}
+                >
+                  {highlightPlainText(
+                    t.sourceText.replace(/<m\d+\/>/g, "[公式]").replace(/<\/?(?:sup|sub|b|i)>/g, ""),
+                    term?.source,
+                    `source-${b.id}`,
+                  )}
+                </div>
+              ) : null;
+            })}
+          </div>
           {blocks.map((b) => {
             const t = texts.get(b.id);
             if (!t) return null;
@@ -698,42 +855,38 @@ function PageRow({
               />
             );
           })}
-          {near && pageLinks && <LinkLayer links={pageLinks} scale={scale} onJump={onJump} />}
+          {pageLinks && <LinkLayer links={pageLinks} scale={scale} onJump={onJump} />}
         </div>
       )}
       {mode !== "original" && (
         <div className="page" style={size} aria-label={`译文第 ${page.index + 1} 页`}>
-          {near && background && <PdfCanvas doc={background} page={page.index} scale={scale} />}
+          {background && <PdfCanvas doc={background} page={page.index} scale={scale} />}
           {jumpTarget && <JumpMarker top={jumpTarget.top} scale={scale} />}
-          {near && (
-            <div className="overlay" style={{ width: page.width * scale, height: page.height * scale }}>
-              {blocks.map((b) => {
-                const t = texts.get(b.id);
-                return t ? (
-                  <OverlayBlock
-                    key={b.id}
-                    item={t}
-                    className={mark(t.segment.id)}
-                    scale={scale}
-                    fontsVersion={fontsVersion}
-                    onHover={onHover}
-                    onSelect={onSelect}
-                    links={blockLinks.get(b.id)}
-                    highlight={term?.target}
-                    onJump={onJump}
-                  />
-                ) : null;
-              })}
-            </div>
-          )}
-          {near && pageLinks && (
-            <LinkLayer links={pageLinks.filter((l) => !l.block_id)} scale={scale} onJump={onJump} />
-          )}
+          <div className="overlay" style={{ width: page.width * scale, height: page.height * scale }}>
+            {blocks.map((b) => {
+              const t = texts.get(b.id);
+              return t ? (
+                <OverlayBlock
+                  key={b.id}
+                  item={t}
+                  className={mark(t.segment.id)}
+                  scale={scale}
+                  fontsVersion={fontsVersion}
+                  onHover={onHover}
+                  onSelect={onSelect}
+                  links={blockLinks.get(b.id)}
+                  highlight={term?.target}
+                  onJump={onJump}
+                />
+              ) : null;
+            })}
+          </div>
+          {pageLinks && <LinkLayer links={pageLinks.filter((l) => !l.block_id)} scale={scale} onJump={onJump} />}
         </div>
       )}
     </div>
   );
-}
+});
 
 /** 网页字体加载完成的次数：字体换上后要重新拟合字号（先用后备字体测出的结果不准）。 */
 function useFontsVersion(): number {

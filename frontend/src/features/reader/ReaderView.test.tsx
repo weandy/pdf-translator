@@ -7,23 +7,19 @@ import type { DocumentData } from "@/shared/api/client";
 
 vi.mock("@/shared/pdf/pdf", () => ({ usePdf: () => ({ doc: null, error: null }), PdfCanvas: () => null }));
 
-const doc: DocumentData = {
-  job: {} as DocumentData["job"],
-  title: "合成文档",
-  links: [],
-  outline: [],
-  pages: Array.from({ length: 3 }, (_, index) => ({
+function makeDoc(pageCount = 3): DocumentData {
+  const pages = Array.from({ length: pageCount }, (_, index) => ({
     index,
     width: 600,
     height: 800,
-    kind: "native",
+    kind: "native" as const,
     blocks:
-      index === 0
+      index === 0 || index === pageCount - 1 || index === 79
         ? [
             {
-              id: "b1",
-              page: 0,
-              type: "text",
+              id: `b-${index}`,
+              page: index,
+              type: "text" as const,
               bbox: { x0: 20, y0: 100, x1: 200, y1: 140 },
               font_size: 12,
               color: 0,
@@ -34,32 +30,56 @@ const doc: DocumentData = {
             },
           ]
         : [],
-  })),
-  segments: [
-    {
-      id: "s1",
-      block_ids: ["b1"],
-      parts: [{ block_id: "b1", chars: 10 }],
-      source: "Synthetic paragraph",
-      target: null,
-      status: "failed",
-      quality: "default",
-      formulas: {},
-      translation_attempts: 0,
-      failure_reason: "",
-    },
-  ],
-};
+  }));
+  const segments = pages.flatMap((p, i) => {
+    const block = p.blocks[0];
+    if (!block) return [];
+    return [
+      {
+        id: i === 0 ? "s1" : `s-${p.index}`,
+        block_ids: [block.id],
+        parts: [{ block_id: block.id, chars: 10 }],
+        source: p.index === 79 ? "Far away target keyword" : `Synthetic paragraph ${p.index}`,
+        target: p.index === 79 ? "远端命中译文" : null,
+        status: p.index === 79 ? ("done" as const) : ("failed" as const),
+        quality: "default" as const,
+        formulas: {},
+        translation_attempts: 0,
+        failure_reason: "",
+      },
+    ];
+  });
+  return {
+    job: {} as DocumentData["job"],
+    title: "合成文档",
+    links: [],
+    outline: [],
+    pages,
+    segments,
+  };
+}
 
-describe("阅读位置恢复与手动段落定位", () => {
+const doc = makeDoc(3);
+
+function setInputValue(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+describe("阅读位置恢复、手动段落定位与虚拟化搜索", () => {
+  let container: HTMLDivElement;
   let root: Root;
   const scrollTo = vi.fn();
+  const ioSpy = vi.fn();
+
   beforeAll(() => Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }));
   afterAll(() => Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT"));
   beforeEach(() => {
     vi.useFakeTimers();
     localStorage.setItem("pdftr.pos.v1", JSON.stringify({ synthetic: 2 }));
     scrollTo.mockClear();
+    ioSpy.mockClear();
     vi.stubGlobal(
       "ResizeObserver",
       class {
@@ -70,6 +90,9 @@ describe("阅读位置恢复与手动段落定位", () => {
     vi.stubGlobal(
       "IntersectionObserver",
       class {
+        constructor() {
+          ioSpy();
+        }
         observe() {}
         disconnect() {}
       },
@@ -77,10 +100,13 @@ describe("阅读位置恢复与手动段落定位", () => {
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => setTimeout(() => callback(0), 16));
     vi.stubGlobal("cancelAnimationFrame", (handle: number) => clearTimeout(handle));
     Object.defineProperty(Element.prototype, "scrollTo", { configurable: true, value: scrollTo });
-    root = createRoot(document.createElement("div"));
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
   });
   afterEach(async () => {
     await act(async () => root.unmount());
+    container.remove();
     Reflect.deleteProperty(Element.prototype, "scrollTo");
     localStorage.clear();
     vi.restoreAllMocks();
@@ -88,18 +114,25 @@ describe("阅读位置恢复与手动段落定位", () => {
     vi.useRealTimers();
   });
 
-  async function render(spot: { id: string; n: number } | null = null) {
+  async function render(
+    spot: { id: string; n: number } | null = null,
+    targetDoc: DocumentData = doc,
+    jobId = "synthetic",
+  ) {
     await act(async () =>
       root.render(
-        <ReaderView doc={doc} jobId="synthetic" selectedSegment={null} onSelectSegment={() => {}} spot={spot} />,
+        <ReaderView doc={targetDoc} jobId={jobId} selectedSegment={null} onSelectSegment={() => {}} spot={spot} />,
       ),
     );
   }
 
-  it("未操作时恢复上次阅读位置", async () => {
+  it("未操作时恢复上次阅读位置到第 2 页精确坐标", async () => {
     await render();
     await act(async () => vi.advanceTimersByTimeAsync(450));
-    expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: "auto" });
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+    const arg = scrollTo.mock.calls[0]?.[0] as { top: number; behavior: string } | undefined;
+    expect(arg).toEqual({ top: expect.any(Number), behavior: "auto" });
+    expect(arg?.top).toBeGreaterThan(0);
   });
 
   it("手动定位取消待执行的自动恢复，重复定位仍能生效", async () => {
@@ -121,5 +154,74 @@ describe("阅读位置恢复与手动段落定位", () => {
     await render({ id: "s1", n: 1 });
     await act(async () => vi.advanceTimersByTimeAsync(40));
     expect(scrollTo).toHaveBeenLastCalledWith({ top: 44, behavior: "smooth" });
+  });
+
+  it("100 页长文档仅挂载视口与缓冲窗口内页面且不创建 IntersectionObserver", async () => {
+    const longDoc = makeDoc(100);
+    await render(null, longDoc, "long-doc");
+    const rows = container.querySelectorAll(".page-row");
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.length).toBeLessThan(12);
+    expect(ioSpy).not.toHaveBeenCalled();
+  });
+
+  it("滚动长文档时切换挂载窗口并更新当前页码", async () => {
+    const longDoc = makeDoc(100);
+    await render(null, longDoc, "long-doc-scroll");
+    const scroller = container.querySelector<HTMLDivElement>(".pages");
+    expect(scroller).not.toBeNull();
+    // 滚到文档中段（约第 50 页附近）
+    const total = Number.parseFloat(container.querySelector<HTMLDivElement>(".pages-canvas")?.style.height ?? "0");
+    expect(total).toBeGreaterThan(20000);
+    scroller!.scrollTop = total / 2;
+    await act(async () => {
+      scroller!.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(32);
+    });
+    expect(container.querySelector('.page-row[data-page="0"]')).toBeNull();
+    const mountedPages = [...container.querySelectorAll<HTMLElement>(".page-row")].map((el) => Number(el.dataset.page));
+    expect(mountedPages.some((p) => p >= 45 && p <= 55)).toBe(true);
+    const pageInput = container.querySelector<HTMLInputElement>('input[aria-label="跳到第几页"]');
+    expect(Number(pageInput?.value)).toBeGreaterThanOrEqual(45);
+  });
+
+  it("搜索防抖 150ms 后出结果，并可跳转到尚未挂载的第 80 页", async () => {
+    const longDoc = makeDoc(100);
+    await render(null, longDoc, "long-doc-search");
+    expect(container.querySelector('.page-row[data-page="79"]')).toBeNull();
+
+    const searchBtn = container.querySelector<HTMLButtonElement>('button[title="搜索原文和译文"]');
+    await act(async () => searchBtn?.click());
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="搜索原文或译文"]');
+    expect(input).not.toBeNull();
+
+    await act(async () => setInputValue(input!, "远端命中译文"));
+    // 未到 150ms 防抖时间时结果列表尚未出现
+    expect(container.querySelectorAll(".search-result").length).toBe(0);
+
+    await act(async () => vi.advanceTimersByTimeAsync(160));
+    const results = container.querySelectorAll<HTMLButtonElement>(".search-result");
+    expect(results.length).toBe(1);
+
+    await act(async () => results[0]?.click());
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+    expect((scrollTo.mock.calls[0]?.[0] as { top: number } | undefined)?.top).toBeGreaterThan(10000);
+    // 跳转后目标页已纳入窗口挂载
+    expect(container.querySelector('.page-row[data-page="79"]')).not.toBeNull();
+  });
+
+  it("搜索输入框按 Enter 立即生效无需等待防抖", async () => {
+    const longDoc = makeDoc(100);
+    await render(null, longDoc, "long-doc-enter");
+    const searchBtn = container.querySelector<HTMLButtonElement>('button[title="搜索原文和译文"]');
+    await act(async () => searchBtn?.click());
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="搜索原文或译文"]');
+
+    await act(async () => {
+      setInputValue(input!, "Far away target");
+      input!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+    expect((scrollTo.mock.calls[0]?.[0] as { top: number } | undefined)?.top).toBeGreaterThan(10000);
   });
 });

@@ -1160,11 +1160,19 @@ input[type="radio"] {
   scrollbar-gutter: stable;
   padding: 24px;
 }
+.pages-canvas {
+  position: relative;
+  width: 100%;
+}
 .page-row {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
   display: flex;
   justify-content: center;
   gap: 2px;
-  margin-bottom: 28px;
+  will-change: transform;
 }
 .page-row.single {
   gap: 0;
