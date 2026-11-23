@@ -4,13 +4,22 @@
 >
 > 最后更新：2026-11-23（Asia/Shanghai）
 
+### 部署：长论文阅读器虚拟化与原文 pdf.js 文字层上线（2026-11-23）
+
+- 已将 `feat/reader-virtualization-text-layer` 快进合入 `main`（`ea435d7..4af35cc`）并推送至 `origin/main`，前端在 `main` 上全量复测 40 文件 / 199 项通过，`lint` / `typecheck` / `build` 全绿。
+- 已按规范部署至 HW-SGP（源码与 web 镜像 `4af35cc`，只重建 `pdf-translator-web`，本轮无后端改动，`app` 保持 `d3491b5` healthy）：
+  - 构建前后进行中任务均为空（`进行中: []`）；
+  - 数据库备份 `/data/backups/pre-reader-virt-textlayer-4af35cc-20261123.db`（`PRAGMA integrity_check: ok`）；
+  - 旧 web 镜像保留为 `pdf-translator-web:before-reader-virt-textlayer-20261123`（`588322689d97`），新镜像 `0af970a91068`。
+- 公网验收：`/api/health` 200（`data_dir_writable: true`），`/` 200 且引用新资源 `/assets/index-DZcGV46h.js` 与 `/assets/index-Cdnwtaa9.css`（已验证含 `.pdf-text-layer` 与 `data-main-rotation` 规则），`/guide` 200。
+
 ### 本轮完成：长论文阅读器虚拟化、搜索防抖与原文 pdf.js 文字层（2026-11-23）
 
 - 设计文档：`docs/08-reader-virtualization-and-text-layer-design.md`（方案 A1 + B1 + C1，选项 A，分两阶段实施）。
 - 阶段 1（`virtual.ts`、`search.ts`、`ReaderView.tsx`、`styles.css`）：基于每页已知 PDF 尺寸的前缀和窗口虚拟化，移除每页独立的 `IntersectionObserver` 与远端页常驻 `.hit` 节点，对 `PageRow` 做 `React.memo` 与按页属性收敛，跳转定位改用精确几何计算（支持未挂载远端页直接跳转并保留实测页宽缩放校准）；预构建搜索归一化索引并加入 150ms 输入防抖（按 Enter 立即触发）。
 - 阶段 2（`pdf.tsx`、`ReaderView.tsx`、`styles.css`）：新增 `PdfTextLayer`（基于 `pdfjs-dist@6.4.299` `TextLayer`，缩放时走 `update()` 不重提取文本流，切换/卸载时 `cancel()` 并处理加载中途缩放竞态、旋转页 `data-main-rotation` 对齐、跨 span 词级术语高亮与非取消异常自动降级）；原文页按画布 / 视觉底纹 `.hit-layer` / 文字层 / 链接层四层解耦，采用坐标命中与拖拽阈值保护驱动悬停联动与点击编辑；扫描页（`page.kind !== "native"`）继续保留块级 `.source-text-layer` 降级层。
 - 双模型评审与修复闭环：经 Codex `gpt-6.1-sol` (high) 与 Grok `grok-4.7` (high) 独立评审，补齐缩放/切显示模式阅读锚点保持（`windowAnchor` + `useLayoutEffect`）、统一 `scrollTop - paddingTop` 布局坐标系、短距离平滑跳转 `pinnedPage` 防闪白与远距离 `auto` 直达、`data-main-rotation` 90°/180°/270° 旋转样式、原生页跨 span 词级术语高亮、`PdfTextLayer` 失败清理与块级降级、中文 IME `isComposing` 过滤、非连续 `page.index` 双向映射及 `pagehide` 同步落盘。
-- 验证结果：Node `v22.23.5` 下前端全量 Vitest 40 文件 / 199 项通过（较基线 175 项新增 24 项测试），`npm run lint`、`npm run typecheck`、`npm run build` 均通过（位于独立 worktree 分支 `feat/reader-virtualization-text-layer`，尚未合并主干或部署上线）。
+- 验证结果：Node `v22.23.5` 下前端全量 Vitest 40 文件 / 199 项通过（较基线 175 项新增 24 项测试），`npm run lint`、`npm run typecheck`、`npm run build` 均通过，已合入 `main` 并上线。
 
 ### 部署：统一任务卡片与逐篇编辑入口上线（2026-11-23）
 
