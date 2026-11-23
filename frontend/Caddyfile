@@ -33,6 +33,18 @@
 		file_server
 	}
 
+	# 带内容哈希的构建产物长缓存；纯 JS 解码器按天缓存；SPA 入口不启发式缓存，避免发版后引用已删除旧分包白屏
+	@hashed_assets path /assets/*
+	header @hashed_assets Cache-Control "public, max-age=31536000, immutable"
+
+	@pdfjs_decoders path /pdfjs/*
+	header @pdfjs_decoders Cache-Control "public, max-age=86400"
+
+	@spa_html {
+		not path /api/* /assets/* /pdfjs/* /favicon.svg {$PDFTR_ADMIN_PATH:/weandy} {$PDFTR_ADMIN_PATH:/weandy}/*
+	}
+	header @spa_html Cache-Control "no-cache"
+
 	# 前端不加载任何第三方资源；KaTeX 需要内联样式，pdf.js 需要 blob worker
 	@admin_pages path {$PDFTR_ADMIN_PATH:/weandy} {$PDFTR_ADMIN_PATH:/weandy}/*
 	header @admin_pages Cache-Control "no-store"
