@@ -124,13 +124,15 @@ def _formula_images(original: pymupdf.Document, seg: Segment) -> dict[str, tuple
     return out
 
 
-def _safe_bottom(page: pymupdf.Page, box: pymupdf.Rect, block: Block, neighbors: Sequence[Block]) -> float:
+def _safe_bottom(
+    page: pymupdf.Page, box: pymupdf.Rect, right: float, block: Block, neighbors: Sequence[Block]
+) -> float:
     bottom = max(box.y1, page.rect.y1 - BOTTOM_MARGIN)
     for other in neighbors:
         if other.id == block.id:
             continue
         r = _box(other) if other.translatable else other.bbox
-        if r.x0 < box.x1 and r.x1 > box.x0 and r.y1 > box.y1:
+        if r.x0 < right and r.x1 > box.x0 and r.y1 > box.y1:
             bottom = min(bottom, max(box.y1, r.y0))
     return bottom
 
@@ -170,6 +172,16 @@ def _place(
         drawn = max((_line_bottom(line, base, size) for line, base in zip(lines, bases, strict=True)), default=0)
         return lines, bases, max(height, drawn) * scale
 
+    def safe_height(lines: list[Line], scale: float) -> float:
+        # 悬挂标点和不可断开的西文词可能超出排版框的右边缘。
+        right = max(
+            (box.x0 + (sum(line.glue) + sum(t.width for t in line.tokens)
+                       + (2 * size if indent and i == 0 else 0)) * scale
+             for i, line in enumerate(lines)),
+            default=box.x1,
+        )  # fmt: skip
+        return _safe_bottom(page, box, max(box.x1, right), block, neighbors) - box.y0
+
     scale = 1.0
     for pitch in LINE_HEIGHTS:
         lines, bases, height = layout(scale, pitch)
@@ -177,14 +189,15 @@ def _place(
             break
     else:
         lines, bases, height = layout(MIN_SCALE, LINE_HEIGHT)
-        if height > box.height:
-            box.y1 = _safe_bottom(page, box, block, neighbors)
-        if height <= box.height:
+        needs_gap = height > box.height
+        available = safe_height(lines, MIN_SCALE) if needs_gap else box.height
+        if height <= available:
             lo, hi = MIN_SCALE, 1.0
             for _ in range(10):
                 mid = (lo + hi) / 2
-                _, _, height = layout(mid, LINE_HEIGHT)
-                lo, hi = (mid, hi) if height <= box.height else (lo, mid)
+                candidate, _, height = layout(mid, LINE_HEIGHT)
+                limit = safe_height(candidate, mid) if needs_gap and height > box.height else box.height
+                lo, hi = (mid, hi) if height <= limit else (lo, mid)
             scale = lo
             lines, bases, _ = layout(scale, LINE_HEIGHT)
         else:
@@ -193,12 +206,12 @@ def _place(
                 "译文导出溢出 page=%d block_id=%s overflow=%.2fpt",
                 block.page + 1,
                 block.id,
-                height - box.height,
+                height - available,
             )
             # 只绘制完整可见的行，避免跨过相邻块或页底。
             count = next(
                 (i for i, (line, base) in enumerate(zip(lines, bases, strict=True))
-                 if _line_bottom(line, base, size) * scale > box.height),
+                 if _line_bottom(line, base, size) * scale > available),
                 len(lines),
             )  # fmt: skip
             lines, bases = lines[:count], bases[:count]

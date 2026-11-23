@@ -104,11 +104,28 @@ def test_minimum_scale_uses_only_safe_space_and_logs_remaining_overflow(
         assert len(pdf) == 1
         words = pdf[0].get_text("words")
         drawn = [word for word in words if "正" in word[4] or "结" in word[4]]
-        assert drawn and max(word[3] for word in drawn) > start.bbox.y1
-        assert max(word[3] for word in drawn) <= below.bbox.y0
+        assert drawn and max(float(word[3]) for word in drawn) > start.bbox.y1
+        assert max(float(word[3]) for word in drawn) <= below.bbox.y0
         assert "Right column." in str(pdf[0].get_text())
         if fits_gap:
             assert "结尾" in str(pdf[0].get_text())
             assert "block_id=p0-b0" not in caplog.text
         else:
             assert "page=1 block_id=p0-b0" in caplog.text and "pt" in caplog.text
+
+
+def test_export_overflow_at_page_bottom_retains_only_in_page_lines(tmp_path: Path, caplog: pytest.LogCaptureFixture):
+    original = tmp_path / "bottom.pdf"
+    block = _block(0, 0, [20, 65, 90, 78], "Last paragraph.")
+    doc = Document(job_id="bottom", pages=[Page(index=0, width=220, height=120, blocks=[block])])
+    with pymupdf.open() as pdf:
+        pdf.new_page(width=220, height=120)
+        pdf.save(original)
+    (seg,) = segment(doc)
+    seg.target = "正文" * 100 + "结尾"
+    with pymupdf.open(stream=export_pdf(original, original, doc, [seg], "mono"), filetype="pdf") as pdf:
+        assert len(pdf) == 1
+        words = pdf[0].get_text("words")
+        assert words and block.bbox.y1 < max(float(word[3]) for word in words) <= 116
+        assert "结尾" not in str(pdf[0].get_text())
+    assert "page=1 block_id=p0-b0" in caplog.text
