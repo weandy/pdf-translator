@@ -1,9 +1,12 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
+from pdftr.config import Settings
 from pdftr.domain.llm import ChatOptions, ChatResult
 from pdftr.glossary import sources
-from pdftr.glossary.extract import extract_terms, parse
+from pdftr.glossary.extract import Extraction, extract_terms, parse
 from pdftr.glossary.gist import parse as parse_gist
 from pdftr.glossary.matcher import TermMatcher
 from pdftr.glossary.normalize import normalize_terms
@@ -11,7 +14,9 @@ from pdftr.glossary.normalize import normalize_terms
 
 def test_parse_extraction():
     text = "领域：机器学习优化\n- ADAM=ADAM\nstochastic optimization=随机优化\n乱写的一行\n"
-    assert parse(text) == ("机器学习优化", {"ADAM": "ADAM", "stochastic optimization": "随机优化"})
+    found = parse(text)
+    assert found.domain == "机器学习优化" and found.use_library
+    assert found.terms == {"ADAM": "ADAM", "stochastic optimization": "随机优化"}
 
 
 def test_normalize_terms():
@@ -114,10 +119,88 @@ def test_extract_terms_with_fake_model():
 
         async def complete(self, system: str, user: str, opts: ChatOptions) -> ChatResult:
             assert "标题：Adam" in user and opts.thinking == "off"
-            return ChatResult(text="领域：优化\nAdam=Adam")
+            assert "第二行" in user and "Transformer、BERT、ResNet" in user and "job、instance" in user
+            return ChatResult(text="领域：优化\nAI公共词库：停用\nAdam=Adam")
 
         async def list_models(self) -> list[str]:
             return []
 
     got = asyncio.run(extract_terms(Chat(), title="Adam", abstract="abs", intro="intro", headings=["1 Intro"]))
-    assert got.domain == "优化" and got.terms == {"Adam": "Adam"}
+    assert got.domain == "优化" and not got.use_library and got.terms == {"Adam": "Adam"}
+
+
+def test_default_sources_filter_single_words_and_known_conflicts(tmp_path):
+    assert sources.DEFAULT_ORDER == ["aitd", "d2l", "ml-technical-term", "ais-vocab", "computerese"]
+    assert Settings.model_fields["glossary_sources"].default == ",".join(sources.DEFAULT_ORDER)
+    ambiguous = [
+        "Pool",
+        "Operator",
+        "Loop",
+        "Instance",
+        "Range",
+        "Setting",
+        "Actor",
+        "Fluctuation",
+        "structure",
+        "parallel",
+        "Integration",
+        "Minimum",
+        "support",
+        "evaluation",
+        "Optimization",
+        "Example",
+        "Size",
+        "Factor",
+        "Cost",
+        "Mean",
+        "Same",
+        "Operation",
+        "Attention",
+    ]
+    excluded = dict.fromkeys(ambiguous, "中文") | {
+        "global average pooling": "全局平均汇聚",
+        "Transformer architecture": "变换器架构",
+        "actor network": "演员网络",
+        "discount factor": "衰减系数",
+        "actor-critic framework": "行动者-评论家框架",
+    }
+    allowed = {
+        "softmax": "归一化指数",
+        "1D convolution": "一维卷积",
+        "discount factor": "折扣因子",
+        "actor-critic framework": "行动者-评价者框架",
+        "network aggregation": "网络汇聚",
+        "DC converter": "直流变换器",
+        "global average pooling": "全局平均池化",
+    }
+    assert sources.merge([excluded, allowed]) == allowed
+    gist = sources.parse_ids("gist")
+    (tmp_path / gist[0].cache_name).write_text(
+        "Index,English,Chinese\n0,saddle point,鞍点\n1,Pool,汇聚\n", encoding="utf-8"
+    )
+    assert sources.load_all(gist, tmp_path) == ({"saddle point": "鞍点"}, gist)
+
+
+def test_uppercase_acronyms_match_only_explicit_uppercase():
+    matcher = TermMatcher({"CLIP": "模型", "BERT": "编码模型", "GAN": "生成对抗网络", "Feature map": "特征图"})
+    assert matcher.match("clip rate, Clip rate, CliP rate, bert, gan, and FEATURE MAP.") == {"Feature map": "特征图"}
+    assert matcher.match("CLIP, BERT, and GAN.") == {"CLIP": "模型", "BERT": "编码模型", "GAN": "生成对抗网络"}
+
+
+@pytest.mark.parametrize(
+    ("domain", "expected"),
+    [
+        ("工业工程：使用强化学习算法解决作业车间调度", False),
+        ("强化学习用于作业车间调度", False),
+        ("深度学习算法理论，应用于医学影像", True),
+        ("Materials science and AI", False),
+        ("自然语言处理", True),
+        ("论文领域不明", True),
+    ],
+)
+def test_library_gate_on_legacy_artifacts_and_missing_model_line(domain, expected):
+    assert Extraction.model_validate({"domain": domain}).use_library is expected
+    assert parse(f"领域：{domain}\nnode=节点").use_library is expected
+    assert Extraction.model_validate({"domain": domain, "use_library": not expected}).use_library is not expected
+    assert parse(f"领域：{domain}\nAI公共词库：启用\nnode=节点").use_library
+    assert not parse(f"领域：{domain}\nAI公共词库：停用\nnode=节点").use_library

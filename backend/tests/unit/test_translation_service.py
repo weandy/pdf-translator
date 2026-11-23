@@ -5,6 +5,7 @@ import pytest
 
 from pdftr.domain.ir import Segment, SegmentStatus
 from pdftr.domain.llm import ChatError, ChatOptions, ChatResult, ChatUsage
+from pdftr.translation.batching import normalize_cjk_spacing
 from pdftr.translation.prompt import DocContext
 from pdftr.translation.service import TranslateOptions, cache_key, translate
 
@@ -190,13 +191,14 @@ def test_careful_quality_turns_on_thinking_and_terms_are_looked_up():
     chat = FakeChat()
     out, _ = asyncio.run(
         translate(SEGS[:1], chat=chat, cache=DictCache(), ctx=DocContext(terms={"function": "函数"}),
-                  lookup_terms=lambda s: {"function": "函数", "Let": "设"},
+                  lookup_terms=lambda s: {"Function": "其他译法", "Let": "设"},
                   opts=TranslateOptions(quality="careful"))
     )  # fmt: skip
     user, opts = chat.calls[0]
     assert opts.thinking == "low"
     assert out[0].quality == "careful"
-    assert "本批术语（推荐译法）：Let=设" in user  # 已在文档级术语表里的不重复放
+    assert "参考词库" in user and "Let=设" in user
+    assert "Function=" not in user  # 不区分大小写去掉和文档术语重复的参考词
 
 
 def test_chat_error_propagates():
@@ -587,8 +589,8 @@ def test_quality_faults_reject_cache_and_model_output(source, bad, good, reason)
     cache.data[key] = bad
     chat = RepeatedFailures(1, f"1|{good}")
     out, report = asyncio.run(translate([seg], chat=chat, cache=cache, ctx=ctx))
-    assert report.cached == 0 and report.requests == 1 and out[0].target == good
-    assert cache.data == {key: good}
+    assert report.cached == 0 and report.requests == 1 and out[0].target == normalize_cjk_spacing(good)
+    assert cache.data == {key: normalize_cjk_spacing(good)}
 
 
 @pytest.mark.parametrize(
@@ -616,4 +618,20 @@ def test_quality_checks_allow_short_technical_and_compact_translations(source, t
     out, report = asyncio.run(
         translate([seg], chat=RepeatedFailures(1, f"1|{target}"), cache=DictCache(), ctx=DocContext())
     )
-    assert report.requests == 1 and out[0].target == target
+    assert report.requests == 1 and out[0].target == normalize_cjk_spacing(target)
+
+
+def test_accepted_model_output_is_normalized_before_cache_and_persistence():
+    class SpacedChat(FakeChat):
+        async def complete(self, system, user, opts):
+            return ChatResult(text="1|模型 <b>ResNet 50</b> 的 2 层含 <m1/> 公式。")
+
+    seg = _seg(0, "The <b>ResNet 50</b> model with <m1/>.", {"m1": "x"})
+    cache = DictCache()
+    expected = "模型<b>ResNet 50</b>的2层含<m1/>公式。"
+    out, _ = asyncio.run(translate([seg], chat=SpacedChat(), cache=cache, ctx=DocContext()))
+    assert out[0].target == expected
+    key = cache_key(seg, SpacedChat.model, {}, "default")
+    assert cache.get(key) == expected
+    cached, report = asyncio.run(translate([seg], chat=FakeChat(), cache=cache, ctx=DocContext()))
+    assert cached[0].target == expected and report.cached == 1

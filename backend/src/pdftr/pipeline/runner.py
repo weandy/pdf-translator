@@ -5,7 +5,6 @@
 """
 
 import asyncio
-import json
 import logging
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Sequence
@@ -22,8 +21,8 @@ from pdftr.domain.layout import LayoutResult
 from pdftr.domain.llm import ChatError, ChatModel
 from pdftr.extraction.chars import extract
 from pdftr.fusion.build import InvalidLayoutPages, fuse
-from pdftr.glossary.extract import extract_terms
-from pdftr.glossary.matcher import TermMatcher, combine, override
+from pdftr.glossary.extract import Extraction, extract_terms
+from pdftr.glossary.matcher import TermMatcher, TermSelection
 from pdftr.glossary.normalize import normalize_terms
 from pdftr.parsing.port import LayoutParser, ParseError
 from pdftr.pipeline.events import EventBus
@@ -115,13 +114,13 @@ def load_document(deps: PipelineDeps, job_id: str) -> Document:
     return Document.model_validate_json(deps.artifacts.path(job_id, "ir.json").read_text(encoding="utf-8"))
 
 
-def load_context(deps: PipelineDeps, job_id: str, user_terms: dict[str, str] | None = None) -> DocContext:
-    """user_terms：用户术语库，覆盖自动抽取的同名术语。"""
+def load_context(deps: PipelineDeps, job_id: str, user_terms: dict[str, str]) -> tuple[DocContext, TermSelection]:
     doc = load_document(deps, job_id)
     glossary_file = deps.artifacts.path(job_id, "glossary.json")
-    g = json.loads(glossary_file.read_text(encoding="utf-8")) if glossary_file.exists() else {}
-    return DocContext(title=doc.meta.title, abstract=doc.meta.abstract, domain=g.get("domain", ""),
-                      terms=override(g.get("terms", {}), user_terms or {}))  # fmt: skip
+    found = Extraction.model_validate_json(glossary_file.read_bytes()) if glossary_file.exists() else Extraction()
+    selection = TermSelection(found, user_terms, deps.term_matcher)
+    return DocContext(title=doc.meta.title, abstract=doc.meta.abstract, domain=found.domain,
+                      terms=selection.paper), selection  # fmt: skip
 
 
 class Slots:
@@ -434,11 +433,12 @@ class Pipeline:
         terms = normalize_terms(found.terms, body, headings)
         if cost is not None:
             self._update(job, cost_cny=(job.cost_cny or 0) + cost)  # 术语抽取也计入任务花费
-        _write_json(out, json.dumps({"domain": found.domain, "terms": terms}, ensure_ascii=False))
+        found.terms = terms
+        _write_json(out, found.model_dump_json(exclude={"usage"}))
 
     async def _translate(self, job: Job, secrets: Secrets) -> None:
         segs = self.deps.store.segments(job.id)
-        matcher = await asyncio.to_thread(self.deps.term_matcher)
+        ctx, terms = await asyncio.to_thread(load_context, self.deps, job.id, job.options.user_terms)
 
         def progress(done: int, total: int, note: str = "") -> None:
             message = f"翻译中 {done}/{total}" + (f"，{note}" if note else "")
@@ -446,8 +446,8 @@ class Pipeline:
 
         async with chat_session(self.deps.chat_factory(secrets)) as chat:
             out, report = await translate(
-                segs, chat=chat, cache=self.deps.cache, ctx=load_context(self.deps, job.id, job.options.user_terms),
-                lookup_terms=combine(job.options.user_terms, matcher),
+                segs, chat=chat, cache=self.deps.cache, ctx=ctx,
+                lookup_terms=terms.match_library, lookup_user_terms=terms.match_user,
                 opts=TranslateOptions(quality=job.options.quality, concurrency=self._concurrency(secrets)),
                 on_progress=progress,
             )  # fmt: skip

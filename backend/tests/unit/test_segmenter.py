@@ -151,3 +151,28 @@ def test_italic_runs_merge_across_lines_and_hyphenation():
     title = _block("p0-b2", 0, BlockType.TITLE, [italic("A title")])
     doc = Document(job_id="synthetic", pages=[Page(index=0, width=600, height=800, blocks=[whole, mixed, title])])
     assert [s.source for s in segment(doc)] == ["The first statement", "The <i>second statement</i>", "A title"]
+
+
+def test_recover_numeric_references_and_units_without_touching_math_variables():
+    from pdftr.translation.segmenter import textual_formula
+
+    assert textual_formula(r"^{6,}") == "6,"
+    assert textual_formula(r"^{3,}") == "3,"
+    assert textual_formula(r"\operatorname{Eq.}(24)") == "Eq. (24)"
+    assert textual_formula(r"\mathrm{Eq. (24)}") == "Eq. (24)"
+    assert textual_formula(r"\mathrm{Fig.} 6") == "Fig. 6"
+    assert textual_formula(r"\mathrm{ms}", "1.8 ") == "ms"
+    assert textual_formula(r"\mathbf{s},", "1800 ") == "s,"
+    assert textual_formula(r"\mathbf{s},", "the symbol ") is None
+    for math in ("n,", "s,", "t,", r"\pi,", "s_t", "2^{3,}"):
+        assert textual_formula(math, "1800 ") is None
+
+    latex = [r"^{6,}", r"^{3,}", r"\operatorname{Eq.}(24)", r"\mathbf{s},", "n,", "s_t"]
+    prose = ["See Fig.", "Section", "and", "for 1800", "with", "and"]
+    formulas = [InlineFormula(key=f"m{i}", latex=value, bbox=BOX) for i, value in enumerate(latex, 1)]
+    spans = [s for text, formula in zip(prose, formulas, strict=True) for s in (_text(text), _formula(formula.key))]
+    block = _block("p0-b0", 0, BlockType.TEXT, spans, formulas=formulas)
+    doc = Document(job_id="synthetic", pages=[Page(index=0, width=600, height=800, blocks=[block])])
+    (seg,) = segment(doc)
+    assert seg.source == "See Fig. 6, Section 3, and Eq. (24) for 1800 s, with <m1/> and <m2/>"
+    assert seg.formulas == {"m1": "n,", "m2": "s_t"}

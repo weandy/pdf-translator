@@ -1,7 +1,7 @@
-r"""翻译提示词 v2（S9 定稿，S10/S11/S12 在 DeepSeek、gpt-6-luna、公开数据集上验证）。
+r"""翻译提示词 v3（保留 S9 的公式格式与示例）。
 
 要点：公式以 <mN>LaTeX</mN> 给模型看、输出只写 <mN/>（S9 收益最大的一条）；
-风格要求 + 一个示例；模型名及配置后缀保留原文；术语为推荐译法。
+风格要求 + 一个示例；模型名及配置后缀保留原文；区分全文术语和公共参考词库。
 改动这里的任何文字都要重跑 S10/S11 回归评测，并递增 PROMPT_VERSION（它是缓存键的一部分）。
 """
 
@@ -9,7 +9,7 @@ import re
 
 from pydantic import BaseModel, Field
 
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v3"
 
 RULES = r"""你是资深学术论文译者，把用户给出的英文段落译成简体中文学术文本。
 
@@ -23,8 +23,10 @@ RULES = r"""你是资深学术论文译者，把用户给出的英文段落译�
 - 准确第一：不漏译、不增译；数字、单位、引用编号 [12]、作者年份引用 (Smith et al., 2020) 原样保留。
 - 意译优先：按中文学术写作习惯调整语序，拆分过长的定语，避免“允许……更多的……”“被……”等生硬直译。
 - 模型名、方法名、数据集名、软件名及其配置后缀（如 Transformer (big)、ResNet-50）和评价指标缩写（如 BLEU）保留原文，大小写与原文一致。
-- 术语表是推荐译法，原文出现该术语时使用。
-- 使用中文标点。
+- 普通英文词译成中文。专名、指标缩写、变量、代号和原样引用按原文保留。
+- 汉字与英文、数字、<mN/> 之间不插入空格，使用中文标点。
+- 中文叙述中的作者引用用「等」，括号内的作者年份引用保留原文。
+- 学术标题和元数据按中文惯例翻译，如 Problem statement 译为「问题描述」，Available online 译为「在线发表」。
 
 【示例】
 输入：
@@ -49,7 +51,7 @@ def system_prompt(ctx: DocContext) -> str:
     if ctx.abstract:
         parts.append(f"摘要：{ctx.abstract}")
     if ctx.terms:
-        parts += ["", "术语表（推荐译法）："] + [f"{k}={v}" for k, v in ctx.terms.items()]
+        parts += ["", "本文术语表（全文统一使用）："] + [f"{k}={v}" for k, v in ctx.terms.items()]
     return "\n".join(parts)
 
 
@@ -58,12 +60,22 @@ def expand_formulas(source: str, formulas: dict[str, str]) -> str:
     return re.sub(r"<(m\d+)/>", lambda m: f"<{m.group(1)}>{formulas.get(m.group(1), '')}</{m.group(1)}>", source)
 
 
-def user_prompt(items: list[tuple[int, str]], sections: list[str], extra_terms: dict[str, str]) -> str:
+def user_prompt(
+    items: list[tuple[int, str]],
+    sections: list[str],
+    extra_terms: dict[str, str],
+    user_terms: dict[str, str] | None = None,
+) -> str:
     """items：(批内编号, 已展开公式的原文)。extra_terms：本批命中的词库术语（不放进固定前缀）。"""
     lines = []
     if sections:
         lines.append("本批段落所在章节：" + "；".join(sections))
+    if user_terms:
+        lines.append("本批用户术语（统一使用）：" + "；".join(f"{k}={v}" for k, v in user_terms.items()))
     if extra_terms:
-        lines.append("本批术语（推荐译法）：" + "；".join(f"{k}={v}" for k, v in extra_terms.items()))
+        lines.append(
+            "参考词库（仅在语境与论文领域吻合时参考，冲突时以自然学术译法为准）："
+            + "；".join(f"{k}={v}" for k, v in extra_terms.items())
+        )
     lines += [f"{i}|{text}" for i, text in items]
     return "\n".join(lines)

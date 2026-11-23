@@ -5,16 +5,21 @@
 
 import re
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from pdftr.domain.llm import ChatModel, ChatOptions, ChatUsage
 
-PROMPT = """阅读下面的论文信息，完成两件事：
+PROMPT = """阅读下面的论文信息，按顺序输出：
 1. 第一行输出「领域：……」，用一句话概括论文所属学科与研究主题。
-2. 之后抽取需要全文统一译法的专业术语，最多 40 个，每行「英文=中文」：
-   - 只收专业术语（概念、方法、指标等），不收章节名和普通词汇；
-   - 按术语在摘要或正文中的写法（大小写）输出，不要使用标题里的全大写或首字母大写形式；
-   - 模型名、方法名、数据集名等应保留英文的，输出「英文=英文」；
+2. 第二行输出「AI公共词库：启用」或「AI公共词库：停用」。
+   仅当论文主领域为 AI、机器学习、深度学习、自然语言处理、计算机视觉、强化学习的算法理论，
+   或计算机科学核心方向时启用。工业工程、运筹调度、物理、生物医学、材料、金融、社科等应用或非 AI 学科停用，
+   即使这些论文采用了 AI 方法。
+3. 之后抽取需要全文统一译法的专业术语，最多 40 个，每行「英文=中文」：
+   - 收入概念、方法、指标，以及本文高频出现、有多种译法的核心领域对象词（如 job、instance、operation、agent、node）。
+     不收章节名和与本文领域无关的普通词汇。
+   - 按术语在摘要或正文中的写法输出，避免沿用标题的大写格式。
+   - 模型、架构（如 Transformer、BERT、ResNet）及应保留原文的方法和数据集名，输出「英文=英文」。
    - 使用中文学界通行译法。
 不要输出其他内容。
 
@@ -24,27 +29,64 @@ PROMPT = """阅读下面的论文信息，完成两件事：
 章节标题（仅供判断领域）：{headings}"""
 
 
+_APPLICATION = re.compile(
+    r"工业工程|运筹|调度|物理|生物|医学|医疗|临床|化学|材料|金融|经济|社科|社会科学|土木|农业|能源|"
+    r"industrial engineering|operations research|scheduling|physics|biolog|medicin|medical|clinical|chemistry|"
+    r"materials science|finance|economics|social science|civil engineering|agricultur",
+    re.I,
+)
+_AI = re.compile(
+    r"人工智能|机器学习|深度学习|自然语言处理|计算机视觉|强化学习|计算机科学|"
+    r"artificial intelligence|machine learning|deep learning|natural language processing|computer vision|"
+    r"reinforcement learning|computer science|\b(?:AI|ML|DL|NLP|CV|RL|CS)\b",
+    re.I,
+)
+_CORE = re.compile(r"算法|理论|架构|algorithm|theor|architecture", re.I)
+_APPLICATION_CLAUSE = re.compile(r"用于|应用于|应用在|面向|\b(?:applied to|applications? (?:to|in)|for)\b", re.I)
+
+
+def _library_default(domain: str) -> bool:
+    if not _APPLICATION.search(domain):
+        return True  # 历史结果领域不明时沿用原来的词库行为。
+    topic = _APPLICATION_CLAUSE.split(domain, maxsplit=1)[0]
+    return bool(_AI.search(topic) and _CORE.search(topic) and not _APPLICATION.search(topic))
+
+
 class Extraction(BaseModel):
     domain: str = ""
     terms: dict[str, str] = Field(default_factory=dict)
+    use_library: bool = True
     usage: ChatUsage = Field(default_factory=ChatUsage)
 
+    @model_validator(mode="before")
+    @classmethod
+    def infer_library(cls, data: object) -> object:
+        if isinstance(data, dict) and "use_library" not in data:
+            return {**data, "use_library": _library_default(str(data.get("domain", "")))}
+        return data
 
-def parse(text: str) -> tuple[str, dict[str, str]]:
+
+def parse(text: str) -> Extraction:
     domain, terms = "", {}
+    use_library: bool | None = None
     for raw in text.splitlines():
         line = raw.strip().lstrip("-*• ").strip()
         if m := re.match(r"^领域\s*[:：]\s*(.+)$", line):
             domain = m.group(1).strip()
+        elif m := re.fullmatch(r"AI\s*公共词库\s*[:：]\s*(启用|停用)", line, re.I):
+            use_library = m.group(1) == "启用"
         elif "=" in line:
             k, v = (p.strip() for p in line.split("=", 1))
             if k and v and len(k) <= 80:
                 terms[k] = v
-    return domain, terms
+    return Extraction(
+        domain=domain, terms=terms, use_library=_library_default(domain) if use_library is None else use_library
+    )
 
 
 async def extract_terms(chat: ChatModel, *, title: str, abstract: str, intro: str, headings: list[str]) -> Extraction:
     prompt = PROMPT.format(title=title, abstract=abstract, intro=intro[:1500], headings="; ".join(headings))
     result = await chat.complete("你是学术术语专家。", prompt, ChatOptions(max_tokens=1500))
-    domain, terms = parse(result.text)
-    return Extraction(domain=domain, terms=terms, usage=result.usage)
+    found = parse(result.text)
+    found.usage = result.usage
+    return found

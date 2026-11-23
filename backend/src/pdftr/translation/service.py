@@ -23,6 +23,7 @@ from pdftr.translation.batching import (
     estimate_tokens,
     italic_problems,
     make_batches,
+    normalize_cjk_spacing,
     parse_numbered,
     placeholder_problems,
     prose_problems,
@@ -84,9 +85,19 @@ def _target_problems(source: str, target: str) -> list[str]:
     return errors or prose_problems(source, target)
 
 
-def cache_key(seg: Segment, model: str, terms: dict[str, str], quality: Quality) -> str:
+def cache_key(
+    seg: Segment, model: str, terms: dict[str, str], quality: Quality, *, reference_terms: dict[str, str] | None = None
+) -> str:
     payload = json.dumps(
-        [seg.source, seg.formulas, model, PROMPT_VERSION, sorted(terms.items()), quality],
+        [
+            seg.source,
+            seg.formulas,
+            model,
+            PROMPT_VERSION,
+            sorted(terms.items()),
+            quality,
+            sorted((reference_terms or {}).items()),
+        ],
         ensure_ascii=False,
         sort_keys=True,
     )
@@ -101,6 +112,8 @@ class _Unit(BaseModel):
     sections: list[str]
     seg_indexes: list[int]
     key: str
+    user_terms: dict[str, str]
+    reference_terms: dict[str, str]
 
     @property
     def expanded(self) -> str:
@@ -114,6 +127,7 @@ async def translate(
     cache: TranslationCache,
     ctx: DocContext,
     lookup_terms: TermLookup | None = None,
+    lookup_user_terms: TermLookup | None = None,
     opts: TranslateOptions | None = None,
     on_progress: Progress | None = None,
 ) -> tuple[list[Segment], TranslateReport]:
@@ -123,6 +137,7 @@ async def translate(
     out = [s.model_copy() for s in segments]
     report = TranslateReport(total=len(out), attempts={s.id: 0 for s in out})
 
+    doc_terms = {k.casefold(): v for k, v in ctx.terms.items()}
     units: dict[str, _Unit] = {}
     for i, seg in enumerate(out):
         if seg.status in (SegmentStatus.DONE, SegmentStatus.EDITED):
@@ -131,14 +146,27 @@ async def translate(
         seg.translation_attempts = 0
         seg.failure_reason = ""
         # 本段命中的词库与用户术语也算进缓存键：用户改了术语后不会拿到旧译文
-        hits = lookup_terms(seg.source) if lookup_terms else {}
-        key = cache_key(seg, chat.model, ctx.terms | hits, o.quality)
+        mine = lookup_user_terms(seg.source) if lookup_user_terms else {}
+        references = lookup_terms(seg.source) if lookup_terms else {}
+        user_hits = {k: v for k, v in mine.items() if k.casefold() not in doc_terms}
+        locked = doc_terms | {k.casefold(): v for k, v in user_hits.items()}
+        reference_hits = {k: v for k, v in references.items() if k.casefold() not in locked}
+        key = cache_key(seg, chat.model, ctx.terms | user_hits, o.quality, reference_terms=reference_hits)
         if o.use_cache and (hit := cache.get(key)) and not _target_problems(seg.source, hit):
-            seg.target, seg.status = hit, SegmentStatus.DONE
+            seg.target, seg.status = normalize_cjk_spacing(hit), SegmentStatus.DONE
             report.cached += 1
             continue
         unit = units.setdefault(
-            key, _Unit(source=seg.source, formulas=seg.formulas, sections=[], seg_indexes=[], key=key)
+            key,
+            _Unit(
+                source=seg.source,
+                formulas=seg.formulas,
+                sections=[],
+                seg_indexes=[],
+                key=key,
+                user_terms=user_hits,
+                reference_terms=reference_hits,
+            ),
         )
         unit.seg_indexes.append(i)
         if seg.section and seg.section not in unit.sections:
@@ -174,11 +202,9 @@ async def translate(
         if deadline is not None and (deadline in expired_deadlines or deadline <= loop.time()):
             return fail(batch, exhausted)
         sections = list(dict.fromkeys(s for u in batch for s in u.sections))
-        extra: dict[str, str] = {}
-        if lookup_terms:
-            for u in batch:
-                extra |= {k: v for k, v in lookup_terms(u.source).items() if k not in ctx.terms}
-        user = user_prompt([(n + 1, u.expanded) for n, u in enumerate(batch)], sections, extra)
+        mine = {k: v for u in batch for k, v in u.user_terms.items()}
+        extra = {k: v for u in batch for k, v in u.reference_terms.items()}
+        user = user_prompt([(n + 1, u.expanded) for n, u in enumerate(batch)], sections, extra, mine)
         # 排队不计为模型尝试；有整次时限时，等待并发名额也必须受限。
         try:
             if deadline is None:
@@ -232,6 +258,7 @@ async def translate(
             target = got.get(n, "")
             errors = _target_problems(u.source, target) if target else []
             if target and not errors:
+                target = normalize_cjk_spacing(target)
                 cache.put(u.key, target)
                 for i in u.seg_indexes:
                     out[i].target, out[i].status = target, SegmentStatus.DONE

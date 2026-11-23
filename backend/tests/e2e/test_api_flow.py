@@ -15,11 +15,14 @@ import pymupdf
 import pytest
 from fastapi.testclient import TestClient
 
+from pdftr import cli
 from pdftr.api.app import create_app
 from pdftr.config import Settings
 from pdftr.container import build_container
 from pdftr.domain.layout import LayoutResult
 from pdftr.domain.llm import ChatError, ChatOptions, ChatResult, ChatUsage
+from pdftr.glossary import sources
+from pdftr.glossary.matcher import TermMatcher
 from pdftr.parsing.mineru_normalize import normalize
 from pdftr.pipeline import usecases
 
@@ -629,3 +632,78 @@ def test_selected_content_pages_missing_layout_are_reported(client: TestClient, 
     assert "第 2、3 页未返回版面解析结果" in job["message"]
     doc = client.get(f"/api/jobs/{job['id']}/document").json()
     assert [page["missing_layout"] for page in doc["pages"]] == [False, True, True, False, False]
+
+
+@pytest.mark.parametrize("use_library", [True, False])
+def test_glossary_selection_matches_runner_retranslation_panel_and_cli(tmp_path, monkeypatch, use_library):
+    library = {"paragraph": "篇章", "next column": "下一栏"}
+    seen: list[tuple[str, str]] = []
+
+    class TermChat(FakeChat):
+        async def complete(self, system, user, opts):
+            if "抽取需要全文统一译法的专业术语" in user:
+                state = "启用" if use_library else "停用"
+                return ChatResult(text=f"领域：运筹调度\nAI公共词库：{state}\nfunction=函数\nnormal paragraph=常规段落")
+            seen.append((system, user))
+            return await super().complete(system, user, opts)
+
+    def check_prompts(function: str):
+        system = "\n".join(s for s, _ in seen)
+        user = "\n".join(u for _, u in seen)
+        assert f"function={function}" in system and "normal paragraph=常规段落" in system
+        assert "paragraph=篇章" not in user
+        assert ("参考词库" in user) is use_library
+        assert ("next column=下一栏" in user) is use_library
+        seen.clear()
+
+    settings = Settings(data_dir=tmp_path / "api", glossary_sources="", font_dir=tmp_path / "fonts")
+    container = build_container(settings, {
+        "parser_factory": lambda *_: FakeParser(), "chat_factory": lambda _: TermChat(),
+        "term_matcher": lambda: TermMatcher(library),
+    })  # fmt: skip
+    with TestClient(create_app(container)) as client:
+        upload = _upload(client, options={
+            "cloud_consent": True, "user_terms": {"Function": "映射", "next page": "续页"},
+        })  # fmt: skip
+        job_id = upload.json()["id"]
+        job = _wait(client, job_id)
+        assert job["status"] == "done", job
+        assert any("本批用户术语（统一使用）：next page=续页" in u for _, u in seen)
+        check_prompts("映射")
+        artifact = container.pipeline.deps.artifacts.path(job_id, "glossary.json")
+        assert json.loads(artifact.read_text(encoding="utf-8"))["use_library"] is use_library
+        uses = client.get(f"/api/jobs/{job_id}/terms").json()
+        by_source = {u["source"].casefold(): u for u in uses}
+        assert by_source["function"]["target"] == "映射" and by_source["function"]["origin"] == "user"
+        assert by_source["normal paragraph"]["origin"] == "paper"
+        assert "paragraph" not in by_source
+        assert ("next column" in by_source) is use_library
+        segment_ids = by_source["function"]["segment_ids"] + by_source["normal paragraph"]["segment_ids"]
+        returned = client.post(
+            f"/api/jobs/{job_id}/retranslate",
+            json={"segment_ids": segment_ids, "user_terms": {"FUNCTION": "函数对象"}},
+            headers=HEADERS,
+        )
+        assert returned.status_code == 200
+        check_prompts("函数对象")
+        if use_library:
+            artifact.write_text(
+                json.dumps({"domain": "工业工程与强化学习调度", "terms": {}}, ensure_ascii=False), encoding="utf-8"
+            )
+            legacy = client.get(f"/api/jobs/{job_id}/terms").json()
+            assert {row["source"].casefold() for row in legacy} == {"function", "next page"}
+
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(make_pdf())
+    monkeypatch.setattr(cli, "Settings", lambda: Settings(data_dir=tmp_path, glossary_sources=""))
+    monkeypatch.setattr(cli, "OpenAICompatChat", lambda **_: TermChat())
+    loaded = []
+
+    def offline(*_args):
+        loaded.append(True)
+        return library, []
+
+    monkeypatch.setattr(sources, "load_all", offline)
+    cli.main(["translate", str(pdf), str(FIXTURES / "mineru_layout_min.json")])
+    check_prompts("函数")
+    assert bool(loaded) is use_library

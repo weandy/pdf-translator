@@ -129,7 +129,7 @@ backend/
       port.py                     #   TermSource 协议
       extract.py                  #   LLM 抽取（TERMS_V3：领域 + 术语）
       normalize.py                #   程序校正：正文大小写、剔除章节名
-      gist.py                     #   GIST 词库加载（首次启动下载）
+      gist.py                     #   可选 GIST 来源的解析器
       matcher.py                  #   Aho-Corasick 命中 + 简单词形归一
     translation/                  # 翻译
       port.py                     #   ChatModel 协议（complete(messages, options) → text, usage）
@@ -313,7 +313,7 @@ data/
     parser/raw.zip                    # MinerU 原始结果，便于重放
     background.pdf
     crops/m*.png
-  glossaries/vendor/gist_zh.csv       # 首次启动下载（Apache-2.0，保留署名）
+  glossaries/vendor/gist_zh.csv       # 显式启用 GIST 时下载（Apache-2.0，保留署名）
 ```
 
 ### 3.8 安全与隐私
@@ -501,7 +501,7 @@ CI：GitHub Actions 跑 ruff、pyright、import-linter、pytest（单元 + 契�
    - Tinos 里空格与不间断空格共用字形，导出 PDF 复制出的空格会变成 U+00A0，精简时去掉 U+00A0。
    - 阅读器原先按 pt 排版再整体 transform 缩放，放大时字母间出现空隙（字宽被取整到像素后放大）；改为直接按显示尺寸排版。
 2. **图内文字翻译**：图块里的矢量文字按行拆成标签（同一行大间隔处再拆），只翻含英文单词的，纯数字、编号、竖排斜排保留。去字时只删文字不碰线条，且只删标签中间的窄带——否则字框伸进来的相邻刻度数字会被一起删掉（Adam 论文实测）。位图与转成曲线的文字无法提取。
-3. **聚合术语库**：机器之心（CC BY-NC-SA 4.0，不可商用，用户确认接入）、《动手学深度学习》、ml-technical-term、AI 安全术语、GIST、计算机术语对照，按优先级合并约 7200 条；地址固定到具体提交；下载失败重试、服务启动时后台预加载。
+3. **聚合术语库**：机器之心（CC BY-NC-SA 4.0，不可商用，用户确认接入）、《动手学深度学习》、ml-technical-term、AI 安全术语、计算机术语对照，按优先级过滤与合并；GIST 可显式启用；地址固定到具体提交；下载失败重试、服务启动时后台预加载。
 4. **并发**：DeepSeek 默认 4 路、本机模型 1 路、其他 2 路，`PDFTR_LLM_CONCURRENCY` 可覆盖。
 
 **排版规范、双语左右可选、部署可靠性（2026-10-28）**

@@ -4,7 +4,10 @@
 """
 
 import re
+from collections import defaultdict
 from collections.abc import Callable, Mapping
+
+from pdftr.glossary.extract import Extraction
 
 MAX_WORDS = 6
 _WORD = re.compile(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*")
@@ -24,50 +27,86 @@ def _key(words: list[str]) -> str:
     return " ".join(_norm(w) for w in words)
 
 
+def _acronym(term: str) -> bool:
+    return term.isupper() and sum(c.isalpha() for c in term) >= 2 and len(term.split()) == 1
+
+
 class TermMatcher:
-    def __init__(self, terms: Mapping[str, str], min_length: int = 4) -> None:
+    def __init__(self, terms: Mapping[str, str], min_length: int = 3) -> None:
         # 太短的词条（如 “AI”“ML”）容易误命中，交给模型自己处理
-        self._table: dict[str, tuple[str, str]] = {}
+        self._table: dict[str, tuple[str, str, bool]] = {}
         for term, target in terms.items():
             words = _WORD.findall(term)
             if words and len(words) <= MAX_WORDS and len(term) >= min_length:
-                self._table.setdefault(_key(words), (term, target))
+                self._table.setdefault(_key(words), (term, target, _acronym(term)))
 
     def __len__(self) -> int:
         return len(self._table)
 
-    def match(self, text: str) -> dict[str, str]:
+    def match(self, text: str, accept: Callable[[str, str, str], bool] | None = None) -> dict[str, str]:
         words = _WORD.findall(text)
         hits: dict[str, str] = {}
         i = 0
         while i < len(words):
             for n in range(min(MAX_WORDS, len(words) - i), 0, -1):
-                found = self._table.get(_key(words[i : i + n]))
-                if found:
-                    hits[found[0]] = found[1]
-                    i += n
-                    break
+                window = words[i : i + n]
+                key = _key(window)
+                found = self._table.get(key)
+                if found is None:
+                    continue
+                term, target, strict = found
+                if (strict and not "".join(window).isupper()) or (accept is not None and not accept(key, term, target)):
+                    continue
+                hits[term] = target
+                i += n
+                break
             else:
                 i += 1
         return hits
 
 
-def combine(user_terms: Mapping[str, str], library: "TermMatcher | None") -> "Callable[[str], dict[str, str]] | None":
-    """用户术语优先于公共词库：同一术语（不分大小写）以用户的译法为准。用户自己加的短缩写也收（最短 2 个字符）。"""
-    user = TermMatcher(user_terms, min_length=2) if user_terms else None
-    if user is None and library is None:
-        return None
+class TermSelection:
+    """翻译与术语面板共用的三级术语选择。"""
 
-    def lookup(text: str) -> dict[str, str]:
-        mine = user.match(text) if user else {}
-        lowered = {k.lower() for k in mine}
-        base = {k: v for k, v in library.match(text).items() if k.lower() not in lowered} if library else {}
-        return base | mine
+    def __init__(
+        self, found: Extraction, user_terms: Mapping[str, str], load_library: Callable[[], TermMatcher | None]
+    ) -> None:
+        user_keys: dict[str, str] = {}
+        for term, target in user_terms.items():
+            user_keys.setdefault(term.casefold(), target)
+        self.paper: dict[str, str] = {}
+        paper_keys: set[str] = set()
+        for term, target in found.terms.items():
+            folded = term.casefold()
+            if folded not in paper_keys:
+                self.paper[term] = user_keys.get(folded, target)
+                paper_keys.add(folded)
+        self._user = TermMatcher(user_terms, min_length=2)
+        self._paper = TermMatcher(self.paper, min_length=2)
+        self._library = load_library() if found.use_library else None
+        self._higher_keys = paper_keys | user_keys.keys()
+        self._phrase_targets: dict[str, set[str]] = defaultdict(set)
+        if self._library:
+            for term, target in (self.paper | dict(user_terms)).items():
+                words = _WORD.findall(term)
+                for start in range(len(words)):
+                    for end in range(start + 1, min(start + MAX_WORDS, len(words)) + 1):
+                        self._phrase_targets[_key(words[start:end])].add(target)
 
-    return lookup
+    def match_user(self, text: str) -> dict[str, str]:
+        return self._user.match(text)
 
+    def match_paper(self, text: str) -> dict[str, str]:
+        return self._paper.match(text)
 
-def override(terms: Mapping[str, str], user_terms: Mapping[str, str]) -> dict[str, str]:
-    """自动抽取的文档术语里，用户术语库已有的（不分大小写）改用用户的译法。"""
-    mine = {k.lower(): v for k, v in user_terms.items()}
-    return {k: mine.get(k.lower(), v) for k, v in terms.items()}
+    def match_library(self, text: str) -> dict[str, str]:
+        def allowed(key: str, term: str, target: str) -> bool:
+            return term.casefold() not in self._higher_keys and all(
+                target in higher for higher in self._phrase_targets.get(key, ())
+            )
+
+        return self._library.match(text, allowed) if self._library else {}
+
+    @property
+    def library_size(self) -> int:
+        return len(self._library) if self._library else 0

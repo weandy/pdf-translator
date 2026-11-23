@@ -28,7 +28,7 @@ from pdftr.domain.ir import (
 from pdftr.domain.layout import LayoutBlock, LayoutResult
 from pdftr.fusion.align import align
 from pdftr.fusion.emphasis import bold_ranges, italic_ranges
-from pdftr.fusion.formula_align import refine_block
+from pdftr.fusion.formula_align import clean_formula_lines, refine_block
 from pdftr.fusion.relocate import relocate
 from pdftr.fusion.style import block_style
 from pdftr.fusion.text_fix import chars_in, choose, text_of
@@ -36,6 +36,14 @@ from pdftr.fusion.text_fix import chars_in, choose, text_of
 ORPHAN_MIN_LETTERS = 6
 LABEL_GAP = 1.5  # 同一行里相距超过 1.5 个字高的文字（如横排的图例）拆成不同标签
 _LABEL_WORD = re.compile(r"[A-Za-z]{3,}")  # 至少有一个 3 个字母以上的词才翻译；纯数字、L1 这类编号保留原样
+_CHAIN_BARRIERS = {BlockType.TITLE, BlockType.FOOTNOTE, BlockType.REFERENCE}
+_SENTENCE_END = re.compile(r"""[.?!:;。？！：；](?:\s*['"’”»）)\]}])*$""")
+_CONTINUATION_START = re.compile(r"^[a-z,;:)\]，、；：）]")
+_UNFINISHED = re.compile(
+    r"\b(?:a|an|the|to|of|for|in|on|at|by|with|without|from|under|and|or|as|that|which|nonidentical)$", re.I
+)
+_TOP_FRACTION = 0.35
+_MAX_SIZE_GAP = 1.5
 
 
 class InvalidLayoutPages(ValueError):
@@ -110,6 +118,8 @@ def fuse(
             if lb.content is not None and not lb.lines:  # 块级解析结果：先拆行、推算行内公式位置
                 lb, total, found = refine_block(lb, chars)
                 report.formulas_unlocated += total - found
+            elif any(s.kind == "inline_formula" for line in lb.lines for s in line.spans):
+                lb = clean_formula_lines(lb, chars)
             blocks.append(_block(cp, lb, chars, rel.links, report))
         blocks += _orphan_blocks(cp, orphans, start=len(lp.blocks), report=report)
         figure_chars = [c for lb, chars in zip(lp.blocks, per_block, strict=True) if lb.type is BlockType.FIGURE
@@ -119,10 +129,99 @@ def fuse(
             Page(index=cp.index, width=cp.width, height=cp.height, rotation=cp.rotation, kind=cp.kind, blocks=blocks)
         )
 
+    report.continuations += _supplement_continuations(pages)
     _even_scan_sizes(pages)
     report.pages = len(pages)
     doc = Document(job_id=job_id, pages=pages, meta=_meta(pages, layout.parser, used_cloud))
     return doc, report
+
+
+def _column(block: Block, page: Page) -> int:
+    mid = page.width / 2
+    if block.bbox.x0 >= mid - block.style.font_size:
+        return 1
+    return 0 if block.bbox.x1 <= mid + block.style.font_size else -1
+
+
+def _indented(block: Block, peers: Sequence[Block]) -> bool:
+    starts: dict[int, float] = {}
+    for span in block.spans:
+        starts[span.line] = min(starts.get(span.line, span.bbox.x0), span.bbox.x0)
+    if not starts:
+        return False
+    first = starts[min(starts)]
+    margin = min(block.bbox.x0, *starts.values(), *(peer.bbox.x0 for peer in peers))
+    return first - margin > 0.8 * block.style.font_size
+
+
+def _supplement_continuations(pages: list[Page]) -> int:
+    """补上缺少占位块的续接，每个块最多一个后继，标题和脚注截断搜索。"""
+    blocks = {b.id: b for p in pages for b in p.blocks}
+    used = {b.continues_from for b in blocks.values() if b.continues_from is not None}
+    text = {b.id: _plain(b) for b in blocks.values() if b.type is BlockType.TEXT and b.translatable and not b.orphan}
+    groups: dict[str, int] = {}
+    group = 0
+    for page in pages:
+        for b in sorted(page.blocks, key=lambda b: b.order):
+            if b.type in _CHAIN_BARRIERS:
+                group += 1
+            groups[b.id] = group
+
+    def eligible(prev: Block, nxt: Block) -> bool:
+        return (
+            prev.id not in used
+            and groups[prev.id] == groups[nxt.id]
+            and bool(text[prev.id])
+            and not _SENTENCE_END.search(text[prev.id])
+            and abs(prev.style.font_size - nxt.style.font_size) <= _MAX_SIZE_GAP
+        )
+
+    def link(prev: Block, nxt: Block) -> bool:
+        # 已有归位链可能跨页或倒序，沿前驱检查避免新边闭环。
+        ancestor: Block | None = prev
+        seen = {nxt.id}
+        while ancestor is not None:
+            if ancestor.id in seen:
+                return False
+            seen.add(ancestor.id)
+            ancestor = blocks.get(ancestor.continues_from or "")
+        nxt.continues_from = prev.id
+        used.add(prev.id)
+        return True
+
+    count = 0
+    previous: Block | None = None
+    for page in pages:
+        body = [b for b in sorted(page.blocks, key=lambda b: b.order) if text.get(b.id)]
+        left = [b for b in body if _column(b, page) == 0]
+        right = [b for b in body if _column(b, page) == 1]
+        first_column = [b for b in body if _column(b, page) != 1]
+        first = min(first_column, key=lambda b: b.bbox.y0, default=None)
+        right_top = min(right, key=lambda b: b.bbox.y0, default=None) if left else None
+        for nxt, peers in ((first, first_column), (right_top, right)):
+            if nxt is None or nxt.continues_from or nxt.bbox.y0 > _TOP_FRACTION * page.height or _indented(nxt, peers):
+                continue
+            if nxt is first:
+                prev = previous if previous is not None and previous.page + 1 == page.index else None
+            else:
+                prev = next((b for b in reversed(body) if b.order < nxt.order), None)
+                if prev is not None and prev not in left:
+                    prev = None
+            tail = text[prev.id] if prev is not None else ""
+            head = text[nxt.id]
+            unfinished = (
+                _UNFINISHED.search(tail) or tail.count("(") > tail.count(")") or tail.count("[") > tail.count("]")
+            )
+            if prev is not None and eligible(prev, nxt) and (
+                _CONTINUATION_START.match(head) or (unfinished and len(head.split()) <= 6)
+            ) and link(prev, nxt):  # fmt: skip
+                count += 1
+            if nxt is right_top and nxt.continues_from is None and re.match(r"[a-z]", head):
+                candidates = [b for b in left if b.order > nxt.order and eligible(b, nxt)]
+                if len(candidates) == 1 and link(candidates[0], nxt):
+                    count += 1
+        previous = body[-1] if body else None
+    return count
 
 
 def _even_scan_sizes(pages: list[Page]) -> None:
@@ -344,7 +443,7 @@ def _meta(pages: list[Page], parser: str, used_cloud: bool) -> DocMeta:
     title = paper_title(pages)
     abstract = ""
     for i, b in enumerate(blocks):
-        if b.type is BlockType.TITLE and _plain(b).strip().lower().rstrip(":") == "abstract":
+        if b.type is BlockType.TITLE and "".join(_plain(b).split()).lower().rstrip(":：") == "abstract":
             abstract = next((_plain(x) for x in blocks[i + 1 :] if x.type is BlockType.TEXT and _plain(x)), "")
             break
     if not abstract:  # 没有“Abstract”标题时，取第一段足够长的正文（S10：BERT 论文即如此）

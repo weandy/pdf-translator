@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     min_free_disk_mb: int = Field(default=1024, ge=0)  # 磁盘剩余空间低于此值时拒绝新上传
     # 论文术语库来源，逗号分隔，排在前面的优先；首次使用时下载（见 glossary/sources.py）。
     # 机器之心术语库（aitd）为 CC BY-NC-SA 4.0，不可商用：商业部署请去掉 aitd；留空则不用术语库
-    glossary_sources: str = "aitd,d2l,ml-technical-term,ais-vocab,gist,computerese"
+    glossary_sources: str = "aitd,d2l,ml-technical-term,ais-vocab,computerese"
 
     font_dir: Path = Path("fonts")  # 导出 PDF 与网页阅读器用的字体（scripts/fetch_fonts.py 生成）
     cors_origins: list[str] = []  # 开发时前端单独运行可填 ["http://localhost:5173"]

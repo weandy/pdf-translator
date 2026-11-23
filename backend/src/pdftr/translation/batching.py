@@ -13,6 +13,20 @@ _PLACEHOLDER = re.compile(r"<m\d+/>")
 _RICH_TAG = re.compile(r"<(/?)(b|i|sup|sub)>")
 
 
+_HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U000323af]")
+_WESTERN = r"(?:[A-Za-z0-9]|<m\d+/>)"
+_FORMAT_TAGS = r"(?:</?(?:b|i|sup|sub)>)*"
+_MIXED_SPACE = re.compile(
+    rf"({_HAN.pattern}{_FORMAT_TAGS})[ \t\u00a0](?={_FORMAT_TAGS}{_WESTERN})"
+    rf"|({_WESTERN}{_FORMAT_TAGS})[ \t\u00a0](?={_FORMAT_TAGS}{_HAN.pattern})"
+)
+
+
+def normalize_cjk_spacing(text: str) -> str:
+    """移除汉字与西文、数字、公式间的单个横向空格，保留富文本标签。"""
+    return _MIXED_SPACE.sub(lambda match: match.group(1) or match.group(2), text)
+
+
 def estimate_tokens(text: str) -> int:
     """粗估 token：英文约 4 字符 1 token，中日韩字符约 1 字 1 token。够用于分批和费用预估。"""
     cjk = len(re.findall(r"[\u3000-\u9fff\uff00-\uffef]", text))
@@ -151,7 +165,6 @@ def script_problems(source: str, target: str) -> list[str]:
     )
 
 
-_HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U000323af]")
 _ENGLISH_WORD = re.compile(r"[A-Za-z]{2,}(?:'[A-Za-z]+)?")
 _PROSE_WORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "can", "for", "from", "has", "have", "in", "is", "of",

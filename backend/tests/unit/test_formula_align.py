@@ -89,3 +89,55 @@ def test_cross_visual_line_formula_box_covers_all_formula_rows():
     refined, _, found = refine_block(block, chars)
     (formula,) = [s for line in refined.lines for s in line.spans if s.kind == "inline_formula"]
     assert found == 1 and formula.bbox.y1 > 20
+
+
+def test_block_formula_cleanup_with_and_without_pdf_characters():
+    source = (
+        r"ReL $\mathrm{{U}}{:}500\times 300\times 100,$ then $\mathrm{If} r_t(\theta)$ use $\pi_\theta\colon$ done."
+    )
+    chars = _chars(["ReLU: 500×300×100, then If rt(θ) use πθ: done."])
+    block = LayoutBlock(type=BlockType.TEXT, order=0, bbox=Rect.of([0, 0, 250, 20]), content=source)
+    for page_chars in (chars, []):
+        refined, total, found = refine_block(block, page_chars)
+        spans = [s for line in refined.lines for s in line.spans]
+        assert total == 3 and found == (3 if page_chars else 0)
+        assert [s.content for s in spans if s.kind == "inline_formula"] == [
+            r"500\times 300\times 100",
+            r"r_t(\theta)",
+            r"\pi_\theta",
+        ]
+        assert [s.content.strip() for s in spans if s.kind == "text"] == ["ReLU:", ", then If", "use", ": done."]
+
+
+def test_formula_cleanup_preserves_math_dots_and_variables():
+    content = r"Start $x_{.}$, $x^{.}$, $3.14$, $a\cdots$, $a\ldots$, $x\colon y$, $n,$ and $If x$."
+    block = LayoutBlock(type=BlockType.TEXT, order=0, bbox=Rect.of([0, 0, 250, 20]), content=content)
+    refined, total, _ = refine_block(block, [])
+    assert total == 8
+    assert [s.content for s in refined.lines[0].spans if s.kind == "inline_formula"] == [
+        "x_{.}",
+        "x^{.}",
+        "3.14",
+        r"a\cdots",
+        r"a\ldots",
+        r"x\colon y",
+        "n",
+        "x",
+    ]
+
+
+def test_formula_box_is_clamped_to_both_adjacent_visual_rows():
+    chars = _chars(["previous paragraph", "Let fx be an input", "next paragraph"])
+    for i, char in enumerate(chars):
+        top = char.line * 9
+        chars[i] = char.model_copy(update={"bbox": Rect.of([char.bbox.x0, top, char.bbox.x1, top + 14])})
+    block = LayoutBlock(
+        type=BlockType.TEXT,
+        order=0,
+        bbox=Rect.of([0, 0, 250, 35]),
+        content="previous paragraph Let $fx$ be an input next paragraph",
+    )
+    refined, _, found = refine_block(block, chars)
+    (formula,) = [s for line in refined.lines for s in line.spans if s.kind == "inline_formula"]
+    assert found == 1
+    assert (formula.bbox.y0, formula.bbox.y1) == (11.5, 20.5)

@@ -19,7 +19,7 @@ from pdftr.extraction.chars import extract
 from pdftr.fusion.build import fuse
 from pdftr.glossary import sources as glossary_sources
 from pdftr.glossary.extract import extract_terms
-from pdftr.glossary.matcher import TermMatcher
+from pdftr.glossary.matcher import TermMatcher, TermSelection
 from pdftr.glossary.normalize import normalize_terms
 from pdftr.parsing.mineru_cloud import MinerUCloudParser
 from pdftr.parsing.mineru_normalize import normalize
@@ -69,25 +69,29 @@ async def _translate_async(args: argparse.Namespace) -> None:
     body = " ".join(s.source for s in segments)
     intro = next((s.source for s in segments if len(s.source.split()) >= 30 and s.source != doc.meta.abstract), "")
     found = await extract_terms(chat, title=doc.meta.title, abstract=doc.meta.abstract, intro=intro, headings=headings)
-    terms = normalize_terms(found.terms, body, headings)
+    found.terms = normalize_terms(found.terms, body, headings)
 
-    glossary, _ = glossary_sources.load_all(
-        glossary_sources.parse_ids(settings.glossary_sources), settings.data_dir / "glossaries" / "vendor"
-    )
-    matcher = TermMatcher(glossary)
+    def load_library() -> TermMatcher:
+        glossary, _ = glossary_sources.load_all(
+            glossary_sources.parse_ids(settings.glossary_sources), settings.data_dir / "glossaries" / "vendor"
+        )
+        return TermMatcher(glossary)
 
-    ctx = DocContext(title=doc.meta.title, abstract=doc.meta.abstract, domain=found.domain, terms=terms)
+    selection = TermSelection(found, {}, load_library)
+    ctx = DocContext(title=doc.meta.title, abstract=doc.meta.abstract, domain=found.domain, terms=selection.paper)
     cache = SqliteTranslationCache(settings.data_dir / "app.db")
     progress = lambda done, total, note="": print(f"\r翻译 {done}/{total} {note}", end="", flush=True)  # noqa: E731
     out, report = await translate(
-        segments, chat=chat, cache=cache, ctx=ctx, lookup_terms=matcher.match,
+        segments, chat=chat, cache=cache, ctx=ctx,
+        lookup_terms=selection.match_library, lookup_user_terms=selection.match_user,
         opts=TranslateOptions(quality=args.quality), on_progress=progress,
     )  # fmt: skip
     print()
     if args.out:
         Path(args.out).write_text(json.dumps([s.model_dump() for s in out], ensure_ascii=False, indent=1), "utf-8")
     print(json.dumps({
-        "segments": len(out), "domain": found.domain, "terms": len(terms), "gist_entries": len(matcher),
+        "segments": len(out), "domain": found.domain, "terms": len(selection.paper),
+        "library_entries": selection.library_size,
         "report": report.model_dump(), "term_extraction_usage": found.usage.model_dump(),
     }, ensure_ascii=False, indent=1))  # fmt: skip
 

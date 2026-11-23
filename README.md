@@ -365,12 +365,12 @@ frontend/src/
 
 ## 术语库来源
 
-首次使用时按 `PDFTR_GLOSSARY_SOURCES` 下载并合并术语库。默认来源包括：机器之心术语库、D2L、机器学习术语、AI 安全术语、GIST 和计算机专业术语。
+首次使用时按 `PDFTR_GLOSSARY_SOURCES` 下载并合并术语库。默认来源包括：机器之心术语库、D2L、机器学习术语、AI 安全术语和计算机专业术语。GIST 可在来源列表中显式启用。
 
 商业部署请移除 `aitd`：
 
 ```env
-PDFTR_GLOSSARY_SOURCES=d2l,ml-technical-term,ais-vocab,gist,computerese
+PDFTR_GLOSSARY_SOURCES=d2l,ml-technical-term,ais-vocab,computerese
 ```
 
 ## 许可证

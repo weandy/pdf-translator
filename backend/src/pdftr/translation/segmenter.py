@@ -9,6 +9,7 @@
 import re
 from collections.abc import Iterable
 
+from pdftr.domain.document_name import paper_title_blocks
 from pdftr.domain.ids import segment_id
 from pdftr.domain.ir import Block, BlockType, Document, FormulaRef, Segment, SegmentPart, Span
 
@@ -18,6 +19,16 @@ _ORDINAL = re.compile(r"^(\d+)(st|nd|rd|th)$")
 
 MIN_WORDS = 1  # 没有英文单词（纯数字、符号）的块不翻译；单词标题如 “Introduction” 要翻
 _FORMAT = re.compile(r"</?(?:b|i|sup|sub)>")
+_PLACEHOLDER = re.compile(r"<m\d+/>")
+_FRONT_HEADINGS = {"highlights", "articleinfo", "abstract", "keywords", "introduction"}
+_CAPTION_PREFIX = re.compile(r"^(?:fig(?:ure)?|table|algorithm|scheme)\b", re.I)
+_SPACED_TITLE = re.compile(r"[A-Za-z](?:[ \t]+[A-Za-z]){3,}")
+_NUMBER_MARK = re.compile(r"(?:\^\s*\{\s*(\d+\s*[,;:.])\s*\}|(\d+\s*[,;:.]))")
+_CROSS_REFERENCE = re.compile(
+    r"(Eq\.|Fig\.|Sec\.|Section|Figure|Table|Algorithm|Scheme)\s*(\(\d+[a-z]?\)|\d+[a-z]?)\s*([,;:.]?)", re.I
+)
+_TEXT_MACRO = re.compile(r"\\(?:operatorname|mathrm|text|textrm)\s*\{([^{}]+)\}")
+_UNIT = re.compile(r"\\(?:mathrm|mathbf)\s*\{(s|ms|ns|us|min|h|Hz|kHz|MHz|GHz|m|cm|mm|km|kg|g|mg|K|Pa|kPa)\}([,;:.]?)")
 
 
 def _merge_bold(text: str) -> str:
@@ -91,22 +102,56 @@ def _span_source(span: Span, *, inline_bold: bool, inline_italic: bool) -> str:
     return "".join(pieces)
 
 
-def textual_formula(latex: str) -> str | None:
-    """能直接写成文字的“公式”（目前只有序数词，如 1^{st} → 1st），否则返回 None。"""
+def textual_formula(latex: str, before: str = "") -> str | None:
+    """回收有明确文本语法的误标，正体或粗体单位还要求前面有数值。"""
+    latex = latex.strip()
     plain = re.sub(r"\\(mathrm|text|textrm)|[\s{}^]", "", latex)
-    return plain if _ORDINAL.match(plain) else None
+    if _ORDINAL.fullmatch(plain):
+        return plain
+    if number := _NUMBER_MARK.fullmatch(latex):
+        return re.sub(r"\s+", "", number.group(1) or number.group(2))
+    if ref := _CROSS_REFERENCE.fullmatch(_TEXT_MACRO.sub(r"\1", latex)):
+        return f"{ref.group(1)} {ref.group(2)}{ref.group(3)}"
+    if (unit := _UNIT.fullmatch(latex)) and re.search(r"\d\s*$", before):
+        return unit.group(1) + unit.group(2)
+    return None
 
 
-def block_source(block: Block, key_map: dict[str, str]) -> str:
-    """块内片段按行拼成一段文字；行内公式换成重排后的占位符（能写成文字的直接写文字）。"""
+def _textual_formulas(block: Block) -> dict[str, str]:
     latex = {f.key: f.latex for f in block.formulas}
+    recovered: dict[str, str] = {}
+    before = ""
+    for span in block.spans:
+        if span.kind == "formula" and span.formula:
+            if (text := textual_formula(latex.get(span.formula, ""), before)) is not None:
+                recovered[span.formula] = text
+            before = ""
+        elif span.text.strip():
+            before = span.text
+    return recovered
+
+
+def _restore_title(text: str) -> str:
+    if not _SPACED_TITLE.fullmatch(text):
+        return text
+    restored = " ".join(re.sub(r"[ \t]", "", word) for word in re.split(r"[ \t]{2,}", text))
+    compact = restored.replace(" ", "")
+    if compact.casefold() == "articleinfo":
+        return f"{compact[:7]} {compact[7:]}"
+    return restored
+
+
+def block_source(block: Block, key_map: dict[str, str], recovered: dict[str, str] | None = None) -> str:
+    """块内片段按行拼成一段文字；行内公式换成重排后的占位符（能写成文字的直接写文字）。"""
+    if recovered is None:
+        recovered = _textual_formulas(block)
     lines: dict[int, list[str]] = {}
     inline_bold = not block.style.bold and block.type is not BlockType.TITLE
     inline_italic = not block.style.italic and block.type is not BlockType.TITLE
     for s in block.spans:
         if s.kind == "formula" and s.formula:
             key = key_map.get(s.formula)
-            piece = f"<{key}/>" if key else (textual_formula(latex.get(s.formula, "")) or "")
+            piece = f"<{key}/>" if key else recovered.get(s.formula, "")
         else:
             piece = _span_source(s, inline_bold=inline_bold, inline_italic=inline_italic)
         if piece:
@@ -114,7 +159,9 @@ def block_source(block: Block, key_map: dict[str, str]) -> str:
     text = ""
     for li in sorted(lines):
         text = _join(text, _merge_emphasis(" ".join(lines[li])))
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r" +(?=[,;:.](?:\s|$))", "", text)
+    title = _restore_title(text.strip()) if block.type is BlockType.TITLE else text
+    return re.sub(r"\s+", " ", title).strip()
 
 
 def _chain(head: Block, next_of: dict[str, Block]) -> list[Block]:
@@ -131,27 +178,31 @@ def _wanted(block: Block, include_references: bool, include_figures: bool) -> bo
         return include_references and any(s.text.strip() for s in block.spans)
     if block.type is BlockType.FIGURE_TEXT:
         return include_figures and block.translatable
+    if block.type is BlockType.CAPTION and block.translatable:
+        plain = _PLACEHOLDER.sub(" ", _FORMAT.sub("", block_source(block, {}))).strip()
+        return bool(
+            _CAPTION_PREFIX.match(plain) or any(not word.isupper() for word in re.findall(r"[A-Za-z]{3,}", plain))
+        )
     return block.translatable
 
 
 def front_matter_ids(doc: Document) -> set[str]:
-    """首页标题与“Abstract”之间的正文块：作者、单位、邮箱，翻译无益且重排后很挤，保留原文。"""
+    """首页主标题与首个结构子标题之间的作者、单位、邮箱保留原文。"""
     if not doc.pages:
         return set()
     blocks = doc.pages[0].blocks
-    abstract = next(
-        (b for b in blocks if b.type is BlockType.TITLE
-         and re.sub(r"[^a-z]", "", block_source(b, {}).lower()) == "abstract"),
+    titles = paper_title_blocks(doc.pages[:1])
+    title = titles[-1] if titles else next((b for b in blocks if b.type is BlockType.TITLE), None)
+    if title is None:
+        return set()
+    heading = next(
+        (b for b in blocks if b.order > title.order and b.type is BlockType.TITLE
+         and re.sub(r"[^a-z]", "", block_source(b, {}).lower()) in _FRONT_HEADINGS),
         None,
     )  # fmt: skip
-    title = next((b for b in blocks if b.type is BlockType.TITLE), None)
-    if abstract is None or title is None or title is abstract:
+    if heading is None:
         return set()
-    return {
-        b.id
-        for b in blocks
-        if b.type is BlockType.TEXT and title.order < b.order < abstract.order and b.bbox.y1 <= abstract.bbox.y0
-    }
+    return {b.id for b in blocks if b.type is BlockType.TEXT and title.order < b.order < heading.order}
 
 
 def segment(
@@ -180,9 +231,9 @@ def segment(
     section = ""
     for block in blocks:
         if block.type is BlockType.TITLE:
-            section = (
-                block_source(block, {f.key: f.key for f in block.formulas if not textual_formula(f.latex)}) or section
-            )
+            recovered = _textual_formulas(block)
+            section = block_source(block, {f.key: f.key for f in block.formulas if f.key not in recovered},
+                                   recovered) or section  # fmt: skip
         if block.id not in selected or block.continues_from in selected:
             continue  # 续接块随链头一起处理
         chain = _chain(block, next_of)
@@ -192,18 +243,19 @@ def segment(
         text = ""
         for b in chain:
             key_map = {}
+            recovered = _textual_formulas(b)
             for f in b.formulas:
-                if textual_formula(f.latex):
+                if f.key in recovered:
                     continue  # 不占编号，block_source 里直接写成文字
                 key = f"m{len(formulas) + 1}"
                 key_map[f.key] = key
                 formulas[key] = f.latex
                 if f.located:  # 扫描页的公式没有精确位置，KaTeX 渲染失败时不裁原图
                     refs[key] = FormulaRef(page=b.page, bbox=f.bbox)
-            piece = block_source(b, key_map)
+            piece = block_source(b, key_map, recovered)
             parts.append(SegmentPart(block_id=b.id, chars=len(_FORMAT.sub("", piece))))
             text = _join(text, piece)
-        if len(re.findall(r"[A-Za-z]{2,}", re.sub(r"<m\d+/>", " ", _FORMAT.sub("", text)))) < MIN_WORDS:
+        if len(re.findall(r"[A-Za-z]{2,}", _PLACEHOLDER.sub(" ", _FORMAT.sub("", text)))) < MIN_WORDS:
             continue
         segments.append(
             Segment(

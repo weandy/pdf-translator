@@ -27,7 +27,7 @@ export function TermsPanel({ jobId, doc, onChange, onSpot, onMark, onClose }: Pr
   const rows = useMemo(() => termRows(uses ?? [], mine, doc.segments), [uses, mine, doc.segments]);
   const [query, setQuery] = useState("");
   const [onlyMismatch, setOnlyMismatch] = useState(false);
-  // 公共词库按单词匹配，常见词（如 instance、cost）也会命中，默认只看本文抽取的和我的术语
+  // 默认显示本文抽取和用户锁定的术语，按需展开公共参考词库。
   const [withLibrary, setWithLibrary] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
 

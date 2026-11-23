@@ -182,9 +182,27 @@ SOURCES: dict[str, Source] = {
     ]
 }
 
-# 默认顺序即优先级：人工整理的在前（机器之心与 d2l 有 16 条译法不同，机器之心的更通行，如“二分类”“隐变量”），
-# 自动抽取的 GIST、偏软件工程的计算机术语在后
-DEFAULT_ORDER = ["aitd", "d2l", "ml-technical-term", "ais-vocab", "gist", "computerese"]
+# 默认顺序即优先级。GIST 可显式启用，和其他公共来源使用相同的过滤规则。
+DEFAULT_ORDER = ["aitd", "d2l", "ml-technical-term", "ais-vocab", "computerese"]
+_SINGLE_TERMS = frozenset({
+    "softmax", "backpropagation", "hyperparameter", "overfitting", "underfitting", "regularization",
+    "autoencoder", "perplexity", "tokenization", "tokenizer", "quantization", "distillation", "gan",
+})  # fmt: skip
+_CONFLICTING_TRANSLATIONS = (
+    (re.compile(r"\btransformers?\b"), "变换器"),
+    (re.compile(r"\bactors?\b"), "演员"),
+    (re.compile(r"\b(?:pool|pooling)\b"), "汇聚"),
+    (re.compile(r"^discount factor$"), "衰减系数"),
+    (re.compile(r"^actor[- ]critic framework$"), "行动者-评论家框架"),
+)
+
+
+def _allowed(term: str, target: str) -> bool:
+    source = " ".join(term.lower().split())
+    if len(re.findall(r"[a-z0-9]+(?:[-'][a-z0-9]+)*", source)) < 2 and source not in _SINGLE_TERMS:
+        return False
+    target = re.sub(r"\s+", "", target).replace("–", "-").replace("－", "-")
+    return not any(bad in target and pattern.search(source) for pattern, bad in _CONFLICTING_TRANSLATIONS)
 
 
 def parse_ids(spec: str) -> list[Source]:
@@ -238,7 +256,7 @@ def merge(tables: Iterable[dict[str, str]]) -> dict[str, str]:
     seen: set[str] = set()
     for table in tables:
         for en, zh in table.items():
-            if en.lower() not in seen:
+            if en.lower() not in seen and _allowed(en, zh):
                 seen.add(en.lower())
                 merged[en] = zh
     return merged

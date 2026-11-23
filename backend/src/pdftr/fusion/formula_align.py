@@ -9,16 +9,54 @@
 
 import difflib
 import re
+import statistics
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from pdftr.domain.chars import Char
 from pdftr.domain.geometry import Rect
 from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutSpan
-from pdftr.fusion.text_fix import text_of
+from pdftr.fusion.text_fix import chars_in, text_of
 
 _FORMULA = re.compile(r"\$\$?([^$]+?)\$\$?")
 _MAX_HEIGHT = 3.2  # 行内公式的高度最多约 3 个字号（跨一次行，或带上下标、分式）
+
+
+_CONNECTIVE = r"(?:If|When|Where|Then|And|Or|For|With|Let)"
+_LEADING_TEXT = re.compile(rf"^(?:\\(?:mathrm|text)\s*\{{({_CONNECTIVE})\}}|({_CONNECTIVE})(?=\s|$))\s*")
+_SPLIT_WORD = re.compile(r"^(?:\\(?:mathrm|text)\s*\{\{?([A-Za-z])\}?\}|([A-Za-z]))\s*(?:\{:\}|:|\\colon)\s*")
+_TRAILING_MARK = re.compile(r"(?<![\\.,;:])(?:\\colon|[,;:.])$")
+_TRAILING_FRAGMENT = re.compile(r"\b[A-Za-z]*[a-z][A-Z][A-Za-z]*$")
+
+
+def _content_parts(content: str) -> list[str]:
+    """先还原被公式边界吞掉的正文，供字符对齐和扫描页共用。"""
+    raw = _FORMULA.split(content)
+    parts = [raw[0]]
+    for i in range(1, len(raw), 2):
+        latex, after = raw[i].strip(), raw[i + 1]
+        if lead := _LEADING_TEXT.match(latex):
+            word = lead.group(1) or lead.group(2)
+            parts[-1] = " ".join(filter(None, (parts[-1].rstrip(), word))) + " "
+            latex = latex[lead.end() :]
+        before = parts[-1].rstrip()
+        if _TRAILING_FRAGMENT.search(before) and (lead := _SPLIT_WORD.match(latex)):
+            letter = lead.group(1) or lead.group(2)
+            if letter.isupper() and lead.end() < len(latex):
+                parts[-1] = before + letter + ": "
+                latex = latex[lead.end() :]
+        if (mark := _TRAILING_MARK.search(latex)) and mark.start() > 0:
+            symbol = ":" if mark.group() == r"\colon" else mark.group()
+            latex = latex[: mark.start()].rstrip()
+            after = symbol + after
+            if latex.isdecimal():
+                parts[-1] += latex
+                latex = ""
+        if latex:
+            parts.extend((latex, after))
+        else:
+            parts[-1] += after
+    return parts
 
 
 def _key(c: str) -> str:
@@ -42,7 +80,7 @@ def locate_formulas(content: str, chars: Sequence[Char], rows: Sequence[int] | N
     按词对齐：连续几个词组成的短语在段落里基本唯一，对齐算法会先锁定它们；按字符对齐时最长匹配只有一个词，
     重复出现的词（如两处“layers”）容易配错位置，后面整段错位。
     """
-    pieces = _FORMULA.split(content)  # 偶数下标是文字，奇数下标是公式
+    pieces = _content_parts(content)  # 偶数下标是文字，奇数下标是公式
     seq: list[str] = []
     owner: list[int] = []  # 每个词属于哪个文字片段
     for i in range(0, len(pieces), 2):
@@ -189,18 +227,16 @@ def _box(chars: Sequence[Char]) -> Rect:
     )
 
 
-def _formula_box(part: Sequence[Char], row: Sequence[Char]) -> Rect:
-    """公式框：上下边界只用字框高度正常的字形确定，左右边界用全部字形。
-
-    根号、≲ 等数学符号的字框按数学字体上下边界计算，能盖住上下几行；框太高时，融合阶段会把落在框里的
-    上下行正文当成公式字符排除掉，造成正文丢字。row 参数保留给调用方，便于以后按行修正。
-    """
-    del row
+def _formula_box(part: Sequence[Char], centers: Sequence[float], first: int, last: int) -> Rect:
+    """左右覆盖全部字形，上下按字框和相邻视觉行的中线共同约束。"""
     box = _box(part)
-    normal = [c for c in part if c.bbox.height <= 1.6 * c.size]
-    if not normal:
-        return box
-    return Rect(x0=box.x0, y0=min(c.bbox.y0 for c in normal), x1=box.x1, y1=max(c.bbox.y1 for c in normal))
+    normal = _box([c for c in part if c.bbox.height <= 1.6 * c.size] or part)
+    top, bottom = normal.y0, normal.y1
+    if first:
+        top = max(top, (centers[first - 1] + centers[first]) / 2)
+    if last + 1 < len(centers):
+        bottom = min(bottom, (centers[last] + centers[last + 1]) / 2)
+    return Rect(x0=box.x0, y0=top, x1=box.x1, y1=bottom) if top < bottom else normal
 
 
 def _flush_text(run: list[Char], spans: list[LayoutSpan]) -> None:
@@ -212,12 +248,34 @@ def _flush_text(run: list[Char], spans: list[LayoutSpan]) -> None:
     run.clear()
 
 
+def clean_formula_lines(block: LayoutBlock, chars: Sequence[Char]) -> LayoutBlock:
+    """MinerU 已给行级公式时，只重新定位确实吞字的行，其余沿用原坐标。"""
+    lines: list[LayoutLine] = []
+    for line in block.lines:
+        if not any(span.kind == "inline_formula" for span in line.spans):
+            lines.append(line)
+            continue
+        content = " ".join(
+            f"${span.content.strip()}$" if span.kind == "inline_formula" else span.content for span in line.spans
+        )
+        if _content_parts(content) == _FORMULA.split(content):
+            lines.append(line)
+            continue
+        line_chars = chars_in(chars, line.bbox, tol=0)
+        refined, total, found = refine_block(
+            block.model_copy(update={"bbox": line.bbox, "content": content}), line_chars
+        )
+        # 原框仍比无锚点的猜测可靠，扫描页则保留新分出的文字和公式。
+        lines.extend(refined.lines if not line_chars or total == found else [line])
+    return block.model_copy(update={"lines": lines})
+
+
 def refine_block(block: LayoutBlock, chars: Sequence[Char]) -> tuple[LayoutBlock, int, int]:
     """块级结果 → 带行与片段的块。返回（新块, 公式总数, 找到位置的公式数）。"""
     content = block.content or ""
     visible = [c for c in chars if not c.c.isspace()]
     if not visible:  # 扫描页等没有可用于定位的字符，仍按顺序保留公式与正文。
-        parts = _FORMULA.split(content)
+        parts = _content_parts(content)
         spans = [
             LayoutSpan(
                 kind="inline_formula" if i % 2 else "text",
@@ -235,6 +293,7 @@ def refine_block(block: LayoutBlock, chars: Sequence[Char]) -> tuple[LayoutBlock
         )
 
     rows = visual_lines(chars)
+    centers = [statistics.median(c.bbox.center[1] for c in row) for row in rows]
     ordered = [c for row in rows for c in row]
     row_of = {id(c): n for n, row in enumerate(rows) for c in row}
     located = locate_formulas(content, ordered, [row_of[id(c)] for c in ordered])
@@ -256,9 +315,8 @@ def refine_block(block: LayoutBlock, chars: Sequence[Char]) -> tuple[LayoutBlock
                 # 片段只放在首行，但裁剪框必须覆盖公式在后续视觉行中的字符，
                 # 否则分式、矩阵等上下延伸公式会在导出时被截掉。
                 part = [ordered[j] for j in located[n].chars]
-                spans.append(
-                    LayoutSpan(kind="inline_formula", content=located[n].latex, bbox=_formula_box(part, rows[line_no]))
-                )
+                bbox = _formula_box(part, centers, line_no, row_of[id(part[-1])])
+                spans.append(LayoutSpan(kind="inline_formula", content=located[n].latex, bbox=bbox))
                 emitted.add(n)
         _flush_text(run, spans)
         line_chars = [ordered[k] for k in idx if not ordered[k].c.isspace()]

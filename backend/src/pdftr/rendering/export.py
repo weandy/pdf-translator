@@ -16,8 +16,9 @@ import pymupdf
 
 from pdftr.domain.ir import Block, BlockType, Document, Segment
 from pdftr.rendering.artifacts import pdf_destination
+from pdftr.rendering.background import crop_formula
 from pdftr.rendering.links import PdfLink, extract_links, locate
-from pdftr.rendering.typeset import LINE_HEIGHTS, drop_fake_scripts, wants_indent
+from pdftr.rendering.typeset import LINE_HEIGHTS, drop_fake_scripts, normalize_cjk_spacing, wants_indent
 from pdftr.rendering.typesetter import FontSet, Line, Placed, Token, Typesetter
 
 log = logging.getLogger(__name__)
@@ -115,12 +116,8 @@ def _formula_images(original: pymupdf.Document, seg: Segment) -> dict[str, tuple
     for key, ref in seg.formula_refs.items():
         if not 0 <= ref.page < len(original):
             continue
-        b = ref.bbox
-        clip = pymupdf.Rect(b.x0 - 0.5, b.y0 - 0.5, b.x1 + 0.5, b.y1 + 0.5) & original[ref.page].rect
-        if clip.is_empty:
-            continue
-        pix = original[ref.page].get_pixmap(matrix=pymupdf.Matrix(3, 3), clip=clip, alpha=True)
-        out[key] = (pix.tobytes("png"), clip.width, clip.height)
+        if image := crop_formula(original[ref.page], ref.bbox):
+            out[key] = image
     return out
 
 
@@ -258,7 +255,7 @@ def _typeset_all(src: pymupdf.Document, out: pymupdf.Document, doc: Document, se
     by_page = {page.index: page.blocks for page in doc.pages}
     for seg in segments:
         images = _formula_images(src, seg)
-        texts = split_by_parts(seg.target or seg.source, [p.chars for p in seg.parts] or [len(seg.source)])
+        texts = split_by_parts(_exported_text(seg), [p.chars for p in seg.parts] or [len(seg.source)])
         for n, (part, piece) in enumerate(zip(seg.parts, texts, strict=False)):
             block = blocks.get(part.block_id)
             if block is None or not piece.strip() or block.page >= len(out):
@@ -268,9 +265,9 @@ def _typeset_all(src: pymupdf.Document, out: pymupdf.Document, doc: Document, se
             if r == "caption" and n == 0 and seg.target and (m := CAPTION_NO.match(piece)):
                 caption_no = m.group(0)
             size = lambda key, imgs=images: imgs[key][1:] if key in imgs else None  # noqa: E731
-            tokens = ts.tokenize(
-                drop_fake_scripts(piece.strip()), r, block.style.font_size, size, caption_no, formulas=seg.formulas
-            )
+            text = normalize_cjk_spacing(piece.strip()) if seg.target else piece.strip()
+            tokens = ts.tokenize(drop_fake_scripts(text), r, block.style.font_size, size, caption_no,
+                                 formulas=seg.formulas)  # fmt: skip
             indent = bool(seg.target) and wants_indent(block, seg, first=n == 0)
             _place(
                 ts, out[block.page], block, tokens, indent, images, placed.setdefault(block.id, []), bool(seg.target),

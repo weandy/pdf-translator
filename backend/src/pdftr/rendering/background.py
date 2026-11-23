@@ -81,10 +81,48 @@ def make_background(pdf: Path, blocks: Iterable[Block], out: Path, scanned: set[
     return sum(len(v) for v in by_page.values()) + sum(len(v) for v in labels.values())
 
 
-def crop_png(pdf: Path, page: int, bbox: Rect, zoom: float = 4.0, pad: float = 1.0) -> bytes:
+def _trim_formula_edges(pix: pymupdf.Pixmap, zoom: float) -> pymupdf.Pixmap:
+    """只裁掉窄边带内贴边、且与主体有连续空白行隔开的残影。"""
+    data, stride = pix.samples, pix.stride
+
+    def ink(y: int) -> bool:
+        row = data[y * stride : (y + 1) * stride]
+        # RGBA 为预乘透明度的颜色，透明与接近白色的像素不算墨迹。
+        return any(a >= 32 and a - min(r, g, b) >= 24 for r, g, b, a in zip(
+            row[0::4], row[1::4], row[2::4], row[3::4], strict=True
+        ))  # fmt: skip
+
+    rows = [ink(y) for y in range(pix.height)]
+    band = min(int(1.0 * zoom), pix.height // 6)
+    gap = max(2, round(0.5 * zoom))
+
+    def trim(edge: list[bool]) -> int:
+        if not band or not edge[0]:
+            return 0
+        blank = next((i for i in range(1, band + 1) if not edge[i]), 0)
+        if blank and not any(edge[blank : blank + gap]) and any(edge[blank + gap :]):
+            return blank
+        return 0
+
+    top, bottom = trim(rows), trim(rows[::-1])
+    if not (top or bottom) or not any(rows[top : pix.height - bottom]):
+        return pix
+    height = pix.height - top - bottom
+    return pymupdf.Pixmap(pymupdf.csRGB, pix.width, height, data[top * stride : (top + height) * stride], True)
+
+
+def crop_formula(page: pymupdf.Page, bbox: Rect, zoom: float = 4.0) -> tuple[bytes, float, float] | None:
+    """裁图及其实际宽高（pt）：水平留 0.3pt，垂直按原公式框裁切。"""
+    clip = pymupdf.Rect(bbox.x0 - 0.3, bbox.y0, bbox.x1 + 0.3, bbox.y1) & page.rect
+    if clip.is_empty:
+        return None
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip, colorspace=pymupdf.csRGB, alpha=True)
+    pix = _trim_formula_edges(pix, zoom)
+    return pix.tobytes("png"), pix.width / zoom, pix.height / zoom
+
+
+def crop_png(pdf: Path, page: int, bbox: Rect, zoom: float = 4.0) -> bytes:
     """按原文位置裁剪公式图片（透明背景），供 KaTeX 渲染失败时兜底。"""
     with pymupdf.open(pdf) as doc:
-        p = doc[page]
-        clip = pymupdf.Rect(bbox.x0 - pad, bbox.y0 - pad, bbox.x1 + pad, bbox.y1 + pad) & p.rect
-        pix = p.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip, alpha=True)
-        return pix.tobytes("png")
+        image = crop_formula(doc[page], bbox, zoom)
+    return image[0] if image else b""

@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -37,7 +38,6 @@ from pdftr.domain.llm import ChatError, ChatOptions
 from pdftr.domain.submissions import SubmissionContext
 from pdftr.extraction.chars import page_count
 from pdftr.extraction.outline import pdf_outline
-from pdftr.glossary.matcher import TermMatcher, combine
 from pdftr.glossary.user_import import ParsedGlossary, parse_upload
 from pdftr.pipeline.memory import release_memory
 from pdftr.pipeline.runner import ExportResult, Pipeline, chat_session, load_context, load_document
@@ -316,7 +316,7 @@ def purge_expired(pipeline: Pipeline, retention_hours: int, now: datetime | None
 
 
 # 导出 PDF 的生成方式（排版、字体、链接等）变了就加一，让已缓存的导出文件失效
-EXPORT_CACHE_VERSION = 5  # 更新原字号适配、极矮框排版与公式回退时的链接定位
+EXPORT_CACHE_VERSION = 6  # 共享公式裁图与中英混排空格规范化
 
 
 @dataclass(frozen=True)
@@ -723,10 +723,11 @@ async def retranslate_segments(
         for s in segs:
             s.status = SegmentStatus.PENDING
         deps = pipeline.deps
+        ctx, selection = await asyncio.to_thread(load_context, deps, job_id, terms)
         async with chat_session(deps.chat_factory(secrets)) as chat:
             outs, report = await translate(
-                segs, chat=chat, cache=deps.cache, ctx=load_context(deps, job_id, terms),
-                lookup_terms=combine(terms, deps.term_matcher()),
+                segs, chat=chat, cache=deps.cache, ctx=ctx,
+                lookup_terms=selection.match_library, lookup_user_terms=selection.match_user,
                 opts=TranslateOptions(quality=quality, use_cache=False, total_timeout_s=45),
             )  # fmt: skip
         for out in outs:
@@ -764,20 +765,22 @@ def job_terms(pipeline: Pipeline, job_id: str) -> list[TermUse]:
     译文有没有用上推荐译法由前端检查（要按浏览器里最新的术语库和当前译文算）。"""
     job = get_job(pipeline, job_id)
     deps = pipeline.deps
-    user = job.options.user_terms or {}
-    paper = load_context(deps, job_id, user).terms
-    lookup_paper = TermMatcher(paper, min_length=2).match if paper else None
-    lookup_rest = combine(user, deps.term_matcher())
-    mine = {k.lower() for k in user}
+    _, selection = load_context(deps, job_id, job.options.user_terms)
+    lookups: tuple[tuple[Literal["user", "paper", "library"], Callable[[str], dict[str, str]]], ...] = (
+        ("user", selection.match_user),
+        ("paper", selection.match_paper),
+        ("library", selection.match_library),
+    )
     uses: dict[str, TermUse] = {}
     for seg in deps.store.segments(job_id):
-        hits = (lookup_rest(seg.source) if lookup_rest else {}) | (lookup_paper(seg.source) if lookup_paper else {})
-        for source, target in hits.items():
-            k = source.lower()
-            if k not in uses:
-                origin = "user" if k in mine else "paper" if source in paper else "library"
-                uses[k] = TermUse(source=source, target=target, origin=origin, segment_ids=[])
-            uses[k].segment_ids.append(seg.id)
+        seen: set[str] = set()
+        for origin, lookup in lookups:
+            for source, target in lookup(seg.source).items():
+                key = source.casefold()
+                if key not in seen:
+                    seen.add(key)
+                    use = uses.setdefault(key, TermUse(source=source, target=target, origin=origin, segment_ids=[]))
+                    use.segment_ids.append(seg.id)
     return sorted(uses.values(), key=lambda u: (-len(u.segment_ids), u.source.lower()))
 
 

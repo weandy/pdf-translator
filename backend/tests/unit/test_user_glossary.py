@@ -4,7 +4,8 @@ import asyncio
 import json
 
 from pdftr.domain.llm import ChatOptions, ChatResult, ChatUsage
-from pdftr.glossary.matcher import TermMatcher, combine, override
+from pdftr.glossary.extract import Extraction
+from pdftr.glossary.matcher import TermMatcher, TermSelection
 from pdftr.glossary.user_import import parse_rules, parse_upload
 
 
@@ -67,12 +68,28 @@ def test_gb18030_file():
 
 def test_user_terms_win_over_library_and_extracted():
     library = TermMatcher({"attention mechanism": "注意机制", "feature map": "特征图"})
-    lookup = combine({"Attention Mechanism": "注意力机制", "GA": "遗传算法"}, library)
-    assert lookup is not None
-    hits = lookup("The attention mechanism and GA use a feature map.")
-    assert hits == {"feature map": "特征图", "Attention Mechanism": "注意力机制", "GA": "遗传算法"}
-    assert combine({}, None) is None
-    assert override({"attention mechanism": "注意机制", "loss": "损失"}, {"Attention Mechanism": "注意力机制"}) == {
-        "attention mechanism": "注意力机制",
-        "loss": "损失",
-    }
+    found = Extraction(terms={"attention mechanism": "注意机制", "loss": "损失", "LOSS": "耗损"})
+    selection = TermSelection(found, {"Attention Mechanism": "注意力机制", "GA": "遗传算法"}, lambda: library)
+    source = "The attention mechanism and GA use a feature map."
+    assert selection.match_user(source) == {"Attention Mechanism": "注意力机制", "GA": "遗传算法"}
+    assert selection.match_library(source) == {"feature map": "特征图"}
+    assert selection.paper == {"attention mechanism": "注意力机制", "loss": "损失"}
+
+
+def test_conflicting_library_subphrases_are_suppressed_by_paper_and_user():
+    source = "The LOCAL SEARCH OPERATORS use a graph neural network and a saddle point."
+    library = TermMatcher({
+        "Operator": "运算符", "search operator": "搜索运算符", "neural network": "神经网络",
+        "graph neural": "图网络", "saddle point": "鞍点",
+    })  # fmt: skip
+    found = Extraction(terms={"local search operator": "局部搜索算子"})
+    selection = TermSelection(found, {"graph neural network": "图神经网络"}, lambda: library)
+    assert selection.match_paper(source) == {"local search operator": "局部搜索算子"}
+    assert selection.match_library(source) == {"neural network": "神经网络", "saddle point": "鞍点"}
+
+    def forbidden() -> TermMatcher:
+        raise AssertionError("停用公共词库时无需加载")
+
+    selection = TermSelection(Extraction(use_library=False), {"operator": "算子"}, forbidden)
+    assert selection.match_user(source) == {"operator": "算子"}
+    assert selection.match_library(source) == {}

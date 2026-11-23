@@ -1,16 +1,19 @@
 from datetime import datetime, timedelta, timezone
 
 from pdftr.domain.llm import ChatUsage
+from pdftr.pipeline.usecases import EXPORT_CACHE_VERSION
+from pdftr.rendering.typeset import normalize_cjk_spacing as normalize_export_spacing
 from pdftr.translation.batching import (
     bold_problems,
     estimate_tokens,
     italic_problems,
     make_batches,
+    normalize_cjk_spacing,
     parse_numbered,
     placeholders_match,
 )
 from pdftr.translation.cost import cost_cny, is_deepseek_peak
-from pdftr.translation.prompt import DocContext, expand_formulas, system_prompt, user_prompt
+from pdftr.translation.prompt import PROMPT_VERSION, DocContext, expand_formulas, system_prompt, user_prompt
 
 BJ = timezone(timedelta(hours=8))
 
@@ -66,7 +69,23 @@ def test_prompts():
     sys_p = system_prompt(DocContext(title="T", domain="NLP", abstract="A", terms={"encoder": "编码器"}))
     assert "论文标题：T" in sys_p and "encoder=编码器" in sys_p and "<m1>O(1)</m1>" in sys_p
     user = user_prompt([(1, "x"), (2, "y")], ["3 Model"], {"attention": "注意力"})
-    assert user.splitlines() == ["本批段落所在章节：3 Model", "本批术语（推荐译法）：attention=注意力", "1|x", "2|y"]
+    assert PROMPT_VERSION == "v3" and EXPORT_CACHE_VERSION == 6
+    assert "本文术语表（全文统一使用）" in sys_p
+    assert "Problem statement" in sys_p and "Available online" in sys_p and "「等」" in sys_p
+    assert user.splitlines() == [
+        "本批段落所在章节：3 Model",
+        "参考词库（仅在语境与论文领域吻合时参考，冲突时以自然学术译法为准）：attention=注意力",
+        "1|x",
+        "2|y",
+    ]
+
+
+def test_spacing_is_identical_in_translation_and_export():
+    text = "用 <b>ResNet 50</b> 验证 2 层 <m1/> 、中文  多空格\n保持 English words (Lee et al., 2020)。"
+    expected = "用<b>ResNet 50</b>验证2层<m1/> 、中文  多空格\n保持English words (Lee et al., 2020)。"
+    assert normalize_cjk_spacing(text) == normalize_export_spacing(text) == expected
+    assert normalize_cjk_spacing(expected) == expected
+    assert normalize_cjk_spacing("中文\t<m1/>\u00a0段落  X") == "中文<m1/>段落  X"
 
 
 def test_cost_and_peak():

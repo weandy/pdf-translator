@@ -21,6 +21,20 @@ _CJK_SENTENCE = re.compile(r"^[\u3400-\u9fff]{20,}[。！？]$")
 LINE_HEIGHTS = (1.5, 1.4, 1.3, 1.2)
 
 
+_HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U000323af]")
+_WESTERN = r"(?:[A-Za-z0-9]|<m\d+/>)"
+_FORMAT_TAGS = r"(?:</?(?:b|i|sup|sub)>)*"
+_MIXED_SPACE = re.compile(
+    rf"({_HAN.pattern}{_FORMAT_TAGS})[ \t\u00a0](?={_FORMAT_TAGS}{_WESTERN})"
+    rf"|({_WESTERN}{_FORMAT_TAGS})[ \t\u00a0](?={_FORMAT_TAGS}{_HAN.pattern})"
+)
+
+
+def normalize_cjk_spacing(text: str) -> str:
+    """移除汉字与西文、数字、公式间的单个横向空格，保留富文本标签。"""
+    return _MIXED_SPACE.sub(lambda match: match.group(1) or match.group(2), text)
+
+
 def drop_fake_scripts(text: str) -> str:
     """去掉明显覆盖整行或句子的上下标，保留技术标识符。"""
 

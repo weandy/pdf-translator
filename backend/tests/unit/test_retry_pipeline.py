@@ -11,6 +11,8 @@ from pdftr.container import build_container
 from pdftr.domain.ir import Segment, SegmentStatus
 from pdftr.domain.job import Job, JobStatus
 from pdftr.domain.llm import ChatOptions, ChatResult, ChatUsage
+from pdftr.glossary.extract import Extraction
+from pdftr.glossary.matcher import TermSelection
 from pdftr.pipeline import runner, usecases
 from pdftr.pipeline.secrets import Secrets
 from pdftr.storage.cache import SqliteTranslationCache
@@ -46,8 +48,9 @@ def setup_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, chat: Repair
     container = build_container(Settings(data_dir=tmp_path, glossary_sources=""), {"chat_factory": lambda _: chat})
     pipeline = container.pipeline
     store = pipeline.deps.store
-    monkeypatch.setattr(runner, "load_context", lambda *args: DocContext())
-    monkeypatch.setattr(usecases, "load_context", lambda *args: DocContext())
+    context = DocContext(), TermSelection(Extraction(), {}, lambda: None)
+    monkeypatch.setattr(runner, "load_context", lambda *args: context)
+    monkeypatch.setattr(usecases, "load_context", lambda *args: context)
 
     async def render(job, secrets):
         pass
