@@ -6,7 +6,9 @@ from pathlib import Path
 import pymupdf
 import pytest
 
-from pdftr.domain.ir import BlockType, SegmentStatus
+from pdftr.domain.chars import CharPage
+from pdftr.domain.ir import BlockType, PageKind, SegmentStatus
+from pdftr.domain.layout import LayoutResult
 from pdftr.extraction.chars import extract
 from pdftr.fusion.build import fuse
 from pdftr.parsing.mineru_normalize import normalize
@@ -128,7 +130,7 @@ def test_figure_text_becomes_labels(tmp_path: Path):
 @pytest.mark.parametrize("indexes", [[2, 1, 0], [0, 2]])
 def test_fuse_aligns_page_numbers_and_preserves_missing_page(tmp_path, indexes):
     from pdftr.domain.geometry import Rect
-    from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutPage, LayoutResult, LayoutSpan
+    from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutPage, LayoutSpan
 
     path = tmp_path / "indexed.pdf"
     with pymupdf.open() as source:
@@ -181,6 +183,17 @@ def test_fuse_aligns_page_numbers_and_preserves_missing_page(tmp_path, indexes):
             unchanged_text = exported[1].get_text()
             assert isinstance(unchanged_text, str) and unchanged_text.count("Bravo") == 2
             assert "Translated synthetic text." in exported[2].get_text()
+
+
+def test_missing_garbled_page_has_only_its_page_kind_warning():
+    layout = LayoutResult(parser="synthetic", pages=[])
+    garbled = CharPage(index=0, width=600, height=800, kind=PageKind.GARBLED, has_images=True)
+    scanned = garbled.model_copy(update={"index": 1, "kind": PageKind.SCANNED})
+    doc, report = fuse("synthetic", layout, [garbled, scanned], used_cloud=True)
+    assert doc.pages[0].kind is PageKind.GARBLED and not doc.pages[0].missing_layout
+    assert doc.pages[1].missing_layout
+    assert report.non_native_pages == [0, 1]
+    assert report.missing_layout_pages == [1]
 
 
 @pytest.mark.parametrize(("indexes", "message"), [([0, 0], "重复"), ([0, 2], "范围"), ([-1, 1], "范围")])

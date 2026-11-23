@@ -60,6 +60,16 @@ def test_refine_block_builds_lines_and_formula_spans():
     ]
 
 
+def test_refine_block_without_chars_counts_only_nonempty_trimmed_formulas():
+    box = Rect.of([0, 0, 200, 40])
+    block = LayoutBlock(type=BlockType.TEXT, bbox=box, order=0, content="Let $ x_1 $ and $   $ be inputs.")
+    refined, total, found = refine_block(block, [])
+    (line,) = refined.lines
+    (formula,) = [span for span in line.spans if span.kind == "inline_formula"]
+    assert (total, found) == (1, 0)
+    assert formula.content == "x_1" and not formula.located
+
+
 def test_formula_box_ignores_tall_math_glyph_extents():
     # 根号等数学符号的字框按数学字体上下边界计算，高出一大截；公式框不能被它撑高，否则会盖住上下行的正文
     chars = _chars(["When x = y we stop"])

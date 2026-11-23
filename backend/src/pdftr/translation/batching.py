@@ -159,8 +159,9 @@ _PROSE_WORDS = {
 }  # fmt: skip
 _NON_PROSE = re.compile(
     r"\b(?:https?://|www\.)[^\s<>()]+|"
-    r"(?<!\w)(?:[A-Za-z]:[\\/]|\.{0,2}[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+|"
-    r"(?<!\w)[~/][A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*|"
+    r"(?<![\w./\\])(?:[A-Za-z]:[\\/]|(?:\.{1,2}|~)[\\/])[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*|"
+    r"(?<![\w./\\])[A-Za-z0-9_.-]*(?:[\\/][A-Za-z0-9_.-]+){2,}|"
+    r"(?<![\w./\\])[A-Za-z0-9_.-]*[\\/][A-Za-z0-9_.-]+\.(?i:csv|html|json|md|pdf|png|py|tex|tsv|txt|xml|ya?ml)\b|"
     r"\[\s*\d+(?:\s*[,;–-]\s*\d+)*\s*\]|"
     r"\([A-Z][A-Za-z'’.-]+(?:\s+(?:et al\.|and [A-Z][A-Za-z'’.-]+)|\s*&\s*[A-Z][A-Za-z'’.-]+)?"
     r",?\s+(?:19|20)\d{2}[a-z]?\)"
@@ -177,7 +178,12 @@ def prose_problems(source: str, target: str) -> list[str]:
     tokens = _ENGLISH_WORD.findall(original)
     words = [word.lower() for word in tokens]
     letters = sum(map(len, words))
-    if len(words) < 8 or letters < 35 or _HAN.search(original) or len(_PROSE_WORDS.intersection(words)) < 2:
+    if (
+        len(words) < 8
+        or letters < 35
+        or len(_HAN.findall(original)) * 5 >= len(words)
+        or len(_PROSE_WORDS.intersection(words)) < 2
+    ):
         return []
     # 短标题常用实词首字母大写，配置名与这类标题都可能沿用原文。
     content_words = [word for word in tokens if word.lower() not in _PROSE_WORDS]
@@ -188,15 +194,21 @@ def prose_problems(source: str, target: str) -> list[str]:
     ):
         return []
     translated = _plain_prose(target)
-    if len(_HAN.findall(translated)) <= 2:
-        english = _ENGLISH_WORD.findall(translated.lower())
+    han = len(_HAN.findall(translated))
+    english = _ENGLISH_WORD.findall(translated.lower())
+    if han <= max(2, len(words) // 10):
         similarity = SequenceMatcher(None, words, english)
         if similarity.quick_ratio() >= 0.85 and similarity.ratio() >= 0.85:
             return ["疑似未翻译（照抄原文）"]
+    # 忽略简短的中文引导语时，要求后面保留了完整的英文词序列。
+    if 0 < han <= 4 and english == words and not _HAN.search(re.split(r"[A-Za-z]", translated, maxsplit=1)[-1]):
+        return ["疑似未翻译（照抄原文）"]
     if len(words) >= 20 and letters >= 90:
         visible = sum(c.isalnum() for c in translated)
         if visible < max(6, letters * 0.055):
             return ["译文严重缩水，疑似漏译"]
-        if visible > letters * 4:
+        if visible > letters * 2.2:
             return ["译文长度异常暴涨，疑似复读"]
+    if han >= 24 and re.fullmatch(r"(.{12,}?)\1{3,}", "".join(translated.split())):
+        return ["译文疑似复读"]
     return []

@@ -214,7 +214,10 @@ async def translate(
         report.usage = report.usage + result.usage
         report.cost_cny = add_cost(report.cost_cny, chat.model, result.usage)
         if result.finish_reason in ("refusal", "content_filter"):
-            refused.extend(fail(batch, f"模型拒绝翻译（{result.finish_reason}）"))
+            failed_batch = fail(batch, f"模型拒绝翻译（{result.finish_reason}）")
+            if len(batch) > 1:
+                return failed_batch  # 批次拒绝无法归因到某一段，拆开后再确认。
+            refused.extend(failed_batch)
             return []
         try:
             got = parse_numbered(result.text, batch_size=len(batch))

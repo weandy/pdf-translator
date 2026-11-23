@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 ExportMode = Literal["mono", "dual"]
 Side = Literal["left", "right"]  # 双语对照时译文放在哪一边
 LINE_HEIGHT = 1.2  # 最紧的行距（单行框补高按它计算）
-MIN_SCALE = 0.4  # 放不下时字号最多缩到原来的 40%
+MIN_SCALE = 0.4  # 常规适配的最小字号比例，极矮框的首行可继续缩小
 BOTTOM_MARGIN = 4.0
 
 _BREAK_AFTER = set("，。；：、）！？,;:.)")
@@ -166,11 +166,11 @@ def _place(
     size = block.style.font_size
     r = role(block, translated=translated)
     align = {"label": "center", "heading": "left"}.get(r, "justify")
+    box_limit = box.height + 0.5
 
     def layout(scale: float, pitch: float) -> tuple[list[Line], list[float], float]:
         lines, bases, height = ts.layout(tokens, box.width / scale, size, pitch, indent)
-        drawn = max((_line_bottom(line, base, size) for line, base in zip(lines, bases, strict=True)), default=0)
-        return lines, bases, max(height, drawn) * scale
+        return lines, bases, height * scale
 
     def safe_height(lines: list[Line], scale: float) -> float:
         # 悬挂标点和不可断开的西文词可能超出排版框的右边缘。
@@ -182,38 +182,45 @@ def _place(
         )  # fmt: skip
         return _safe_bottom(page, box, max(box.x1, right), block, neighbors) - box.y0
 
+    def fits(lines: list[Line], bases: list[float], height: float, scale: float, *, borrow: bool = False) -> bool:
+        if height > box_limit and not borrow:
+            return False
+        bottoms = (_line_bottom(line, base, size) for line, base in zip(lines, bases, strict=True))
+        drawn = max(bottoms, default=0) * scale
+        # 框内按排版行高适配，字形下伸只需避开邻块与页底。借用空白还需容纳完整的排版行。
+        extent = max(height, drawn) if height > box_limit else drawn
+        return extent <= box.height or extent <= safe_height(lines, scale)
+
     scale = 1.0
     for pitch in LINE_HEIGHTS:
         lines, bases, height = layout(scale, pitch)
-        if height <= box.height:
+        if fits(lines, bases, height, scale):
             break
     else:
         lines, bases, height = layout(MIN_SCALE, LINE_HEIGHT)
-        needs_gap = height > box.height
-        available = safe_height(lines, MIN_SCALE) if needs_gap else box.height
-        if height <= available:
+        needs_gap = height > box_limit
+        if fits(lines, bases, height, MIN_SCALE, borrow=needs_gap):
             lo, hi = MIN_SCALE, 1.0
             for _ in range(10):
                 mid = (lo + hi) / 2
-                candidate, _, height = layout(mid, LINE_HEIGHT)
-                limit = safe_height(candidate, mid) if needs_gap and height > box.height else box.height
-                lo, hi = (mid, hi) if height <= limit else (lo, mid)
+                candidate, baselines, height = layout(mid, LINE_HEIGHT)
+                lo, hi = (mid, hi) if fits(candidate, baselines, height, mid, borrow=needs_gap) else (lo, mid)
             scale = lo
             lines, bases, _ = layout(scale, LINE_HEIGHT)
         else:
             scale = MIN_SCALE
+            available = safe_height(lines, scale)
+            bottoms = [_line_bottom(line, base, size) for line, base in zip(lines, bases, strict=True)]
             log.warning(
                 "译文导出溢出 page=%d block_id=%s overflow=%.2fpt",
                 block.page + 1,
                 block.id,
-                height - available,
+                max(height, max(bottoms) * scale) - available,
             )
-            # 只绘制完整可见的行，避免跨过相邻块或页底。
-            count = next(
-                (i for i, (line, base) in enumerate(zip(lines, bases, strict=True))
-                 if _line_bottom(line, base, size) * scale > available),
-                len(lines),
-            )  # fmt: skip
+            count = next((i for i, bottom in enumerate(bottoms) if bottom * scale > available), len(lines))
+            if count == 0:
+                # 去字后至少保留首行。极矮框允许首行低于常规最小字号。
+                scale, count = available / bottoms[0], 1
             lines, bases = lines[:count], bases[:count]
     if not lines:
         return

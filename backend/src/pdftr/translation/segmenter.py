@@ -163,13 +163,19 @@ def segment(
 ) -> list[Segment]:
     page_set = set(pages) if pages is not None else None
     blocks = doc.blocks()
-    selected = {b.id for b in blocks if page_set is None or b.page in page_set}
+    skip = front_matter_ids(doc)
+    selected = {
+        b.id
+        for b in blocks
+        if (page_set is None or b.page in page_set)
+        and b.id not in skip
+        and _wanted(b, include_references, include_figures)
+    }
     next_of = {
         b.continues_from: b
         for b in blocks
         if b.continues_from is not None and b.continues_from in selected and b.id in selected
     }
-    skip = front_matter_ids(doc)
     segments: list[Segment] = []
     section = ""
     for block in blocks:
@@ -177,14 +183,8 @@ def segment(
             section = (
                 block_source(block, {f.key: f.key for f in block.formulas if not textual_formula(f.latex)}) or section
             )
-        if (
-            block.continues_from in selected
-            or block.id in skip
-            or not _wanted(block, include_references, include_figures)
-        ):
+        if block.id not in selected or block.continues_from in selected:
             continue  # 续接块随链头一起处理
-        if block.id not in selected:
-            continue
         chain = _chain(block, next_of)
         formulas: dict[str, str] = {}
         refs: dict[str, FormulaRef] = {}

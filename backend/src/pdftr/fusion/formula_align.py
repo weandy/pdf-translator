@@ -219,11 +219,20 @@ def refine_block(block: LayoutBlock, chars: Sequence[Char]) -> tuple[LayoutBlock
     if not visible:  # 扫描页等没有可用于定位的字符，仍按顺序保留公式与正文。
         parts = _FORMULA.split(content)
         spans = [
-            LayoutSpan(kind="inline_formula" if i % 2 else "text", content=part, bbox=block.bbox, located=False)
+            LayoutSpan(
+                kind="inline_formula" if i % 2 else "text",
+                content=part.strip() if i % 2 else part,
+                bbox=block.bbox,
+                located=False,
+            )
             for i, part in enumerate(parts)
             if part.strip()
         ]
-        return block.model_copy(update={"lines": [LayoutLine(bbox=block.bbox, spans=spans)]}), len(parts) // 2, 0
+        return (
+            block.model_copy(update={"lines": [LayoutLine(bbox=block.bbox, spans=spans)]}),
+            sum(span.kind == "inline_formula" for span in spans),
+            0,
+        )
 
     rows = visual_lines(chars)
     ordered = [c for row in rows for c in row]

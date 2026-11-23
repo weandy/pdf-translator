@@ -493,6 +493,26 @@ def test_refusal_with_numbered_text_is_terminal(reason):
     assert reason in out[0].failure_reason and not cache.data
 
 
+@pytest.mark.parametrize("reason", ["refusal", "content_filter"])
+def test_refused_batch_retries_each_segment_once_when_one_is_refused(reason):
+    class Refusal(FakeChat):
+        async def complete(self, system, user, opts):
+            answer = await super().complete(system, user, opts)
+            if blocked.source in user:
+                return ChatResult(text="1|拒绝翻译", finish_reason=reason)
+            return answer
+
+    blocked, valid = SEGS[2:]
+    chat, cache = Refusal(), DictCache()
+    out, report = asyncio.run(translate([blocked, valid], chat=chat, cache=cache, ctx=DocContext()))
+    assert f"1|{blocked.source}\n2|{valid.source}" in chat.calls[0][0]
+    assert report.requests == 3 and report.attempts == {blocked.id: 2, valid.id: 2}
+    assert report.failed == report.translated == 1
+    assert out[0].status is SegmentStatus.FAILED and reason in out[0].failure_reason
+    assert out[1].status is SegmentStatus.DONE and out[1].target == f"译:{valid.source}"
+    assert list(cache.data.values()) == [out[1].target]
+
+
 @pytest.mark.parametrize("text", ["1|甲\n1|乙", "1|甲\n3|乙", "2|乙\n1|甲"])
 def test_invalid_numbering_retries_entire_batch_without_caching(text):
     class WrongBatch(FakeChat):
@@ -513,6 +533,7 @@ PROSE = (
     "When the air cools, the instrument records the change over time so that every measured "
     "variation can be compared with the values obtained before the trial began."
 )
+PROSE_TRANSLATION = "当空气冷却时，仪器记录随时间发生的变化，以便将每项观测变化与试验开始前获得的数值进行比较。"
 
 
 @pytest.mark.parametrize(
@@ -534,6 +555,26 @@ PROSE = (
         ),
         (PROSE, "温度。", "记录降温变化并与试验前的测量值比较。", "缩水"),
         (PROSE, "温度变化。" * 150, "记录降温变化并与试验前的测量值比较。", "暴涨"),
+        (PROSE, "在本文中，" + PROSE, PROSE_TRANSLATION, "照抄"),
+        (
+            "We evaluate our method across several tasks with the same settings as in previous experiments.",
+            "实验表明：We evaluate our method across several tasks with the same settings as in previous experiments.",
+            "我们沿用以往实验的设置，在多个任务上评估此方法。",
+            "照抄",
+        ),
+        (
+            "The Chinese token 猫 is segmented into its own unit when the parser reads the sentence.",
+            "The Chinese token 猫 is segmented into its own unit when the parser reads the sentence.",
+            "解析器读取句子时，将汉字‘猫’切分为独立的单元。",
+            "照抄",
+        ),
+        (PROSE, " ".join([PROSE_TRANSLATION] * 4), PROSE_TRANSLATION, "复读"),
+        (
+            "We compare precision/recall and encoder/decoder with the original model.",
+            "We compare precision/recall and encoder/decoder with the original model.",
+            "我们将精确率、召回率和编解码器与原始模型作比较。",
+            "照抄",
+        ),
     ],
 )
 def test_quality_faults_reject_cache_and_model_output(source, bad, good, reason):
@@ -563,6 +604,11 @@ def test_quality_faults_reject_cache_and_model_output(source, bad, good, reason)
             "本文使用合成数据来检验计算过程并记录全部对照实验的观测指标。",
         ),
         (PROSE, "记录冷却曲线并与试验前对比。"),
+        (PROSE, PROSE_TRANSLATION),
+        (
+            "本文使用 Transformer to compare image and text embeddings with the original model。",
+            "本文使用 Transformer to compare image and text embeddings with the original model。",
+        ),
     ],
 )
 def test_quality_checks_allow_short_technical_and_compact_translations(source, target):

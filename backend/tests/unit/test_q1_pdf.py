@@ -6,7 +6,7 @@ import pymupdf
 import pytest
 
 from pdftr.domain.geometry import Rect
-from pdftr.domain.ir import Block, BlockStyle, BlockType, Document, Page, Span
+from pdftr.domain.ir import Block, BlockStyle, BlockType, Document, InlineFormula, Page, Span
 from pdftr.rendering.background import make_background
 from pdftr.rendering.export import ExportMode, Side, export_pdf
 from pdftr.translation.segmenter import segment
@@ -129,3 +129,78 @@ def test_export_overflow_at_page_bottom_retains_only_in_page_lines(tmp_path: Pat
         assert words and block.bbox.y1 < max(float(word[3]) for word in words) <= 116
         assert "结尾" not in str(pdf[0].get_text())
     assert "page=1 block_id=p0-b0" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("block_type", "size", "target"),
+    [(BlockType.TITLE, 12, "原字号"), (BlockType.TEXT, 12, "原字号"), (BlockType.CAPTION, 9, "Full-size caption")],
+)
+def test_single_line_export_keeps_original_font_size(tmp_path: Path, block_type: BlockType, size: int, target: str):
+    original = tmp_path / "single-line.pdf"
+    block = _block(0, 0, [20, 30, 180, 30 + size], "Synthetic text.")
+    block.type, block.style.font_size = block_type, size
+    doc = Document(job_id="single-line", pages=[Page(index=0, width=220, height=120, blocks=[block])])
+    with pymupdf.open() as pdf:
+        pdf.new_page(width=220, height=120)
+        pdf.save(original)
+    (seg,) = segment(doc)
+    seg.target = target
+    with pymupdf.open(stream=export_pdf(original, original, doc, [seg], "mono"), filetype="pdf") as pdf:
+        (span,) = [
+            span
+            for text_block in pdf[0].get_textpage().extractDICT()["blocks"]
+            for line in text_block["lines"]
+            for span in line["spans"]
+        ]
+        assert span["text"] == seg.target and span["size"] == pytest.approx(size)
+
+
+def test_export_squeezes_first_line_into_clipped_box_next_to_another_block(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    original = tmp_path / "first-line.pdf"
+    block = _block(0, 0, [20, -5.65, 180, -0.65], "Synthetic text.")
+    block.style.font_size = 15
+    below = _block(0, 1, [20, 6.1, 180, 19], "Keep this.")
+    below.translatable = False
+    doc = Document(job_id="clipped", pages=[Page(index=0, width=220, height=120, blocks=[block, below])])
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=220, height=120)
+        page.insert_text((20, 16), "Keep this.", fontsize=9)
+        pdf.save(original)
+    (seg,) = segment(doc)
+    seg.target = "首行"
+    with pymupdf.open(stream=export_pdf(original, original, doc, [seg], "mono"), filetype="pdf") as pdf:
+        (first_line,) = pdf[0].search_for("首行")
+        assert first_line.y1 <= below.bbox.y0
+        assert pdf[0].search_for("Keep this.")
+    assert "page=1 block_id=p0-b0" in caplog.text
+
+
+def test_unlocated_formula_does_not_shift_citation_link(tmp_path: Path):
+    original, background = tmp_path / "citation.pdf", tmp_path / "citation-background.pdf"
+    block = _block(0, 0, [20, 20, 205, 70], "Synthetic text.")
+    block.spans = [
+        Span(bbox=block.bbox, text="We use", size=10),
+        Span(bbox=block.bbox, kind="formula", formula="m1", size=10),
+        Span(bbox=block.bbox, text="as shown in [1].", size=10),
+    ]
+    block.formulas = [InlineFormula(key="m1", latex="x_1", bbox=block.bbox, located=False)]
+    doc = Document(job_id="citation", pages=[Page(index=0, width=220, height=120, blocks=[block])])
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=220, height=120)
+        page.insert_text((20, 38), "We use x_1 as shown in [1].", fontsize=10)
+        page.insert_link({"kind": pymupdf.LINK_GOTO, "from": page.search_for("[1]")[0], "page": 0})
+        pdf.save(original)
+    (seg,) = segment(doc)
+    assert seg.formulas == {"m1": "x_1"} and not seg.formula_refs
+    seg.target = "使用<m1/>，参见[1]。"
+    make_background(original, [block], background)
+    with pymupdf.open(stream=export_pdf(original, background, doc, [seg], "mono"), filetype="pdf") as pdf:
+        page = pdf[0]
+        (formula,) = page.search_for("$x_1$")
+        (citation,) = page.search_for("[1]")
+        (link,) = page.get_links()
+        assert not link["from"].intersects(formula)
+        assert citation.x0 < link["from"].x0 < link["from"].x1 < citation.x1
+        assert link["from"].intersects(citation)

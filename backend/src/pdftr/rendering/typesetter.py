@@ -94,6 +94,7 @@ class Token:
     image: str = ""  # 公式占位符
     char: str = ""  # cjk 的字，用于禁则判断
     attach: bool = False  # 紧接上一个 token（同一个词在 / 或连字符后拆开的部分）：不加间距、不拉伸，但可在此断行
+    track_links: bool = True  # 公式占位符在匹配链接时视为空。
 
 
 @dataclass
@@ -207,10 +208,11 @@ class Typesetter:
                 wh = image_size(key)
                 if wh:
                     tokens.append(Token("image", width=wh[0], height=wh[1], image=key))
-                elif formulas is not None and key in formulas:
-                    tokens += self._text_tokens("$" + formulas[key] + "$", self._style(role, stack), size)
                 else:
-                    tokens += self._text_tokens(m.group(0), self._style(role, stack), size)
+                    fallback = f"${formulas[key]}$" if formulas is not None and key in formulas else m.group(0)
+                    for token in self._text_tokens(fallback, self._style(role, stack), size):
+                        token.track_links = False
+                        tokens.append(token)
             elif m.group(1):
                 if m.group(2) in stack:
                     stack.remove(m.group(2))
@@ -361,7 +363,7 @@ class Typesetter:
                     for run in tok.runs:
                         point = pymupdf.Point(x0 + rx * scale, y0 + (base - run.rise) * scale)
                         writer.append(point, run.text, font=run.font, fontsize=run.size * scale)  # pyright: ignore[reportArgumentType]
-                        if placed is not None:
+                        if placed is not None and tok.track_links:
                             placed.append(Placed(run.text, point.x, point.y, run.font, run.size * scale))
                         rx += run.width
                 x += tok.width

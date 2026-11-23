@@ -117,8 +117,17 @@ def test_front_matter_between_title_and_abstract_is_kept_original():
         at("p0-b2", BlockType.TITLE, "Abstract", 200),
         at("p0-b3", BlockType.TEXT, "The dominant sequence transduction models are based on networks.", 220),
     ]
+    blocks[-1].continues_from = "p0-b1"
     doc = Document(job_id="0123456789abcdef", pages=[Page(index=0, width=600, height=800, blocks=blocks)])
     assert [s.block_ids for s in segment(doc)] == [["p0-b0"], ["p0-b2"], ["p0-b3"]]
+
+
+def test_nontranslatable_block_breaks_continuation_chain():
+    doc = _doc()
+    first, tail = doc.pages[1].blocks
+    first.translatable = False
+    tail.continues_from = first.id
+    assert [s.block_ids for s in segment(doc, pages=[0, 1])] == [["p0-b0"], ["p0-b1"], ["p1-b1"]]
 
 
 def test_figure_labels_follow_option():

@@ -80,7 +80,7 @@ def fuse(
         if page.index in seen:
             raise InvalidLayoutPages(f"解析返回重复页号 {page.index}")
         seen.add(page.index)
-    report = FusionReport(missing_layout_pages=sorted(pdf_indexes - seen))
+    report = FusionReport()
     relocated, rel = relocate(layout)
     report.moved_lines, report.unmatched_lines = rel.moved_lines, rel.unmatched_lines
     report.continuations = len(rel.links)
@@ -94,9 +94,12 @@ def fuse(
         visible = [c for c in cp.chars if not c.c.isspace()]
         report.chars_total += len(visible)
         if (lp := by_index.get(cp.index)) is None:
+            can_translate = cp.kind in (PageKind.NATIVE, PageKind.SCANNED)
+            if can_translate:
+                report.missing_layout_pages.append(cp.index)
             pages.append(
                 Page(index=cp.index, width=cp.width, height=cp.height, rotation=cp.rotation, kind=cp.kind,
-                     missing_layout=cp.index in selected and (bool(visible) or cp.has_images))
+                     missing_layout=can_translate and cp.index in selected and (bool(visible) or cp.has_images))
             )  # fmt: skip
             continue
         per_block, orphans = align(cp.chars, [b.bbox for b in lp.blocks])
