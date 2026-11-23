@@ -27,19 +27,28 @@
 		}
 	}
 
+	# 带内容哈希的构建产物与纯 JS 解码器走独立静态块：缺失文件返回真实 404，绝不回退成 200 HTML 并贴长缓存
+	handle /assets/* {
+		root * /srv
+		@existing_asset file
+		header @existing_asset Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+
+	handle /pdfjs/* {
+		root * /srv
+		@existing_decoder file
+		header @existing_decoder Cache-Control "public, max-age=86400"
+		file_server
+	}
+
 	handle {
 		root * /srv
 		try_files {path} /index.html
 		file_server
 	}
 
-	# 带内容哈希的构建产物长缓存；纯 JS 解码器按天缓存；SPA 入口不启发式缓存，避免发版后引用已删除旧分包白屏
-	@hashed_assets path /assets/*
-	header @hashed_assets Cache-Control "public, max-age=31536000, immutable"
-
-	@pdfjs_decoders path /pdfjs/*
-	header @pdfjs_decoders Cache-Control "public, max-age=86400"
-
+	# SPA 入口不启发式缓存，避免发版后引用已删除旧分包白屏；管理页维持 no-store
 	@spa_html {
 		not path /api/* /assets/* /pdfjs/* /favicon.svg {$PDFTR_ADMIN_PATH:/weandy} {$PDFTR_ADMIN_PATH:/weandy}/*
 	}

@@ -408,8 +408,7 @@ describe("PdfCanvas 像素预算、卸载归零与页级 cleanup 协调", () => 
           <PdfTextLayer doc={fake.doc} page={0} scale={1} />
         </>,
       );
-      await Promise.resolve();
-      await Promise.resolve();
+      await new Promise((r) => setTimeout(r, 0));
     });
 
     const canvasTask = fake.renderCalls[0]!;
@@ -418,24 +417,35 @@ describe("PdfCanvas 像素预算、卸载归零与页级 cleanup 协调", () => 
     // 画布先渲染完成，文字层仍在运行：绝不能提前 cleanup
     await act(async () => {
       canvasTask.resolve();
-      await Promise.resolve();
+      await new Promise((r) => setTimeout(r, 0));
     });
     expect(fake.cleanup).not.toHaveBeenCalled();
 
-    // 卸载 PdfCanvas 但保留 PdfTextLayer：仍不 cleanup
+    // 仅卸载 PdfCanvas、保持同一个 PdfTextLayer 挂载：仍不 cleanup
     await act(async () => {
-      root.render(<PdfTextLayer doc={fake.doc} page={0} scale={1} />);
-      await Promise.resolve();
-      await Promise.resolve();
+      root.render(
+        <>
+          {null}
+          <PdfTextLayer doc={fake.doc} page={0} scale={1} />
+        </>,
+      );
+      await new Promise((r) => setTimeout(r, 0));
     });
+    expect(textLayerMocks.instances).toHaveLength(1);
     expect(fake.cleanup).not.toHaveBeenCalled();
 
-    // 卸载 PdfTextLayer 后两者引用均归零：触发一次 page.cleanup
+    // 卸载 PdfTextLayer 时，若 TextLayer.render() 尚未结算，即使刷空全部微任务也绝不提前 cleanup
+    await act(async () => {
+      root.unmount();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(textLayer.cancel).toHaveBeenCalledTimes(1);
+    expect(fake.cleanup).not.toHaveBeenCalled();
+
+    // 等 TextLayer.render() 结算后，引用归零才触发一次 page.cleanup
     await act(async () => {
       textLayer.resolveRender();
-      root.unmount();
-      await Promise.resolve();
-      await Promise.resolve();
+      await new Promise((r) => setTimeout(r, 0));
     });
     expect(fake.cleanup).toHaveBeenCalledTimes(1);
   });

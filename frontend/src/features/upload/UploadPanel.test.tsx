@@ -261,4 +261,64 @@ describe("共享 MinerU 上传流程", () => {
     expect(vi.mocked(fpMod.fingerprint)).toHaveBeenCalledTimes(1);
     expect((vi.mocked(fpMod.fingerprint).mock.calls[0]?.[0] as File | undefined)?.name).toBe("fresh.pdf");
   });
+
+  it("组件卸载后立即中止多选 PDF 队列中尚未开始的计页检查", async () => {
+    const pdfMod = await import("@/shared/pdf/pdf");
+    const resolvers: Array<() => void> = [];
+    vi.mocked(pdfMod.countPages).mockImplementation(
+      () =>
+        new Promise<number>((resolve) => {
+          resolvers.push(() => resolve(4));
+        }),
+    );
+
+    const config: ServerConfig = {
+      version: "test",
+      default_base_url: "https://example.invalid",
+      default_model: "synthetic-model",
+      default_protocol: "openai",
+      admin_path: "/weandy",
+      server_has_llm_key: false,
+      server_has_parser_token: true,
+      server_has_paddle_token: false,
+      max_upload_mb: 50,
+      max_pages: 200,
+      retention_hours: 24,
+      submission_audit_enabled: false,
+      attributions: [],
+    };
+    client.setQueryData(["config"], config);
+    await act(async () =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <MemoryRouter>
+            <UploadPanel onCreated={onCreated} onBatchCreated={vi.fn()} onNeedSettings={vi.fn()} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      ),
+    );
+
+    const files = Array.from({ length: 5 }, (_, i) => new File(["x"], `leave-${i + 1}.pdf`, { type: "application/pdf" }));
+    await act(async () => {
+      const input = host.querySelector('input[type="file"]')!;
+      Object.defineProperty(input, "files", { configurable: true, value: files });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(resolvers).toHaveLength(2);
+
+    // 卸载后再结束前两个正在进行的 countPages，不应再启动第 3~5 个文件
+    await act(async () => {
+      root.unmount();
+    });
+    while (resolvers.length > 0) {
+      await act(async () => {
+        resolvers.shift()?.();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+    expect(vi.mocked(pdfMod.countPages)).toHaveBeenCalledTimes(2);
+  });
 });

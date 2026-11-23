@@ -101,6 +101,13 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
 
   const actions = useRef<HTMLDivElement>(null);
   const pickSeqRef = useRef(0);
+  useEffect(
+    () => () => {
+      // 组件卸载时作废未完成的计页与指纹检查，避免离开页面后继续读取剩余大文件
+      pickSeqRef.current += 1;
+    },
+    [],
+  );
   const ready = items.length > 0 && items.every((it) => it.pages !== null || it.error);
   const shown = ready && Boolean(estimate);
   useEffect(() => {

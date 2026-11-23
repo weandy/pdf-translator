@@ -435,7 +435,7 @@ export function PdfTextLayer({ doc, page, scale, highlight, onError }: TextLayer
       onErrorRef.current?.();
     };
 
-    void doc
+    const run = doc
       .getPage(page + 1)
       .then((p) => {
         if (!alive) return;
@@ -477,7 +477,10 @@ export function PdfTextLayer({ doc, page, scale, highlight, onError }: TextLayer
         }
       }
       container.replaceChildren();
-      usage.release();
+      // 等 getPage / TextLayer 渲染与取消链彻底结算后再释放页引用，避免提前触发 page.cleanup()
+      void run.finally(() => {
+        usage.release();
+      });
     };
   }, [doc, page]);
 
