@@ -1,5 +1,11 @@
 """论文标题选择与跨平台下载文件名，全部使用合成文本。"""
 
+import asyncio
+import os
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from urllib.parse import unquote
 
 import pytest
@@ -10,10 +16,11 @@ from pdftr.config import Settings
 from pdftr.container import build_container
 from pdftr.domain.document_name import MAX_DOWNLOAD_NAME_BYTES, download_filename, paper_title
 from pdftr.domain.geometry import Rect
-from pdftr.domain.ir import Block, BlockStyle, BlockType, DocMeta, Document, Page, Span
+from pdftr.domain.ir import Block, BlockStyle, BlockType, DocMeta, Document, Page, Segment, SegmentStatus, Span
 from pdftr.domain.job import Job, JobStatus
 from pdftr.fusion.build import _meta
 from pdftr.pipeline import usecases
+from pdftr.pipeline.secrets import Secrets
 from pdftr.storage.cache import SqliteTranslationCache
 from pdftr.storage.sqlite import SqliteStore
 
@@ -140,7 +147,9 @@ def test_long_unicode_title_keeps_valid_utf8_and_both_download_suffixes():
 def export_container(tmp_path, monkeypatch):
     container = build_container(Settings(data_dir=tmp_path, glossary_sources=""))
     pipeline = container.pipeline
-    pipeline.deps.store.save_job(Job(id="0123456789abcdef", filename="random_upload_id.pdf", status=JobStatus.DONE))
+    pipeline.deps.store.save_job(
+        Job(id="0123456789abcdef", filename="random_upload_id.pdf", status=JobStatus.DONE, stage="done")
+    )
     doc = Document(
         job_id="0123456789abcdef", pages=[page([block("A Synthetic Title", 0)])], meta=DocMeta(title="Old Title")
     )
@@ -203,9 +212,6 @@ def test_http_download_header_contains_safe_utf8_title_and_resumable_body(export
 
 
 def test_concurrent_exports_share_generation_and_cached_exports_bypass_local_slot(export_container, monkeypatch):
-    import asyncio
-    import threading
-
     container, _, _ = export_container
     pipeline = container.pipeline
     job_id = "0123456789abcdef"
@@ -244,9 +250,183 @@ def test_concurrent_exports_share_generation_and_cached_exports_bypass_local_slo
             release.set()
         result = await asyncio.wait_for(peer, 2)
         await asyncio.wait_for(local, 2)
-        assert result[1].read_bytes() == b"%PDF-synthetic-export"
+        assert result.path.read_bytes() == b"%PDF-synthetic-export"
         async with pipeline.local_slot():
             assert await asyncio.wait_for(usecases.prepare_export(pipeline, job_id, "mono"), 1) == result
-        assert calls == [result[1]]
+        assert calls == [result.path]
+
+    asyncio.run(run())
+
+
+def test_http_concurrent_exports_after_edit_use_distinct_snapshots(export_container, monkeypatch):
+    container, _, _ = export_container
+    pipeline = container.pipeline
+    job_id = "0123456789abcdef"
+    segment = Segment(
+        id="s1",
+        job_id=job_id,
+        block_ids=["b0"],
+        source="Original text.",
+        status=SegmentStatus.DONE,
+        target="First translation.",
+    )
+    pipeline.deps.store.replace_segments(job_id, [segment])
+    folder = pipeline.deps.artifacts.job_dir(job_id) / "exports"
+    folder.mkdir()
+    outdated = folder / "mono-right-outdated.pdf"
+    outdated.write_bytes(b"%PDF-outdated")
+    old_time = time.time() - 120
+    os.utime(outdated, (old_time, old_time))
+    first_started, second_looked_up, release = threading.Event(), threading.Event(), threading.Event()
+    rendered = {}
+    lookup = usecases._lookup_export
+
+    def observe_lookup(*args):
+        snapshot, cached = lookup(*args)
+        if snapshot.segments[0].target == "Second translation.":
+            second_looked_up.set()
+        return snapshot, cached
+
+    def render(original, background, doc, segments, *args, out):
+        target = segments[0].target
+        if target == "First translation.":
+            first_started.set()
+            assert release.wait(4)
+        payload = f"%PDF {target}".encode()
+        out.write_bytes(payload)
+        rendered[target] = out
+
+    monkeypatch.setattr(usecases, "_lookup_export", observe_lookup)
+    monkeypatch.setattr(usecases, "export_pdf_to_path", render)
+    url = f"/api/jobs/{job_id}/export/prepare"
+    with TestClient(create_app(container)) as client, ThreadPoolExecutor(max_workers=2) as threads:
+        first = threads.submit(client.post, url)
+        try:
+            assert first_started.wait(2)
+            edited = client.patch("/api/segments/s1", json={"target": "Second translation."})
+            assert edited.status_code == 200
+            second = threads.submit(client.post, url)
+            assert second_looked_up.wait(2)
+            assert not second.done()
+        finally:
+            release.set()
+        a, b = first.result(timeout=3), second.result(timeout=3)
+        assert a.status_code == b.status_code == 200
+        assert a.json()["size_bytes"] == len(b"%PDF First translation.")
+        assert b.json()["size_bytes"] == len(b"%PDF Second translation.")
+        download = client.get(b.json()["download_url"])
+        assert download.status_code == 200 and download.content == b"%PDF Second translation."
+    assert len(set(rendered.values())) == 2
+    assert all(path.is_file() for path in rendered.values())
+    assert not outdated.exists()
+
+
+def test_successful_export_survives_concurrent_retry_job(export_container, monkeypatch):
+    container, _, _ = export_container
+    pipeline = container.pipeline
+    job_id = "0123456789abcdef"
+    segment = Segment(id="s1", job_id=job_id, block_ids=["b0"], source="Original text.", status=SegmentStatus.FAILED)
+    pipeline.deps.store.replace_segments(job_id, [segment])
+    started, release = threading.Event(), threading.Event()
+
+    def render(*args, out):
+        started.set()
+        assert release.wait(3)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"%PDF completed export")
+
+    monkeypatch.setattr(usecases, "export_pdf_to_path", render)
+    monkeypatch.setattr(pipeline, "submit", lambda *_: None)
+
+    async def run():
+        export = asyncio.create_task(usecases.prepare_export(pipeline, job_id, "mono"))
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            job = usecases.retry_job(pipeline, job_id, Secrets("https://example.invalid", "synthetic-key", "model", ""))
+            assert job.status is JobStatus.QUEUED
+        finally:
+            release.set()
+        result = await asyncio.wait_for(export, 2)
+        assert result.size_bytes == len(b"%PDF completed export")
+
+    asyncio.run(run())
+
+
+def test_export_after_failure_generates_again_even_before_old_task_callback(export_container, monkeypatch):
+    container, _, _ = export_container
+    pipeline = container.pipeline
+    job_id = "0123456789abcdef"
+    snapshot, _ = usecases._lookup_export(pipeline, job_id, "mono", "right")
+    renders = []
+
+    def render(*args, out):
+        renders.append(out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"%PDF regenerated")
+
+    async def failed():
+        raise OSError("synthetic export failure")
+
+    async def run():
+        previous = asyncio.create_task(failed())
+        with pytest.raises(OSError, match="synthetic export failure"):
+            await previous
+        pipeline._exports[snapshot.path] = previous
+        result = await usecases.prepare_export(pipeline, job_id, "mono")
+        assert result.path.read_bytes() == b"%PDF regenerated"
+        assert renders == [snapshot.path]
+        assert not pipeline._exports
+
+    monkeypatch.setattr(usecases, "export_pdf_to_path", render)
+    asyncio.run(run())
+
+
+def test_pending_and_orphan_cleanup_defer_while_export_owns_artifacts(export_container, monkeypatch):
+    container, _, _ = export_container
+    pipeline = container.pipeline
+    store = pipeline.deps.store
+    job_id = "0123456789abcdef"
+    job = usecases.get_job(pipeline, job_id)
+    now = datetime.now(UTC)
+    job.expires_at = now - timedelta(hours=1)
+    store.save_job(job)
+    folder = pipeline.deps.artifacts.job_dir(job_id)
+    old = (now - timedelta(hours=48)).timestamp()
+    os.utime(folder, (old, old))
+    started, release = threading.Event(), threading.Event()
+
+    def render(*args, out):
+        started.set()
+        assert release.wait(4)
+        assert folder.exists()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"%PDF synthetic export")
+
+    monkeypatch.setattr(usecases, "export_pdf_to_path", render)
+
+    async def run():
+        export = asyncio.create_task(usecases.prepare_export(pipeline, job_id, "mono"))
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            assert pipeline.pending_work_count() == 1
+            assert not await pipeline.wait_all(0)
+            assert usecases.purge_expired(pipeline, 24, now) == 0
+            assert store.get_job(job_id) is not None and folder.exists()
+
+            # 模拟已有挂账的删除，分别验证孤儿扫描和待清理队列。
+            store.delete_job(job_id)
+            store.complete_artifact_cleanup(job_id)
+            assert usecases.purge_expired(pipeline, 24, now) == 0
+            assert not store.pending_artifact_cleanup() and folder.exists()
+            store.queue_artifact_cleanup(job_id)
+            assert usecases.purge_expired(pipeline, 24, now) == 0
+            assert store.pending_artifact_cleanup() == [job_id] and folder.exists()
+        finally:
+            release.set()
+        assert await pipeline.wait_all(2)
+        assert (await export).path.is_file()
+        assert pipeline.pending_work_count() == 0
+        assert usecases.purge_expired(pipeline, 24, now) == 0
+        assert not store.pending_artifact_cleanup() and not folder.exists()
 
     asyncio.run(run())

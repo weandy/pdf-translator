@@ -11,6 +11,9 @@ from pdftr.domain.submissions import SubmissionContext, SubmissionPage, Submissi
 
 
 class ArtifactStore(Protocol):
+    @property
+    def root(self) -> Path: ...
+
     def job_dir(self, job_id: str) -> Path: ...
 
     def remove(self, job_id: str) -> None: ...

@@ -6,10 +6,13 @@ from pathlib import Path
 import pymupdf
 import pytest
 
-from pdftr.domain.ir import BlockType
+from pdftr.domain.ir import BlockType, SegmentStatus
 from pdftr.extraction.chars import extract
 from pdftr.fusion.build import fuse
 from pdftr.parsing.mineru_normalize import normalize
+from pdftr.rendering.background import make_background
+from pdftr.rendering.export import export_pdf_to_path
+from pdftr.translation.segmenter import segment
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "mineru_layout_min.json"
 
@@ -157,6 +160,27 @@ def test_fuse_aligns_page_numbers_and_preserves_missing_page(tmp_path, indexes):
             assert doc.pages[index].blocks[0].spans[0].text.startswith(text)
         else:
             assert not doc.pages[index].blocks
+
+    if report.missing_layout_pages:
+        background, dual = tmp_path / "background.pdf", tmp_path / "dual.pdf"
+        segments = segment(doc)
+        assert len(segments) == 2
+        translated_ids = {block_id for item in segments for block_id in item.block_ids}
+        assert {block.page for block in doc.blocks() if block.id in translated_ids} == {0, 2}
+        for item in segments:
+            item.status = SegmentStatus.DONE
+            item.target = "Translated synthetic text."
+        make_background(path, (block for block in doc.blocks() if block.id in translated_ids), background)
+        with pymupdf.open(background) as bg:
+            assert bg.page_count == 3
+            assert "Bravo" in bg[1].get_text()
+            assert "Alpha" not in bg[0].get_text() and "Charlie" not in bg[2].get_text()
+        export_pdf_to_path(path, background, doc, segments, mode="dual", out=dual)
+        with pymupdf.open(dual) as exported:
+            assert [page.rect.width for page in exported] == [1200, 1202, 1204]
+            unchanged_text = exported[1].get_text()
+            assert isinstance(unchanged_text, str) and unchanged_text.count("Bravo") == 2
+            assert "Translated synthetic text." in exported[2].get_text()
 
 
 @pytest.mark.parametrize(("indexes", "message"), [([0, 0], "重复"), ([0, 2], "范围"), ([-1, 1], "范围")])

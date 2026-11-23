@@ -1,7 +1,8 @@
-"""同一个数据库的任务仓储与译文缓存共用连接参数和锁冲突处理。"""
+"""同一个数据库的任务仓储、译文缓存和管理员会话共用连接参数和锁冲突处理。"""
 
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
 from time import monotonic, sleep
@@ -12,8 +13,25 @@ _RETRY_DELAYS = (0.025, 0.05)
 
 def connect(path: Path) -> sqlite3.Connection:
     db = sqlite3.connect(path, timeout=BUSY_TIMEOUT_S, check_same_thread=False)
-    db.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_S * 1000}")
+    try:
+        db.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_S * 1000}")
+    except BaseException:
+        db.close()
+        raise
     return db
+
+
+@contextmanager
+def write_tx(db: sqlite3.Connection) -> Iterator[None]:
+    """显式结束失败的事务，重试时从干净的连接状态开始。"""
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        yield
+        db.commit()
+    except BaseException:
+        if db.in_transaction:
+            db.rollback()
+        raise
 
 
 def retry_busy[**P, T](operation: Callable[P, T]) -> Callable[P, T]:

@@ -32,7 +32,9 @@ def test_continuation_lines_move_to_placeholders():
 def test_continuations_use_true_neighbor_even_when_pages_are_reversed():
     layout = normalize(json.loads(FIXTURE.read_text(encoding="utf-8")))
     layout.pages.reverse()
-    _, report = relocate(layout)
+    moved, report = relocate(layout)
+    assert [page.index for page in moved.pages] == [0, 1]
+    assert [page.index for page in layout.pages] == [1, 0]
     assert report.links == {(0, 2): (0, 1), (1, 0): (0, 2)}
     assert report.moved_lines == 2
 

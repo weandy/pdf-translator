@@ -12,7 +12,7 @@ from pdftr.domain.ir import Revision, Segment, SegmentStatus
 from pdftr.domain.job import Job, JobStatus
 from pdftr.domain.stats import StatsOut
 from pdftr.domain.submissions import SubmissionContext, SubmissionPage, SubmissionSearch
-from pdftr.storage.connection import connect, retry_busy
+from pdftr.storage.connection import connect, retry_busy, write_tx
 from pdftr.storage.stats import SCHEMA as STATS_SCHEMA
 from pdftr.storage.stats import SqliteStats, utc_now
 from pdftr.storage.submissions import SCHEMA as SUBMISSIONS_SCHEMA
@@ -58,7 +58,7 @@ class SqliteStore:
         self._submission_audit_enabled = submission_audit_enabled
         try:
             self._initialize()
-        except Exception:
+        except BaseException:
             self._db.close()
             raise
 
@@ -67,14 +67,17 @@ class SqliteStore:
         self._db.execute("PRAGMA journal_mode=WAL")
         # 覆盖主库逻辑删除的单元格；WAL 和既有备份仍需独立的保留策略。
         self._db.execute("PRAGMA secure_delete=ON")
-        self._db.executescript(_SCHEMA + STATS_SCHEMA + SUBMISSIONS_SCHEMA)
-        ensure_submission_columns(self._db)
-        with self._db:
-            backfill_failure_details(self._db, utc_now())
         self._stats = SqliteStats(self._db)
         self._submissions = SqliteSubmissions(self._db)
-        with self._db:
-            self._stats.initialize(utc_now())
+        with self._lock, write_tx(self._db):
+            # 固定的建表语句逐条执行，避免 executescript 隐式提交。
+            for statement in (_SCHEMA + STATS_SCHEMA + SUBMISSIONS_SCHEMA).split(";"):
+                if statement.strip():
+                    self._db.execute(statement)
+            ensure_submission_columns(self._db)
+            now = utc_now()
+            backfill_failure_details(self._db, now)
+            self._stats.initialize(now)
 
     # ---- 任务 ----
     @retry_busy
@@ -82,7 +85,7 @@ class SqliteStore:
         """首次成功接收的任务、公开统计、可选账本必须原子提交。"""
         now = utc_now()
         job.updated_at = now
-        with self._lock, self._db:
+        with self._lock, write_tx(self._db):
             self._db.execute(
                 "INSERT INTO jobs (id, status, data, created_at) VALUES (?, ?, ?, ?)",
                 (job.id, job.status, job.model_dump_json(), job.created_at.isoformat()),
@@ -95,8 +98,7 @@ class SqliteStore:
     def save_job(self, job: Job) -> None:
         now = utc_now()
         job.updated_at = now
-        with self._lock, self._db:
-            self._db.execute("BEGIN IMMEDIATE")  # 同一快照里判定首次完成并更新任务
+        with self._lock, write_tx(self._db):
             completed = self._db.execute("SELECT completed FROM analytics_jobs WHERE job_id = ?", (job.id,)).fetchone()
             self._db.execute(
                 "INSERT OR REPLACE INTO jobs (id, status, data, created_at) VALUES (?, ?, ?, ?)",
@@ -110,7 +112,7 @@ class SqliteStore:
 
     @retry_busy
     def record_visit(self, event_id: str, visitor_id: str) -> None:
-        with self._lock, self._db:
+        with self._lock, write_tx(self._db):
             self._stats.visit(event_id, visitor_id, utc_now())
 
     @contextmanager
@@ -135,7 +137,7 @@ class SqliteStore:
     @retry_busy
     def update_submission_title(self, job_id: str, title: str) -> None:
         if self._submission_audit_enabled:
-            with self._lock, self._db:
+            with self._lock, write_tx(self._db):
                 self._submissions.update_title(job_id, title, utc_now())
 
     @retry_busy
@@ -143,8 +145,7 @@ class SqliteStore:
         """显式历史迁移入口；不自动运行，不修改原统计或猜测 IP、首次完成时间。"""
         if not self._submission_audit_enabled:
             return 0
-        with self._lock, self._db:
-            self._db.execute("BEGIN IMMEDIATE")
+        with self._lock, write_tx(self._db):
             now = utc_now()
             rows = self._db.execute("SELECT data FROM jobs").fetchall()
             inserted = 0
@@ -164,7 +165,7 @@ class SqliteStore:
 
     @retry_busy
     def delete_job(self, job_id: str) -> None:
-        with self._lock, self._db:
+        with self._lock, write_tx(self._db):
             self._queue_artifact_cleanup(job_id)
             self._db.execute("DELETE FROM segments WHERE job_id = ?", (job_id,))
             self._db.execute("DELETE FROM revisions WHERE job_id = ?", (job_id,))
@@ -178,7 +179,7 @@ class SqliteStore:
 
     @retry_busy
     def queue_artifact_cleanup(self, job_id: str) -> None:
-        with self._lock, self._db:
+        with self._lock, write_tx(self._db):
             self._queue_artifact_cleanup(job_id)
 
     @retry_busy
@@ -190,7 +191,7 @@ class SqliteStore:
 
     @retry_busy
     def complete_artifact_cleanup(self, job_id: str) -> None:
-        with self._lock, self._db:
+        with self._lock, write_tx(self._db):
             self._db.execute("DELETE FROM artifact_cleanup WHERE job_id = ?", (job_id,))
 
     @retry_busy
@@ -214,7 +215,7 @@ class SqliteStore:
     # ---- 段落 ----
     @retry_busy
     def replace_segments(self, job_id: str, segments: list[Segment]) -> None:
-        with self._lock, self._db:
+        with self._lock, write_tx(self._db):
             self._db.execute("DELETE FROM segments WHERE job_id = ?", (job_id,))
             self._db.executemany(
                 "INSERT INTO segments (id, job_id, idx, status, data) VALUES (?, ?, ?, ?, ?)",
@@ -223,7 +224,7 @@ class SqliteStore:
 
     @retry_busy
     def save_segments(self, segments: list[Segment]) -> None:
-        with self._lock, self._db:
+        with self._lock, write_tx(self._db):
             self._db.executemany(
                 "UPDATE segments SET status = ?, data = ? WHERE id = ?",
                 [(s.status, s.model_dump_json(), s.id) for s in segments],
@@ -252,7 +253,7 @@ class SqliteStore:
     # ---- 修改记录 ----
     @retry_busy
     def add_revision(self, rev: Revision) -> Revision:
-        with self._lock, self._db:
+        with self._lock, write_tx(self._db):
             cur = self._db.execute(
                 "INSERT INTO revisions (job_id, segment_id, data) VALUES (?, ?, '')", (rev.job_id, rev.segment_id)
             )
@@ -262,7 +263,7 @@ class SqliteStore:
 
     @retry_busy
     def save_revisions(self, revs: list[Revision]) -> None:
-        with self._lock, self._db:
+        with self._lock, write_tx(self._db):
             self._db.executemany(
                 "UPDATE revisions SET data = ? WHERE id = ?", [(r.model_dump_json(), r.id) for r in revs]
             )

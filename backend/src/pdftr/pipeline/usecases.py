@@ -40,7 +40,7 @@ from pdftr.extraction.outline import pdf_outline
 from pdftr.glossary.matcher import TermMatcher, combine
 from pdftr.glossary.user_import import ParsedGlossary, parse_upload
 from pdftr.pipeline.memory import release_memory
-from pdftr.pipeline.runner import Pipeline, chat_session, load_context, load_document
+from pdftr.pipeline.runner import ExportResult, Pipeline, chat_session, load_context, load_document
 from pdftr.pipeline.secrets import Secrets
 from pdftr.pipeline.workers import finish_on_cancel, run_thread
 from pdftr.rendering.background import crop_png
@@ -71,7 +71,6 @@ class Limits(BaseModel):
     max_pages: int
     max_active_jobs: int = 1_000_000
     min_free_disk_mb: int = 0
-    data_dir: Path = Path(".")
     retention_hours: int = 0  # 0 = 不自动删除
 
 
@@ -113,6 +112,7 @@ def create_job(
         raise UserError("只支持 PDF 文件")
     _validate_upload_options(options, secrets)
     _check_admission(pipeline, limits)
+    _check_upload_space(pipeline, limits)
     job = _persist_job(pipeline, data, filename, options, secrets, limits, submission_context)
     _submit_received_job(pipeline, job, secrets)
     return job
@@ -134,13 +134,30 @@ async def receive_upload(
     def stage_and_persist() -> Job:
         tmp: Path | None = None
         limit = limits.max_upload_mb * 1024 * 1024
-        size = 0
         try:
-            with tempfile.NamedTemporaryFile(dir=limits.data_dir, prefix=".upload-", suffix=".part", delete=False) as f:
+            root = _check_upload_space(pipeline, limits)
+            prefix = bytearray()
+            while len(prefix) < 4:
+                if cancelled.is_set():
+                    raise asyncio.CancelledError
+                chunk = upload.read(min(4 - len(prefix), limit - len(prefix) + 1))
+                if not chunk:
+                    raise UserError("只支持 PDF 文件")
+                prefix.extend(chunk)
+                if len(prefix) > limit:
+                    raise UserError(f"文件超过 {limits.max_upload_mb} MB")
+            if prefix != b"%PDF":
+                raise UserError("只支持 PDF 文件")
+            if cancelled.is_set():
+                raise asyncio.CancelledError
+
+            with tempfile.NamedTemporaryFile(dir=root, prefix=".upload-", suffix=".part", delete=False) as f:
                 tmp = Path(f.name)
+                size = len(prefix)
+                f.write(prefix)
                 while not cancelled.is_set():
                     chunk = upload.read(min(256 * 1024, limit - size + 1))
-                    if not chunk:
+                    if not chunk or cancelled.is_set():
                         break
                     size += len(chunk)
                     if size > limit:
@@ -166,6 +183,14 @@ async def receive_upload(
         pipeline.receiving -= 1
 
 
+def _check_upload_space(pipeline: Pipeline, limits: Limits) -> Path:
+    root = pipeline.deps.artifacts.root
+    root.mkdir(parents=True, exist_ok=True)
+    if shutil.disk_usage(root).free < limits.min_free_disk_mb * 1024 * 1024:
+        raise ServiceBusy("服务器存储空间不足，请稍后再试")
+    return root
+
+
 def _persist_job(
     pipeline: Pipeline,
     data: bytes | Path,
@@ -175,12 +200,6 @@ def _persist_job(
     limits: Limits,
     submission_context: SubmissionContext | None,
 ) -> Job:
-    if isinstance(data, Path):
-        with data.open("rb") as f:
-            if f.read(4) != b"%PDF":
-                raise UserError("只支持 PDF 文件")
-    if shutil.disk_usage(limits.data_dir).free < limits.min_free_disk_mb * 1024 * 1024:
-        raise ServiceBusy("服务器存储空间不足，请稍后再试")
     try:
         pages = page_count(data)
     except ValueError as e:
@@ -242,11 +261,11 @@ def delete_job(pipeline: Pipeline, job_id: str) -> None:
             raise UserError("任务进行中，结束后才能删除")
         get_job(pipeline, job_id)
         pipeline.deps.store.delete_job(job_id)
-        _cleanup_artifacts(pipeline, job_id)
+        _cleanup_artifacts_locked(pipeline, job_id)
 
 
-def _cleanup_artifacts(pipeline: Pipeline, job_id: str) -> bool:
-    if pipeline.is_running(job_id) or pipeline.deps.store.get_job(job_id) is not None:
+def _cleanup_artifacts_locked(pipeline: Pipeline, job_id: str) -> bool:
+    if pipeline.deps.store.get_job(job_id) is not None:
         return False
     try:
         pipeline.deps.artifacts.remove(job_id)
@@ -280,9 +299,14 @@ def purge_expired(pipeline: Pipeline, retention_hours: int, now: datetime | None
         cutoff = now - timedelta(hours=retention_hours)
         for job_id in pipeline.deps.artifacts.orphaned_jobs(known, cutoff):
             # 扫描和入队之间再次检查，保护同时接收或仍在写文件的任务。
-            if not pipeline.is_running(job_id) and store.get_job(job_id) is None:
-                store.queue_artifact_cleanup(job_id)
-    cleaned = sum(_cleanup_artifacts(pipeline, job_id) for job_id in store.pending_artifact_cleanup())
+            with pipeline.deletion_access(job_id) as allowed:
+                if allowed and store.get_job(job_id) is None:
+                    store.queue_artifact_cleanup(job_id)
+    cleaned = 0
+    for job_id in store.pending_artifact_cleanup():
+        with pipeline.deletion_access(job_id) as allowed:
+            if allowed and _cleanup_artifacts_locked(pipeline, job_id):
+                cleaned += 1
     cached = pipeline.deps.cache.purge_older_than(retention_hours) if retention_hours > 0 else 0
     if removed or cleaned or cached:
         store.checkpoint_after_purge()
@@ -316,42 +340,43 @@ def _export_snapshot(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Si
     return _Export(job, mode, side, segments, folder / f"{mode}-{side}-{digest}.pdf")
 
 
-def _export_result(doc: Document, export: _Export) -> tuple[str, Path]:
+def _export_result(doc: Document, export: _Export) -> ExportResult:
     title = paper_title(doc.pages, fallback=doc.meta.title)
-    return download_filename(title, export.job.filename, bilingual=export.mode == "dual"), export.path
+    filename = download_filename(title, export.job.filename, bilingual=export.mode == "dual")
+    return ExportResult(filename, export.path, export.path.stat().st_size)
 
 
-def _render_export(pipeline: Pipeline, export: _Export) -> tuple[str, Path]:
+def _render_export(pipeline: Pipeline, export: _Export) -> ExportResult:
     job_id, out = export.job.id, export.path
-    with pipeline.export_access(job_id) as allowed:
-        if not allowed:
-            raise NotFound("任务不存在")
-        # 排队等待名额时任务可能已删除或重试，先确认正式工件仍可用。
-        if get_job(pipeline, job_id).status is not JobStatus.DONE:
-            raise UserError("任务完成后才能下载")
-        deps = pipeline.deps
-        doc = load_document(deps, job_id)
-        if not out.exists():
-            try:
-                export_pdf_to_path(
-                    deps.artifacts.path(job_id, "original.pdf"), deps.artifacts.path(job_id, "background.pdf"),
-                    doc, export.segments, export.mode, deps.font_dir, export.side,
-                    _raw_links(pipeline, job_id, doc, export.segments), out=out,
-                )  # fmt: skip
-            finally:
-                release_memory()
+    # 等待本机名额期间，任务可能已重新进入翻译。
+    if get_job(pipeline, job_id).status is not JobStatus.DONE:
+        raise UserError("任务完成后才能下载")
+    deps = pipeline.deps
+    doc = load_document(deps, job_id)
+    if not out.exists():
+        try:
+            export_pdf_to_path(
+                deps.artifacts.path(job_id, "original.pdf"), deps.artifacts.path(job_id, "background.pdf"),
+                doc, export.segments, export.mode, deps.font_dir, export.side,
+                _raw_links(pipeline, job_id, doc, export.segments), out=out,
+            )  # fmt: skip
+        finally:
+            release_memory()
+        with suppress(UserError, NotFound, OSError):
             if _export_snapshot(pipeline, job_id, export.mode, export.side).path == out:
-                for old in out.parent.glob(f"{export.mode}-{export.side}-*.pdf"):
-                    if old != out:
-                        # Windows 上正在下载的文件可能仍打开，留给下一次生成或保留期清理。
-                        with suppress(PermissionError):
-                            old.unlink(missing_ok=True)
-        return _export_result(doc, export)
+                with pipeline.export_cleanup_access(job_id) as allowed:
+                    if allowed:
+                        cutoff = time.time() - 60
+                        for old in out.parent.glob(f"{export.mode}-{export.side}-*.pdf"):
+                            with suppress(OSError):
+                                if old != out and old.stat().st_mtime < cutoff:
+                                    old.unlink()
+    return _export_result(doc, export)
 
 
 def _lookup_export(
     pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side
-) -> tuple[_Export, tuple[str, Path] | None]:
+) -> tuple[_Export, ExportResult | None]:
     with pipeline.export_access(job_id) as allowed:
         if not allowed:
             raise NotFound("任务不存在")
@@ -363,14 +388,28 @@ def _lookup_export(
 def export_job(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "right") -> tuple[str, Path]:
     """兼容同步调用，按格式和译文快照复用磁盘缓存。"""
     export, cached = _lookup_export(pipeline, job_id, mode, side)
-    return cached if cached is not None else _render_export(pipeline, export)
+    if cached is not None:
+        return cached.filename, cached.path
+    with pipeline.export_access(job_id) as allowed:
+        if not allowed:
+            raise NotFound("任务不存在")
+        result = _render_export(pipeline, export)
+        return result.filename, result.path
 
 
-async def prepare_export(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "right") -> tuple[str, Path]:
+async def prepare_export(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "right") -> ExportResult:
     export, cached = await run_thread(_lookup_export, pipeline, job_id, mode, side)
     if cached is not None:
         return cached
-    return await pipeline.export_once(export.path, lambda: _render_export(pipeline, export))
+
+    async def render() -> ExportResult:
+        with pipeline.export_access(job_id) as allowed:
+            if not allowed:
+                raise NotFound("任务不存在")
+            async with pipeline.local_slot():
+                return await run_thread(_render_export, pipeline, export)
+
+    return await pipeline.export_once(export.path, render)
 
 
 def cancel_job(pipeline: Pipeline, job_id: str) -> Job:

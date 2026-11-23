@@ -8,12 +8,12 @@ import asyncio
 import json
 import logging
 import threading
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import NamedTuple, Protocol, runtime_checkable
 
 from pdftr.domain.document_name import paper_title
 from pdftr.domain.ir import BlockType, Document, PageKind, SegmentStatus
@@ -160,7 +160,16 @@ class Slots:
         for n, entry in enumerate(self._queue.values(), start=1):
             if entry is not None:
                 job, notify = entry
-                notify(job, self._waiting(n))
+                try:
+                    notify(job, self._waiting(n))
+                except Exception:
+                    log.exception("任务 %s 的排队进度通知失败", job.id)
+
+
+class ExportResult(NamedTuple):
+    filename: str
+    path: Path
+    size_bytes: int
 
 
 class Pipeline:
@@ -182,7 +191,7 @@ class Pipeline:
         self._artifact_guard = threading.Lock()
         self._exporting: dict[str, int] = {}
         self._deleting: set[str] = set()
-        self._exports: dict[Path, asyncio.Task[tuple[str, Path]]] = {}
+        self._exports: dict[Path, asyncio.Task[ExportResult]] = {}
 
     # ---- 调度 ----
     def submit(self, job: Job, secrets: Secrets) -> None:
@@ -209,16 +218,13 @@ class Pipeline:
         async with self._local.hold():
             yield
 
-    async def export_once(self, path: Path, generate: Callable[[], tuple[str, Path]]) -> tuple[str, Path]:
+    async def export_once(self, path: Path, render: Callable[[], Coroutine[None, None, ExportResult]]) -> ExportResult:
         task = self._exports.get(path)
-        if task is None:
+        if task is None or task.done():
 
-            async def render() -> tuple[str, Path]:
-                async with self.local_slot():
-                    return await run_thread(generate)
-
-            def finished(done: asyncio.Task[tuple[str, Path]]) -> None:
-                self._exports.pop(path, None)
+            def finished(done: asyncio.Task[ExportResult]) -> None:
+                if self._exports.get(path) is done:
+                    self._exports.pop(path, None)
                 if not done.cancelled():
                     done.exception()  # 超时或断开后可能已没有等待方
 
@@ -243,6 +249,12 @@ class Pipeline:
                         del self._exporting[job_id]
 
     @contextmanager
+    def export_cleanup_access(self, job_id: str) -> Iterator[bool]:
+        """清旧缓存时短暂独占工件，下载或快照读取中的文件留待后续清理。"""
+        with self._artifact_guard:
+            yield self._exporting.get(job_id) == 1
+
+    @contextmanager
     def deletion_access(self, job_id: str) -> Iterator[bool]:
         with self._artifact_guard:
             allowed = job_id not in self._deleting and job_id not in self._exporting and not self.is_running(job_id)
@@ -258,6 +270,10 @@ class Pipeline:
     def active_count(self) -> int:
         """排队中与执行中的任务数。"""
         return len(self._tasks)
+
+    def pending_work_count(self) -> int:
+        """停机时还需等待的流水线任务与导出。"""
+        return self.active_count() + sum(not task.done() for task in self._exports.values())
 
     def begin_mutation(self, job_id: str) -> bool:
         """占用一个任务的用户修改槽，避免两个请求同时覆盖段落或修改记录。"""
@@ -279,10 +295,11 @@ class Pipeline:
                 self.deps.store.save_job(job)
 
     async def wait_all(self, timeout: float | None = None) -> bool:
-        """等待进行中的任务完成；超时返回 False（剩下的任务在下次启动时标记为中断，可从断点重试）。"""
-        if not self._tasks:
+        """等待在途的翻译和导出，超时返回 False。"""
+        tasks = [*self._tasks.values(), *self._exports.values()]
+        if not tasks:
             return True
-        _, pending = await asyncio.wait(list(self._tasks.values()), timeout=timeout)
+        _, pending = await asyncio.wait(tasks, timeout=timeout)
         return not pending
 
     # ---- 执行 ----

@@ -1,17 +1,20 @@
 """提交接收、IR 断点与临时文件清理的集成边界，完全离线。"""
 
 import asyncio
+import io
 import os
 import sqlite3
+import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pymupdf
 import pytest
 
 from pdftr.domain.ir import DocMeta, Document
 from pdftr.domain.job import Job, JobOptions, JobStatus
-from pdftr.domain.layout import LayoutResult
+from pdftr.domain.layout import LayoutPage, LayoutResult
 from pdftr.domain.submissions import SubmissionContext, SubmissionSearch
 from pdftr.fusion.build import FusionReport
 from pdftr.pipeline import runner, usecases
@@ -54,20 +57,20 @@ def environment(tmp_path: Path):
     cache.close()
 
 
-def receive(pipeline: Pipeline, tmp_path: Path, **values) -> Job:
+def receive(pipeline: Pipeline, **values) -> Job:
     return usecases.create_job(
         pipeline,
         b"%PDF-synthetic",
         "synthetic.pdf",
         JobOptions(cloud_consent=True),
         SECRETS,
-        usecases.Limits(max_upload_mb=2, max_pages=10, data_dir=tmp_path),
+        usecases.Limits(max_upload_mb=2, max_pages=10),
         CONTEXT,
         **values,
     )
 
 
-def test_rejected_upload_never_creates_task_or_ledger(environment, tmp_path: Path):
+def test_rejected_upload_never_creates_task_or_ledger(environment):
     pipeline, store, _ = environment
     with pytest.raises(usecases.UserError):
         usecases.create_job(
@@ -76,13 +79,13 @@ def test_rejected_upload_never_creates_task_or_ledger(environment, tmp_path: Pat
             "synthetic.pdf",
             JobOptions(cloud_consent=True),
             SECRETS,
-            usecases.Limits(max_upload_mb=2, max_pages=10, data_dir=tmp_path),
+            usecases.Limits(max_upload_mb=2, max_pages=10),
             CONTEXT,
         )
     assert not store.all_jobs() and store.search_submissions(SubmissionSearch()).total == 0
 
 
-def test_database_failure_compensates_files_before_dispatch(environment, tmp_path: Path, monkeypatch):
+def test_database_failure_compensates_files_before_dispatch(environment, monkeypatch):
     pipeline, store, artifacts = environment
     monkeypatch.setattr(usecases, "page_count", lambda _: 2)
     dispatched = []
@@ -93,13 +96,13 @@ def test_database_failure_compensates_files_before_dispatch(environment, tmp_pat
 
     monkeypatch.setattr(store._submissions, "create", fail)
     with pytest.raises(sqlite3.IntegrityError):
-        receive(pipeline, tmp_path)
+        receive(pipeline)
     assert not store.all_jobs() and not dispatched
     assert not list(artifacts.root.iterdir())
     assert store._db.execute("SELECT COUNT(*) FROM analytics_jobs").fetchone()[0] == 0
 
 
-def test_failed_compensation_is_persisted_for_retry(environment, tmp_path: Path, monkeypatch):
+def test_failed_compensation_is_persisted_for_retry(environment, monkeypatch):
     pipeline, store, artifacts = environment
     monkeypatch.setattr(usecases, "page_count", lambda _: 2)
 
@@ -109,13 +112,13 @@ def test_failed_compensation_is_persisted_for_retry(environment, tmp_path: Path,
     monkeypatch.setattr(store._submissions, "create", fail)
     monkeypatch.setattr(artifacts, "remove", fail)
     with pytest.raises(OSError):
-        receive(pipeline, tmp_path)
+        receive(pipeline)
     pending = store.pending_artifact_cleanup()
     assert len(pending) == 1 and store.get_job(pending[0]) is None
     assert (artifacts.root / pending[0] / "original.pdf").exists()
 
 
-def test_dispatch_failure_returns_received_retryable_task(environment, tmp_path: Path, monkeypatch):
+def test_dispatch_failure_returns_received_retryable_task(environment, monkeypatch):
     pipeline, store, _ = environment
     monkeypatch.setattr(usecases, "page_count", lambda _: 2)
 
@@ -123,7 +126,7 @@ def test_dispatch_failure_returns_received_retryable_task(environment, tmp_path:
         raise RuntimeError("synthetic scheduler failure")
 
     monkeypatch.setattr(pipeline, "submit", fail)
-    current = receive(pipeline, tmp_path)
+    current = receive(pipeline)
     assert current.status is JobStatus.FAILED and "重试" in current.error
     assert store.get_job(current.id).status is JobStatus.FAILED
     record = store.search_submissions(SubmissionSearch()).items[0]
@@ -224,11 +227,8 @@ def test_remove_validates_workspace_and_does_not_create_missing_dir(tmp_path: Pa
     assert outside.exists()
 
 
-def test_upload_offloads_validation_and_dispatches_only_on_loop(environment, tmp_path, monkeypatch):
-    import io
-    import threading
-
-    pipeline, store, _ = environment
+def test_upload_offloads_validation_and_dispatches_only_on_loop(environment, monkeypatch):
+    pipeline, store, artifacts = environment
     reached, release = threading.Event(), threading.Event()
     submitted = []
 
@@ -246,7 +246,7 @@ def test_upload_offloads_validation_and_dispatches_only_on_loop(environment, tmp
     monkeypatch.setattr(pipeline, "submit", submit)
 
     async def run():
-        limits = usecases.Limits(max_upload_mb=1, max_pages=10, max_active_jobs=1, data_dir=tmp_path)
+        limits = usecases.Limits(max_upload_mb=1, max_pages=10, max_active_jobs=1)
         first = asyncio.create_task(
             usecases.receive_upload(
                 pipeline,
@@ -275,12 +275,10 @@ def test_upload_offloads_validation_and_dispatches_only_on_loop(environment, tmp
     asyncio.run(run())
     assert submitted == [job.id for job in store.all_jobs()]
     assert len(submitted) == 1
-    assert not list(tmp_path.glob(".upload-*.part"))
+    assert not list(artifacts.root.glob(".upload-*.part"))
 
 
-def test_upload_enforces_size_with_bounded_reads_and_removes_temp(environment, tmp_path, monkeypatch):
-    import io
-
+def test_upload_enforces_size_with_bounded_reads_and_removes_temp(environment, monkeypatch):
     pipeline, store, artifacts = environment
 
     class Upload(io.BytesIO):
@@ -297,16 +295,14 @@ def test_upload_enforces_size_with_bounded_reads_and_removes_temp(environment, t
                 "synthetic.pdf",
                 JobOptions(cloud_consent=True),
                 SECRETS,
-                usecases.Limits(max_upload_mb=1, max_pages=10, data_dir=tmp_path),
+                usecases.Limits(max_upload_mb=1, max_pages=10),
             )
         )
-    assert not store.all_jobs() and not artifacts.root.exists()
-    assert not list(tmp_path.glob(".upload-*.part"))
+    assert not store.all_jobs() and not list(artifacts.root.iterdir())
+    assert not list(artifacts.root.glob(".upload-*.part"))
 
 
 def test_cancelled_render_holds_local_slot_and_blocks_delete_until_thread_exits(environment, monkeypatch):
-    import threading
-
     pipeline, store, artifacts = environment
     current = Job(id="0000000000000001", filename="synthetic.pdf", stage="render")
     store.create_job(current, CONTEXT)
@@ -468,3 +464,94 @@ def test_chat_clients_are_closed_on_success_error_and_cancel(environment, monkey
         assert len(clients) == 6 and clients[5].closed
 
     asyncio.run(run())
+
+
+def test_receive_cancels_staging_read_and_removes_same_volume_part(environment, monkeypatch):
+    pipeline, store, artifacts = environment
+    reading, release = threading.Event(), threading.Event()
+
+    class Upload(io.BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            assert size is not None
+            # 魔数分两次读取，正文开始时临时文件已经位于工件根目录。
+            if self.tell() >= 4:
+                reading.set()
+                assert release.wait(3)
+            return super().read(min(size, 2))
+
+    monkeypatch.setattr(usecases, "page_count", lambda _: unexpected())
+
+    async def run():
+        task = asyncio.create_task(
+            usecases.receive_upload(
+                pipeline,
+                Upload(b"%PDF-synthetic"),
+                "synthetic.pdf",
+                JobOptions(cloud_consent=True),
+                SECRETS,
+                usecases.Limits(max_upload_mb=1, max_pages=10),
+            )
+        )
+        try:
+            assert await asyncio.to_thread(reading.wait, 2)
+            assert len(list(artifacts.root.glob(".upload-*.part"))) == 1
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+
+    asyncio.run(run())
+    assert not store.all_jobs() and not list(artifacts.root.iterdir())
+    assert pipeline.receiving == 0
+
+
+def test_fuse_reports_invalid_layout_as_stage_error(environment):
+    pipeline, store, artifacts = environment
+    job = Job(id="0000000000000001", filename="synthetic.pdf")
+    store.create_job(job)
+    with pymupdf.open() as pdf:
+        pdf.new_page()
+        pdf.save(artifacts.path(job.id, "original.pdf"))
+    layout = LayoutResult(parser="synthetic", pages=[LayoutPage(index=1, width=600, height=800, blocks=[])])
+    artifacts.path(job.id, "layout.json").write_text(layout.model_dump_json(), "utf-8")
+    with pytest.raises(runner.StageError, match="范围"):
+        asyncio.run(pipeline._fuse(job, SECRETS))
+    assert not artifacts.path(job.id, "ir.json").exists()
+
+
+def test_waiting_notification_failure_does_not_replace_cancellation(caplog):
+    async def run():
+        slots = runner.Slots(1, str)
+        first = Job(id="first", filename="first.pdf")
+        second = Job(id="second", filename="second.pdf")
+        third = Job(id="third", filename="third.pdf")
+        broken = False
+        last_updated = asyncio.Event()
+
+        def notify(job, position):
+            if job is second and broken:
+                raise RuntimeError("synthetic notification failure")
+            if job is third and position == "2":
+                last_updated.set()
+
+        async def wait(job):
+            async with slots.hold(job, notify):
+                pass
+
+        async with slots.hold():
+            cancelled = asyncio.create_task(wait(first))
+            pending = asyncio.create_task(wait(second))
+            follower = asyncio.create_task(wait(third))
+            await asyncio.sleep(0)
+            broken = True
+            cancelled.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await cancelled
+            assert last_updated.is_set()
+        await asyncio.wait_for(asyncio.gather(pending, follower), 2)
+
+    asyncio.run(run())
+    assert "second" in caplog.text

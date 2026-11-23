@@ -5,7 +5,7 @@
 
 import asyncio
 from collections.abc import AsyncIterator
-from pathlib import Path
+from contextlib import ExitStack
 from typing import Annotated, Literal
 from urllib.parse import quote
 
@@ -19,7 +19,7 @@ from pdftr.api.schemas import DocumentOut, ExportPrepareOut, JobOut, Retranslate
 from pdftr.domain.job import JobOptions, JobStatus
 from pdftr.domain.submissions import NOTICE_VERSION, SubmissionContext
 from pdftr.pipeline import usecases
-from pdftr.pipeline.runner import Pipeline
+from pdftr.pipeline.runner import ExportResult, Pipeline
 from pdftr.pipeline.secrets import Secrets
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -46,7 +46,6 @@ async def create_job(
         max_pages=settings.max_pages,
         max_active_jobs=settings.max_concurrent_jobs + settings.max_queued_jobs,
         min_free_disk_mb=settings.min_free_disk_mb,
-        data_dir=settings.data_dir,
         retention_hours=settings.retention_hours,
     )
     context = None
@@ -118,9 +117,15 @@ def get_file(job_id: str, name: Literal["original.pdf", "background.pdf"], p: Pi
 EXPORT_TIMEOUT_S = 300
 
 
+async def _download_access() -> AsyncIterator[ExitStack]:
+    # 默认请求作用域覆盖文件响应的发送阶段，响应结束或断开后才释放工件保护。
+    with ExitStack() as access:
+        yield access
+
+
 async def _export_with_timeout(
     p: Pipeline, job_id: str, mode: Literal["mono", "dual"], side: Literal["left", "right"]
-) -> tuple[str, Path]:
+) -> ExportResult:
     try:
         async with asyncio.timeout(EXPORT_TIMEOUT_S):
             return await usecases.prepare_export(p, job_id, mode, side)
@@ -132,10 +137,13 @@ async def _export_with_timeout(
 async def export_job(
     job_id: str,
     p: PipelineDep,
+    access: Annotated[ExitStack, Depends(_download_access)],
     mode: Literal["mono", "dual"] = "mono",
     side: Literal["left", "right"] = "right",  # 双语对照时译文放在左边还是右边
 ) -> Response:
-    filename, path = await _export_with_timeout(p, job_id, mode, side)
+    filename, path, _ = await _export_with_timeout(p, job_id, mode, side)
+    if not access.enter_context(p.export_access(job_id)) or not path.is_file():
+        raise usecases.NotFound("导出文件尚未生成")
     disposition = f"attachment; filename=\"translated.pdf\"; filename*=UTF-8''{quote(filename)}"
     # 文件响应支持 HTTP Range：浏览器下载中断后可以续传
     return FileResponse(path, media_type="application/pdf", headers={"Content-Disposition": disposition})
@@ -149,12 +157,12 @@ async def prepare_export(
     side: Literal["left", "right"] = "right",
 ) -> ExportPrepareOut:
     """先生成或命中导出缓存，再让前端启动可见的浏览器下载。"""
-    filename, path = await _export_with_timeout(p, job_id, mode, side)
+    result = await _export_with_timeout(p, job_id, mode, side)
     query = f"mode={mode}&side={side}"
     return ExportPrepareOut(
-        filename=filename,
+        filename=result.filename,
         download_url=f"/api/jobs/{job_id}/export?{query}",
-        size_bytes=path.stat().st_size,
+        size_bytes=result.size_bytes,
     )
 
 

@@ -3,7 +3,7 @@
 import threading
 from pathlib import Path
 
-from pdftr.storage.connection import connect, retry_busy
+from pdftr.storage.connection import connect, retry_busy, write_tx
 
 
 class SqliteTranslationCache:
@@ -13,7 +13,7 @@ class SqliteTranslationCache:
         self._db = connect(path)
         try:
             self._initialize()
-        except Exception:
+        except BaseException:
             self._db.close()
             raise
 
@@ -22,7 +22,7 @@ class SqliteTranslationCache:
         self._db.execute("PRAGMA journal_mode=WAL")
         # 缓存含论文原文/译文，保留期删除也应覆盖主库中释放的单元格。
         self._db.execute("PRAGMA secure_delete=ON")
-        with self._db:
+        with self._lock, write_tx(self._db):
             self._db.execute(
                 "CREATE TABLE IF NOT EXISTS translation_cache ("
                 " key TEXT PRIMARY KEY, target TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
@@ -36,13 +36,13 @@ class SqliteTranslationCache:
 
     @retry_busy
     def put(self, key: str, target: str) -> None:
-        with self._lock, self._db:
+        with self._lock, write_tx(self._db):
             self._db.execute("INSERT OR REPLACE INTO translation_cache (key, target) VALUES (?, ?)", (key, target))
 
     @retry_busy
     def purge_older_than(self, hours: int) -> int:
         """删除超过保留期的译文（其中含有用户文档内容），返回删除条数。"""
-        with self._lock, self._db:
+        with self._lock, write_tx(self._db):
             n = self._db.execute(
                 "DELETE FROM translation_cache WHERE created_at < datetime('now', ?)", (f"-{hours} hours",)
             ).rowcount

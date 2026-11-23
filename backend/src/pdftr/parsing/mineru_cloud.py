@@ -29,6 +29,19 @@ MAX_LAYOUT_BYTES = 64 * 1024 * 1024
 log = logging.getLogger(__name__)
 
 
+async def _join_task[T](task: asyncio.Task[T]) -> None:
+    """等子任务释放文件后再向上传递回收期间收到的取消。"""
+    joined = asyncio.gather(task, return_exceptions=True)
+    re_cancelled = False
+    while not joined.done():
+        try:
+            await asyncio.shield(joined)
+        except asyncio.CancelledError:
+            re_cancelled = True
+    if re_cancelled:
+        raise asyncio.CancelledError
+
+
 class MinerUCloudParser:
     name = "mineru-cloud"
     is_cloud = True
@@ -116,6 +129,13 @@ class MinerUCloudParser:
                         try:
                             async with client.stream("GET", url, headers={"Accept-Encoding": "identity"}) as response:
                                 _check(response, "下载解析结果", read_json=False)
+                                content_length = response.headers.get("Content-Length", "")
+                                if (
+                                    content_length.isascii()
+                                    and content_length.isdecimal()
+                                    and int(content_length) > MAX_ARCHIVE_BYTES
+                                ):
+                                    raise ParseError("MinerU 解析结果 ZIP 超过大小上限")
                                 size = 0
                                 async for chunk in response.aiter_bytes(UPLOAD_CHUNK):
                                     size += len(chunk)
@@ -130,7 +150,12 @@ class MinerUCloudParser:
                             f.truncate()
                             log.warning("下载 MinerU 结果出错（%s），%.0f 秒后重试", type(e).__name__, delay)
                             await asyncio.sleep(delay)
-            result = normalize(_read_layout(tmp))
+            worker = asyncio.create_task(asyncio.to_thread(_normalize_archive, tmp))
+            try:
+                result = await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                await _join_task(worker)
+                raise
             if raw_dir is not None:
                 tmp.replace(raw_dir / "mineru.zip")
             return result
@@ -246,7 +271,7 @@ class MinerUCloudParser:
         for n, delay in enumerate((*self._retry_delays, None), start=1):
             remaining = self._remaining(deadline_at)
             if remaining <= 0:
-                raise ParseError("上传到 MinerU 云端超过 5 分钟，正在自动重试", retryable=True)
+                raise ParseError("上传到 MinerU 云端超过本次解析总时限，请稍后重试", retryable=True)
             sent, start = 0, time.monotonic()
             last = start
 
@@ -264,11 +289,13 @@ class MinerUCloudParser:
                         task = asyncio.create_task(client.request("PUT", url, content=stream, headers=headers))
                         try:
                             while True:
-                                done, _ = await asyncio.wait({task}, timeout=min(1.0, remaining))
+                                done, _ = await asyncio.wait({task}, timeout=min(1.0, remaining, self._stall_timeout))
                                 if done:
                                     return task.result()
                                 now = time.monotonic()
-                                if now >= (deadline_at or float("inf")) or now - last > self._stall_timeout:
+                                if deadline_at is not None and now >= deadline_at:
+                                    raise ParseError("上传到 MinerU 云端超过本次解析总时限，请稍后重试", retryable=True)
+                                if now - last >= self._stall_timeout:
                                     raise TimeoutError
                                 retry = f"（第 {n}/{attempts} 次尝试）" if n > 1 else ""
                                 on_progress(upload_status(sent, size, now - start) + retry, sent / max(1, size))
@@ -277,12 +304,17 @@ class MinerUCloudParser:
                             if not task.done():
                                 task.cancel()
                             # 回收内部请求后才能关闭文件或开始重传。
-                            await asyncio.gather(task, return_exceptions=True)
+                            await _join_task(task)
             except (httpx2.TransportError, TimeoutError) as e:
                 if delay is None:
+                    reason = (
+                        f"网络连续 {self._stall_timeout:g} 秒没有进展"
+                        if isinstance(e, TimeoutError)
+                        else "网络连接中断"
+                    )
                     raise ParseError(
-                        f"上传到 MinerU 云端失败：网络连续 {self._stall_timeout:.0f} 秒没有进展，"
-                        "请稍后重试；服务器到国内线路较差时可配置 PDFTR_MINERU_PROXY",
+                        f"上传到 MinerU 云端失败：{reason}，请稍后重试；"
+                        "服务器到国内线路较差时可配置 PDFTR_MINERU_PROXY",
                         retryable=True,
                     ) from e
                 log.warning("上传到 MinerU 卡住或出错（%s），%.0f 秒后重传", type(e).__name__, delay)
@@ -352,6 +384,10 @@ def _check(r: httpx2.Response, action: str, *, read_json: bool = True) -> dict:
     if isinstance(body, dict) and body.get("code", 0) != 0:
         raise ParseError(f"MinerU {action}失败：{body.get('msg') or body}")
     return body
+
+
+def _normalize_archive(archive: Path) -> LayoutResult:
+    return normalize(_read_layout(archive))
 
 
 def _read_layout(archive: Path) -> dict:

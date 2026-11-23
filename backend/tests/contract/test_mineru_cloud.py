@@ -2,8 +2,10 @@
 
 import asyncio
 import io
+import threading
 import zipfile
 from pathlib import Path
+from time import monotonic
 
 import httpx2
 import pytest
@@ -275,3 +277,196 @@ def test_streamed_zip_enforces_layout_limit_and_cleans_up(tmp_path, monkeypatch)
     with pytest.raises(ParseError, match=r"layout\.json.*超过"):
         asyncio.run(parser.parse(pdf, raw_dir=raw))
     assert not list(raw.iterdir())
+
+
+def test_upload_waits_for_put_cleanup_even_after_second_cancel(tmp_path, monkeypatch):
+    pdf = tmp_path / "upload.pdf"
+    pdf.write_bytes(b"%PDF-synthetic")
+
+    async def run():
+        started, cleaning, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        cleanup_complete = False
+
+        async def put(method, url, *, content, headers):
+            nonlocal cleanup_complete
+            assert await anext(content) == b"%PDF-synthetic"
+            started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                cleaning.set()
+                await finish.wait()
+                cleanup_complete = True
+
+        async with httpx2.AsyncClient() as client:
+            monkeypatch.setattr(client, "request", put)
+            parser = MinerUCloudParser("tok")
+            upload = asyncio.create_task(parser._upload(client, UPLOAD, pdf, lambda message, fraction=None: None))
+            try:
+                await asyncio.wait_for(started.wait(), 1)
+                upload.cancel()
+                await asyncio.wait_for(cleaning.wait(), 1)
+                upload.cancel()
+                for _ in range(3):
+                    await asyncio.sleep(0)
+                assert not upload.done()
+            finally:
+                finish.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(upload, 1)
+            assert cleanup_complete
+        pdf.unlink()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(("deadline_delta", "reason"), [(0.02, "总时限"), (10.0, "没有进展")])
+def test_upload_distinguishes_total_timeout_and_stalled_transfer(tmp_path, monkeypatch, deadline_delta, reason):
+    pdf = tmp_path / "upload.pdf"
+    pdf.write_bytes(b"%PDF-synthetic")
+
+    async def stall(*args, **kwargs):
+        await asyncio.Future()
+
+    async def run():
+        async with httpx2.AsyncClient() as client:
+            monkeypatch.setattr(client, "request", stall)
+            parser = MinerUCloudParser("tok", retry_delays=(), stall_timeout=0.05)
+            with pytest.raises(ParseError, match=reason) as exc:
+                await parser._upload(
+                    client, UPLOAD, pdf, lambda message, fraction=None: None, deadline_at=monotonic() + deadline_delta
+                )
+            assert exc.value.retryable
+
+    asyncio.run(run())
+
+
+async def _download_with(handler, raw, *, delays=()):
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+        parser = MinerUCloudParser("tok", retry_delays=delays)
+        return await parser._download(client, ZIP, raw, monotonic() + 10)
+
+
+@pytest.mark.parametrize("advertised", ["65", "1", "invalid"])
+def test_download_caps_archive_from_header_and_stream(tmp_path, monkeypatch, advertised):
+    from pdftr.parsing import mineru_cloud
+
+    monkeypatch.setattr(mineru_cloud, "MAX_ARCHIVE_BYTES", 64)
+    reads = []
+
+    class Oversized(httpx2.AsyncByteStream):
+        async def __aiter__(self):
+            reads.append(True)
+            yield b"x" * 65
+
+    def handler(request):
+        return httpx2.Response(200, headers={"Content-Length": advertised}, stream=Oversized())
+
+    with pytest.raises(ParseError, match="ZIP 超过大小上限"):
+        asyncio.run(_download_with(handler, tmp_path))
+    assert reads == ([] if advertised == "65" else [True])
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    ("entries", "message"),
+    [(None, "ZIP 或 layout"), ({"other.json": "{}"}, "缺少 layout.json")],
+)
+def test_download_rejects_invalid_or_missing_layout_zip(tmp_path, entries, message):
+    data = io.BytesIO()
+    if entries is None:
+        data.write(b"synthetic invalid archive")
+    else:
+        with zipfile.ZipFile(data, "w") as archive:
+            for name, value in entries.items():
+                archive.writestr(name, value)
+    with pytest.raises(ParseError, match=message):
+        asyncio.run(_download_with(lambda _: httpx2.Response(200, content=data.getvalue()), tmp_path))
+    assert not list(tmp_path.iterdir())
+
+
+def test_download_checks_actual_layout_size_despite_small_zip_metadata(tmp_path, monkeypatch):
+    from pdftr.parsing import mineru_cloud
+
+    # 模拟条目声明很小但读取超限，仅用几十字节触发运行时保护。
+    monkeypatch.setattr(mineru_cloud, "MAX_LAYOUT_BYTES", 32)
+    payload = _zip()
+    infolist = zipfile.ZipFile.infolist
+
+    def understated_info(archive):
+        for info in infolist(archive):
+            if info.filename.endswith("layout.json"):
+                info.file_size = 1
+        return infolist(archive)
+
+    def oversized_entry(archive, info):
+        assert info.file_size == 1
+        return io.BytesIO(b"x" * 33)
+
+    monkeypatch.setattr(zipfile.ZipFile, "infolist", understated_info)
+    monkeypatch.setattr(zipfile.ZipFile, "open", oversized_entry)
+    with pytest.raises(ParseError, match="解压后超过"):
+        asyncio.run(_download_with(lambda _: httpx2.Response(200, content=payload), tmp_path))
+    assert not list(tmp_path.iterdir())
+
+
+def test_download_truncates_partial_archive_before_retry(tmp_path, monkeypatch):
+    from pdftr.parsing import mineru_cloud
+
+    payload = _zip()
+    monkeypatch.setattr(mineru_cloud, "UPLOAD_CHUNK", 32)
+    calls = []
+
+    class Interrupted(httpx2.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"x" * (len(payload) + 256)
+            raise httpx2.ReadError("synthetic interruption")
+
+    def handler(request):
+        calls.append(request.method)
+        if len(calls) == 1:
+            return httpx2.Response(200, stream=Interrupted())
+        return httpx2.Response(200, content=payload)
+
+    result = asyncio.run(_download_with(handler, tmp_path, delays=(0,)))
+    assert len(result.pages) == 2 and calls == ["GET", "GET"]
+    assert (tmp_path / "mineru.zip").read_bytes() == payload
+    assert not list(tmp_path.glob("*.part"))
+
+
+def test_cancelled_download_keeps_zip_until_normalization_thread_exits(tmp_path, monkeypatch):
+    from pdftr.parsing import mineru_cloud
+
+    path = None
+    reading, release = threading.Event(), threading.Event()
+    read_layout = mineru_cloud._read_layout
+    payload = _zip()
+
+    def read(archive):
+        nonlocal path
+        path = archive
+        with archive.open("rb") as source:
+            reading.set()
+            assert release.wait(2)
+            assert source.read(2) == b"PK"
+        return read_layout(archive)
+
+    monkeypatch.setattr(mineru_cloud, "_read_layout", read)
+
+    async def run():
+        download = asyncio.create_task(_download_with(lambda _: httpx2.Response(200, content=payload), tmp_path))
+        try:
+            assert await asyncio.to_thread(reading.wait, 1)
+            download.cancel()
+            await asyncio.sleep(0)
+            download.cancel()
+            await asyncio.sleep(0)
+            assert not download.done()
+            assert path is not None and path.exists()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(download, 2)
+
+    asyncio.run(run())
+    assert not list(tmp_path.iterdir())

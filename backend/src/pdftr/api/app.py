@@ -59,10 +59,9 @@ def create_app(container: Container | None = None) -> FastAPI:
         housekeeping.cancel()
         warmup.cancel()
         # 部署新版本时先让进行中的任务跑完，避免用户的翻译被中途打断
-        if c.pipeline.active_count():
-            log.info(
-                "等待 %d 个进行中的任务完成（最多 %.0f 秒）", c.pipeline.active_count(), c.settings.shutdown_grace_s
-            )
+        pending = c.pipeline.pending_work_count()
+        if pending:
+            log.info("等待 %d 项翻译与导出工作完成（最多 %.0f 秒）", pending, c.settings.shutdown_grace_s)
             if not await c.pipeline.wait_all(c.settings.shutdown_grace_s):
                 log.warning("仍有任务未完成，服务停止后可从断点重试")
 

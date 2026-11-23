@@ -1,28 +1,37 @@
 """管理员会话独立连接现有 app.db，仅持久化随机 Token 的摘要。"""
 
-import sqlite3
 import threading
 from datetime import datetime
 from pathlib import Path
 
 from pdftr.domain.admin import AdminSession
+from pdftr.storage.connection import connect, retry_busy, write_tx
 
 
 class SqliteAdminSessionStore:
     def __init__(self, path: Path) -> None:
         self._lock = threading.Lock()
-        self._db = sqlite3.connect(path, check_same_thread=False, timeout=10)
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.executescript(
-            "CREATE TABLE IF NOT EXISTS admin_sessions ("
-            "token_hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, "
-            "password_version TEXT NOT NULL);"
-            "CREATE INDEX IF NOT EXISTS admin_sessions_expires ON admin_sessions(expires_at);"
-        )
-        self._db.commit()
+        self._db = connect(path)
+        try:
+            self._initialize()
+        except BaseException:
+            self._db.close()
+            raise
 
+    @retry_busy
+    def _initialize(self) -> None:
+        self._db.execute("PRAGMA journal_mode=WAL")
+        with self._lock, write_tx(self._db):
+            self._db.execute(
+                "CREATE TABLE IF NOT EXISTS admin_sessions ("
+                "token_hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, "
+                "password_version TEXT NOT NULL)"
+            )
+            self._db.execute("CREATE INDEX IF NOT EXISTS admin_sessions_expires ON admin_sessions(expires_at)")
+
+    @retry_busy
     def save(self, session: AdminSession) -> None:
-        with self._lock, self._db:
+        with self._lock, write_tx(self._db):
             self._db.execute(
                 "INSERT INTO admin_sessions (token_hash, created_at, expires_at, password_version) VALUES (?, ?, ?, ?)",
                 (
@@ -33,6 +42,7 @@ class SqliteAdminSessionStore:
                 ),
             )
 
+    @retry_busy
     def get(self, token_hash: str) -> AdminSession | None:
         with self._lock:
             row = self._db.execute(
@@ -45,12 +55,14 @@ class SqliteAdminSessionStore:
             else None
         )
 
+    @retry_busy
     def delete(self, token_hash: str) -> None:
-        with self._lock, self._db:
+        with self._lock, write_tx(self._db):
             self._db.execute("DELETE FROM admin_sessions WHERE token_hash = ?", (token_hash,))
 
+    @retry_busy
     def purge(self, now: datetime, password_version: str) -> None:
-        with self._lock, self._db:
+        with self._lock, write_tx(self._db):
             self._db.execute(
                 "DELETE FROM admin_sessions WHERE expires_at <= ? OR password_version != ?",
                 (now.isoformat(), password_version),

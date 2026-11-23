@@ -30,6 +30,7 @@ def relocate(layout: LayoutResult) -> tuple[LayoutResult, RelocationReport]:
     result = layout.model_copy(deep=True)
     report = RelocationReport()
     pages = sorted(result.pages, key=lambda page: page.index)
+    result.pages = pages
     by_index = {page.index: page for page in pages}
     for page in pages:
         pi = page.index
