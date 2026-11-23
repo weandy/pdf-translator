@@ -555,6 +555,7 @@ def test_quality_faults_reject_cache_and_model_output(source, bad, good, reason)
     [
         ("Transformer (big)", "Transformer (big)"),
         ("Analysis of Results for the Proposed Models", "Analysis of Results for the Proposed Models"),
+        ("The Effect of Learning Rate on Model Performance", "The Effect of Learning Rate on Model Performance"),
         ("BLEU 28.3 / ROUGE 82.0", "BLEU 28.3 / ROUGE 82.0"),
         ("Let <m1/> be the input and <m2/> the output.", "令<m1/>为输入，<m2/>为输出。"),
         (

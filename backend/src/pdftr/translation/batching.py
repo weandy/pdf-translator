@@ -153,9 +153,10 @@ def script_problems(source: str, target: str) -> list[str]:
 
 _HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U000323af]")
 _ENGLISH_WORD = re.compile(r"[A-Za-z]{2,}(?:'[A-Za-z]+)?")
-_PROSE_WORDS = frozenset(
-    "a an and are as at be by can for from has have in is of on or so that the their this to was were when which with".split()
-)
+_PROSE_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "can", "for", "from", "has", "have", "in", "is", "of",
+    "on", "or", "so", "that", "the", "their", "this", "to", "was", "were", "when", "which", "with",
+}  # fmt: skip
 _NON_PROSE = re.compile(
     r"\b(?:https?://|www\.)[^\s<>()]+|"
     r"(?<!\w)(?:[A-Za-z]:[\\/]|\.{0,2}[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+|"
@@ -173,9 +174,18 @@ def _plain_prose(text: str) -> str:
 def prose_problems(source: str, target: str) -> list[str]:
     """只对足够明确的英文正文应用低误报筛查。"""
     original = _plain_prose(source)
-    words = _ENGLISH_WORD.findall(original.lower())
+    tokens = _ENGLISH_WORD.findall(original)
+    words = [word.lower() for word in tokens]
     letters = sum(map(len, words))
     if len(words) < 8 or letters < 35 or _HAN.search(original) or len(_PROSE_WORDS.intersection(words)) < 2:
+        return []
+    # 短标题常用实词首字母大写，配置名与这类标题都可能沿用原文。
+    content_words = [word for word in tokens if word.lower() not in _PROSE_WORDS]
+    if (
+        len(words) <= 14
+        and content_words
+        and sum(word[0].isupper() for word in content_words) * 4 >= len(content_words) * 3
+    ):
         return []
     translated = _plain_prose(target)
     if len(_HAN.findall(translated)) <= 2:
@@ -185,7 +195,7 @@ def prose_problems(source: str, target: str) -> list[str]:
             return ["疑似未翻译（照抄原文）"]
     if len(words) >= 20 and letters >= 90:
         visible = sum(c.isalnum() for c in translated)
-        if visible < min(8, letters * 0.08):
+        if visible < max(6, letters * 0.055):
             return ["译文严重缩水，疑似漏译"]
         if visible > letters * 4:
             return ["译文长度异常暴涨，疑似复读"]

@@ -32,7 +32,9 @@ def _chat(
             return httpx2.Response(status, json={"error": error or {"message": "x"}}, headers={"retry-after-ms": "1"})
         return httpx2.Response(200, json={
             "id": "c1", "object": "chat.completion", "created": 0, "model": "m",
-            "choices": [{"index": 0, "finish_reason": finish_reason, "message": {"role": "assistant", "content": "1|译文"}}],
+            "choices": [
+                {"index": 0, "finish_reason": finish_reason, "message": {"role": "assistant", "content": "1|译文"}}
+            ],
             "usage": USAGE_DEEPSEEK,
         })  # fmt: skip
 
