@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { BlockData, SegmentData } from "@/shared/api/client";
-import { spaceCjkLatin, wantsIndent } from "@/shared/text/typeset";
+import { dropFakeScripts, spaceCjkLatin, wantsIndent } from "@/shared/text/typeset";
 
 // 用例与后端 tests/unit/test_typeset.py 一致
 describe("spaceCjkLatin", () => {
@@ -24,4 +24,16 @@ describe("wantsIndent", () => {
     expect(wantsIndent(block(), seg("(1) First item"), true)).toBe(false);
     expect(wantsIndent(block("caption"), seg("Figure 1: A caption."), true)).toBe(false);
   });
+});
+
+// 与后端 test_typesetter.py 使用相同用例。
+it.each([
+  ["X<sub>steady_state_1</sub>", "X<sub>steady_state_1</sub>"],
+  ["e<sup>lowercase_long_identifier_12345</sup>", "e<sup>lowercase_long_identifier_12345</sup>"],
+  ["X<sub>abcdefghijk l</sub>", "Xabcdefghijk l"],
+  ["X<sub>abcdefghij l</sub>", "X<sub>abcdefghij l</sub>"],
+  ["X<sup>这是一个没有空格但显然应当作为普通文字展示的长中文句子。</sup>", "X这是一个没有空格但显然应当作为普通文字展示的长中文句子。"],
+  ["X<sup>n + 1</sup>", "X<sup>n + 1</sup>"],
+])("识别伪上下标并保留技术上下标 %s", (source, target) => {
+  expect(dropFakeScripts(source)).toBe(target);
 });

@@ -25,7 +25,8 @@ from pdftr.translation.batching import (
     make_batches,
     parse_numbered,
     placeholder_problems,
-    placeholders_match,
+    prose_problems,
+    script_problems,
 )
 from pdftr.translation.cost import add_cost
 from pdftr.translation.port import TranslationCache
@@ -68,6 +69,19 @@ class TranslateReport(BaseModel):
     cost_cny: float | None = None
     failures: dict[str, str] = Field(default_factory=dict)
     attempts: dict[str, int] = Field(default_factory=dict)
+
+
+def _target_problems(source: str, target: str) -> list[str]:
+    errors: list[str] = []
+    for label, check in (
+        ("公式占位符", placeholder_problems),
+        ("粗体标记", bold_problems),
+        ("斜体标记", italic_problems),
+        ("上下标标记", script_problems),
+    ):
+        if problems := check(source, target):
+            errors.append(f"{label}不一致：" + "；".join(problems))
+    return errors or prose_problems(source, target)
 
 
 def cache_key(seg: Segment, model: str, terms: dict[str, str], quality: Quality) -> str:
@@ -119,13 +133,7 @@ async def translate(
         # 本段命中的词库与用户术语也算进缓存键：用户改了术语后不会拿到旧译文
         hits = lookup_terms(seg.source) if lookup_terms else {}
         key = cache_key(seg, chat.model, ctx.terms | hits, o.quality)
-        if (
-            o.use_cache
-            and (hit := cache.get(key))
-            and placeholders_match(seg.source, hit)
-            and not bold_problems(seg.source, hit)
-            and not italic_problems(seg.source, hit)
-        ):
+        if o.use_cache and (hit := cache.get(key)) and not _target_problems(seg.source, hit):
             seg.target, seg.status = hit, SegmentStatus.DONE
             report.cached += 1
             continue
@@ -219,22 +227,13 @@ async def translate(
         retry = []
         for n, u in enumerate(batch, start=1):
             target = got.get(n, "")
-            formula_errors = placeholder_problems(u.source, target)
-            bold_errors = bold_problems(u.source, target)
-            italic_errors = italic_problems(u.source, target)
-            if target and not formula_errors and not bold_errors and not italic_errors:
+            errors = _target_problems(u.source, target) if target else []
+            if target and not errors:
                 cache.put(u.key, target)
                 for i in u.seg_indexes:
                     out[i].target, out[i].status = target, SegmentStatus.DONE
                 done += 1
             else:
-                errors = []
-                if formula_errors:
-                    errors.append("公式占位符不一致：" + "；".join(formula_errors))
-                if bold_errors:
-                    errors.append("粗体标记不一致：" + "；".join(bold_errors))
-                if italic_errors:
-                    errors.append("斜体标记不一致：" + "；".join(italic_errors))
                 missing = "模型输出截断" if truncated else "返回编号缺失或译文为空"
                 reasons[u.key] = "；".join(errors) if target else missing
                 retry.append(u)

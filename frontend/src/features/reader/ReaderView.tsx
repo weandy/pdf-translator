@@ -1149,7 +1149,8 @@ function OverlayBlock({
   const role = roleOf(block, translated);
   const rect = layoutBox(block);
   // 排版规则（clreq）：中西文之间加空格、正文段首缩进两字；没有译文时显示原文，不做处理
-  const shown = dropFakeScripts(translated ? spaceCjkLatin(text) : text);
+  const normalized = dropFakeScripts(text);
+  const shown = translated ? spaceCjkLatin(normalized) : normalized;
   const indent = translated && wantsIndent(block, segment, first);
   const [captionNo, rest] = role === "caption" && first ? splitCaptionNo(shown) : ["", shown];
   // 图注编号单独渲染，链接的“第几处”要扣掉编号里的出现次数

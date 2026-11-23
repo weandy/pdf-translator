@@ -29,11 +29,15 @@ export function shortLabel(text: string, n = 40): string {
   return plain.length > n ? `${plain.slice(0, n)}…` : plain;
 }
 
-/** 解析器偶尔把整行文字标成上下标（如列表项的第一行被包在 <sub> 里），真正的上下标都很短。 */
-const FAKE_SCRIPT = /<(sup|sub)>([^<]{13,})<\/\1>/g;
+// 阈值与后端相同，空白集合和长度均按 Unicode 码点计算。
+const SCRIPT = /<(sup|sub)>([^<]{13,})<\/\1>/gu;
+const SCRIPT_SPACE = /[ \t\r\n\f\v\u00a0\u3000]/;
+const CJK_SENTENCE = /^[\u3400-\u9fff]{20,}[。！？]$/;
 
 export function dropFakeScripts(text: string): string {
-  return text.replace(FAKE_SCRIPT, "$2");
+  return text.replace(SCRIPT, (match, _tag: string, content: string) =>
+    SCRIPT_SPACE.test(content) || CJK_SENTENCE.test(content) ? content : match,
+  );
 }
 
 /** 行距：放得下时优先宽松，依次收紧，最后才缩小字号（与导出 PDF 一致）。 */

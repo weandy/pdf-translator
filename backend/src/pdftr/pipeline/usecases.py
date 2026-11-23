@@ -47,7 +47,7 @@ from pdftr.rendering.background import crop_png
 from pdftr.rendering.export import ExportMode, Side, export_pdf_to_path, page_links, place_links
 from pdftr.rendering.links import VERSION as LINKS_VERSION
 from pdftr.rendering.links import PdfLink
-from pdftr.translation.batching import placeholder_problems
+from pdftr.translation.batching import placeholder_problems, rich_text_problems
 from pdftr.translation.cost import PRICES, is_deepseek_peak
 from pdftr.translation.service import TranslateOptions, translate
 
@@ -582,6 +582,8 @@ def edit_segment(pipeline: Pipeline, segment_id: str, target: str) -> Segment:
         # 公式占位符少了或多了，阅读器与导出 PDF 里对应的公式会悄悄消失或重复，不保存
         if problems := placeholder_problems(seg.source, target):
             raise UserError("译文里的公式不对：" + "；".join(problems) + "。每个公式占位符要各保留一次")
+        if problems := rich_text_problems(target):
+            raise UserError("译文里的格式标记不对：" + "；".join(problems))
         before = seg.model_copy()
         seg.target, seg.status = target.strip(), SegmentStatus.EDITED
         seg.failure_reason = ""

@@ -12,16 +12,23 @@ from pdftr.domain.ir import Block, BlockType, Segment
 
 _LIST_ITEM = re.compile(r"^\s*(?:[•·▪◦‣\-–—*]|\(?\d+\)|\d+[.)、]|\[\d+\]|[a-z][.)]\s)")
 
-# 解析器偶尔把整行文字标成上下标（如列表项的第一行被包在 <sub> 里），真正的上下标都很短
-_FAKE_SCRIPT = re.compile(r"<(sup|sub)>([^<]{13,})</\1>")
+# 阈值与前端相同，空白集合和长度均按 Unicode 码点计算。
+_SCRIPT = re.compile(r"<(sup|sub)>([^<]{13,})</\1>")
+_SCRIPT_SPACE = re.compile(r"[ \t\r\n\f\v\u00a0\u3000]")
+_CJK_SENTENCE = re.compile(r"^[\u3400-\u9fff]{20,}[。！？]$")
 
 # 行距：放得下时优先宽松（英译中一般会省出空间），依次收紧，最后才缩小字号
 LINE_HEIGHTS = (1.5, 1.4, 1.3, 1.2)
 
 
 def drop_fake_scripts(text: str) -> str:
-    """超过 12 个字符的“上下标”去掉标签，按正文显示（与前端 dropFakeScripts 一致）。"""
-    return _FAKE_SCRIPT.sub(r"\2", text)
+    """去掉明显覆盖整行或句子的上下标，保留技术标识符。"""
+
+    def strip_fake(match: re.Match[str]) -> str:
+        content = match.group(2)
+        return content if _SCRIPT_SPACE.search(content) or _CJK_SENTENCE.fullmatch(content) else match.group(0)
+
+    return _SCRIPT.sub(strip_fake, text)
 
 
 def wants_indent(block: Block, segment: Segment, first: bool) -> bool:

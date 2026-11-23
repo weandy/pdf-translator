@@ -143,7 +143,10 @@ def test_manual_mutations_require_done_and_are_exclusive(tmp_path, monkeypatch):
         with pytest.raises(usecases.UserError, match="正在修改"):
             usecases.edit_segment(pipeline, "hard", "新的译文")
         pipeline.end_mutation(job.id)
-        edited = usecases.edit_segment(pipeline, "hard", "新的译文 <m1/>")
+        for invalid in ("<i>未闭合", "<b><sub>交叉</b></sub>", "<sup> </sup>"):
+            with pytest.raises(usecases.UserError, match="格式"):
+                usecases.edit_segment(pipeline, "hard", f"{invalid} <m1/>")
+        edited = usecases.edit_segment(pipeline, "hard", "新的<b>译文</b> <m1/> X<sub>1</sub>")
         assert edited.status is SegmentStatus.EDITED
     finally:
         close_pipeline(pipeline)

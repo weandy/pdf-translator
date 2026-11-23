@@ -6,6 +6,7 @@ S7：约 1500 token 一批，比逐段请求或小批次省约 64% 输入；“�
 import re
 from collections import Counter
 from collections.abc import Sequence
+from difflib import SequenceMatcher
 
 BATCH_TOKENS = 1500
 _PLACEHOLDER = re.compile(r"<m\d+/>")
@@ -101,6 +102,14 @@ def _emphasis_problems(source: str, target: str, *, tag: str, label: str) -> lis
         return [f"{label}标记丢失：需要 {expected} 对，实际 {opened} 对"]
     if opened > expected:
         return [f"{label}标记多出：需要 {expected} 对，实际 {opened} 对"]
+    return rich_text_problems(target, tag=tag)
+
+
+_TAG_LABELS = {"b": "粗体", "i": "斜体", "sup": "上标", "sub": "下标"}
+
+
+def rich_text_problems(target: str, *, tag: str | None = None) -> list[str]:
+    """人工编辑检查整个栈，模型验收也可检查某一种标签的结构。"""
     stack: list[tuple[str, int]] = []
     for match in _RICH_TAG.finditer(target):
         closing, current = match.group(1), match.group(2)
@@ -109,12 +118,15 @@ def _emphasis_problems(source: str, target: str, *, tag: str, label: str) -> lis
             continue
         if stack and stack[-1][0] == current:
             _, start = stack.pop()
-            if current == tag and not _RICH_TAG.sub("", target[start : match.start()]).strip():
-                return [f"{label}标记内没有内容"]
-        elif current == tag or any(t == tag for t, _ in stack):
-            return [f"{label}标记嵌套错误"]
-    if any(t == tag for t, _ in stack):
-        return [f"{label}标记未完整配对"]
+            if tag in (None, current) and not _RICH_TAG.sub("", target[start : match.start()]).strip():
+                return [f"{_TAG_LABELS[current]}标记内没有内容"]
+        elif tag in (None, current) or any(t == tag for t, _ in stack):
+            label = _TAG_LABELS[tag or current]
+            problem = "嵌套错误" if stack or f"<{current}>" in target else "未完整配对"
+            return [f"{label}标记{problem}"]
+    for current, _ in stack:
+        if tag in (None, current):
+            return [f"{_TAG_LABELS[current]}标记未完整配对"]
     return []
 
 
@@ -131,3 +143,50 @@ def bold_problems(source: str, target: str) -> list[str]:
 def italic_problems(source: str, target: str) -> list[str]:
     """原文含局部斜体时，译文必须保留同样数量、成对且正确嵌套的非空强调。"""
     return _emphasis_problems(source, target, tag="i", label="斜体")
+
+
+def script_problems(source: str, target: str) -> list[str]:
+    return _emphasis_problems(source, target, tag="sup", label="上标") + _emphasis_problems(
+        source, target, tag="sub", label="下标"
+    )
+
+
+_HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U000323af]")
+_ENGLISH_WORD = re.compile(r"[A-Za-z]{2,}(?:'[A-Za-z]+)?")
+_PROSE_WORDS = frozenset(
+    "a an and are as at be by can for from has have in is of on or so that the their this to was were when which with".split()
+)
+_NON_PROSE = re.compile(
+    r"\b(?:https?://|www\.)[^\s<>()]+|"
+    r"(?<!\w)(?:[A-Za-z]:[\\/]|\.{0,2}[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+|"
+    r"(?<!\w)[~/][A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*|"
+    r"\[\s*\d+(?:\s*[,;–-]\s*\d+)*\s*\]|"
+    r"\([A-Z][A-Za-z'’.-]+(?:\s+(?:et al\.|and [A-Z][A-Za-z'’.-]+)|\s*&\s*[A-Z][A-Za-z'’.-]+)?"
+    r",?\s+(?:19|20)\d{2}[a-z]?\)"
+)
+
+
+def _plain_prose(text: str) -> str:
+    return _NON_PROSE.sub(" ", _RICH_TAG.sub("", _PLACEHOLDER.sub(" ", text)))
+
+
+def prose_problems(source: str, target: str) -> list[str]:
+    """只对足够明确的英文正文应用低误报筛查。"""
+    original = _plain_prose(source)
+    words = _ENGLISH_WORD.findall(original.lower())
+    letters = sum(map(len, words))
+    if len(words) < 8 or letters < 35 or _HAN.search(original) or len(_PROSE_WORDS.intersection(words)) < 2:
+        return []
+    translated = _plain_prose(target)
+    if len(_HAN.findall(translated)) <= 2:
+        english = _ENGLISH_WORD.findall(translated.lower())
+        similarity = SequenceMatcher(None, words, english)
+        if similarity.quick_ratio() >= 0.85 and similarity.ratio() >= 0.85:
+            return ["疑似未翻译（照抄原文）"]
+    if len(words) >= 20 and letters >= 90:
+        visible = sum(c.isalnum() for c in translated)
+        if visible < min(8, letters * 0.08):
+            return ["译文严重缩水，疑似漏译"]
+        if visible > letters * 4:
+            return ["译文长度异常暴涨，疑似复读"]
+    return []

@@ -120,3 +120,19 @@ def test_inline_italic_uses_real_italic_fonts():
     runs = [r for t in tokens for r in t.runs]
     assert runs[0].font is f.times
     assert runs[-1].font is f.times_italic
+
+
+def test_drop_fake_scripts_preserves_technical_subscripts():
+    # 与前端 typeset.test.ts 使用相同用例。
+    assert drop_fake_scripts("X<sub>steady_state_1</sub>") == "X<sub>steady_state_1</sub>"
+    assert (
+        drop_fake_scripts("e<sup>lowercase_long_identifier_12345</sup>")
+        == "e<sup>lowercase_long_identifier_12345</sup>"
+    )
+    assert drop_fake_scripts("X<sub>abcdefghijk l</sub>") == "Xabcdefghijk l"
+    assert drop_fake_scripts("X<sub>abcdefghij l</sub>") == "X<sub>abcdefghij l</sub>"
+    assert (
+        drop_fake_scripts("X<sup>这是一个没有空格但显然应当作为普通文字展示的长中文句子。</sup>")
+        == "X这是一个没有空格但显然应当作为普通文字展示的长中文句子。"
+    )
+    assert drop_fake_scripts("X<sup>n + 1</sup>") == "X<sup>n + 1</sup>"

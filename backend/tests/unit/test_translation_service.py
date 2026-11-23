@@ -6,7 +6,7 @@ import pytest
 from pdftr.domain.ir import Segment, SegmentStatus
 from pdftr.domain.llm import ChatError, ChatOptions, ChatResult, ChatUsage
 from pdftr.translation.prompt import DocContext
-from pdftr.translation.service import TranslateOptions, translate
+from pdftr.translation.service import TranslateOptions, cache_key, translate
 
 
 class FakeChat:
@@ -507,3 +507,66 @@ def test_invalid_numbering_retries_entire_batch_without_caching(text):
     out, report = asyncio.run(translate(SEGS[2:], chat=WrongBatch(), cache=cache, ctx=DocContext()))
     assert report.requests == 3
     assert [s.target for s in out] == [f"译:{s.source}" for s in SEGS[2:]]
+
+
+PROSE = (
+    "When the air cools, the instrument records the change over time so that every measured "
+    "variation can be compared with the values obtained before the trial began."
+)
+
+
+@pytest.mark.parametrize(
+    ("source", "bad", "good", "reason"),
+    [
+        (
+            "Use X<sub>steady_state_1</sub> and y<sup>2</sup>.",
+            "使用 X 和 y。",
+            "使用 X<sub>steady_state_1</sub> 和 y<sup>2</sup>。",
+            "上下标",
+        ),
+        ("Use X<sub>1</sub>.", "使用 X<sub> </sub>。", "使用 X<sub>1</sub>。", "没有内容"),
+        ("Use <b>X<sub>1</sub></b>.", "使用 <b>X<sub>1</b></sub>。", "使用 <b>X<sub>1</sub></b>。", "嵌套"),
+        (
+            PROSE + " [12] (Author et al., 2020) https://example.test/test /tmp/example",
+            PROSE,
+            "仪器记录降温过程的变化，以便与试验前的测量值比较。",
+            "照抄",
+        ),
+        (PROSE, "温度。", "记录降温变化并与试验前的测量值比较。", "缩水"),
+        (PROSE, "温度变化。" * 150, "记录降温变化并与试验前的测量值比较。", "暴涨"),
+    ],
+)
+def test_quality_faults_reject_cache_and_model_output(source, bad, good, reason):
+    seg = _seg(0, source)
+    chat, cache, ctx = RepeatedFailures(1, f"1|{bad}"), DictCache(), DocContext()
+    out, report = asyncio.run(translate([seg], chat=chat, cache=cache, ctx=ctx, opts=TranslateOptions(max_attempts=1)))
+    assert report.failed == 1 and reason in out[0].failure_reason and not cache.data
+
+    key = cache_key(seg, chat.model, {}, "default")
+    cache.data[key] = bad
+    chat = RepeatedFailures(1, f"1|{good}")
+    out, report = asyncio.run(translate([seg], chat=chat, cache=cache, ctx=ctx))
+    assert report.cached == 0 and report.requests == 1 and out[0].target == good
+    assert cache.data == {key: good}
+
+
+@pytest.mark.parametrize(
+    ("source", "target"),
+    [
+        ("Transformer (big)", "Transformer (big)"),
+        ("Analysis of Results for the Proposed Models", "Analysis of Results for the Proposed Models"),
+        ("BLEU 28.3 / ROUGE 82.0", "BLEU 28.3 / ROUGE 82.0"),
+        ("Let <m1/> be the input and <m2/> the output.", "令<m1/>为输入，<m2/>为输出。"),
+        (
+            "本文使用合成数据来检验计算过程并记录全部对照实验的观测指标。",
+            "本文使用合成数据来检验计算过程并记录全部对照实验的观测指标。",
+        ),
+        (PROSE, "记录冷却曲线并与试验前对比。"),
+    ],
+)
+def test_quality_checks_allow_short_technical_and_compact_translations(source, target):
+    seg = _seg(0, source, {"m1": "x", "m2": "y"} if "<m1/>" in source else None)
+    out, report = asyncio.run(
+        translate([seg], chat=RepeatedFailures(1, f"1|{target}"), cache=DictCache(), ctx=DocContext())
+    )
+    assert report.requests == 1 and out[0].target == target
