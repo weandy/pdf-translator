@@ -284,8 +284,8 @@ def test_upload_enforces_size_with_bounded_reads_and_removes_temp(environment, t
     pipeline, store, artifacts = environment
 
     class Upload(io.BytesIO):
-        def read(self, size=-1):
-            assert 0 < size <= 256 * 1024
+        def read(self, size: int | None = -1) -> bytes:
+            assert size is not None and 0 < size <= 256 * 1024
             return super().read(size)
 
     monkeypatch.setattr(usecases, "page_count", lambda _: unexpected())
@@ -340,5 +340,131 @@ def test_cancelled_render_holds_local_slot_and_blocks_delete_until_thread_exits(
         assert store.get_job(current.id).status is JobStatus.CANCELLED
         async with pipeline.local_slot():
             pass
+
+    asyncio.run(run())
+
+
+def test_replace_segments_rolls_back_delete_and_partial_insert(environment):
+    from pdftr.domain.ir import Segment
+
+    _, store, _ = environment
+    job_id = "0000000000000001"
+    first = Segment(id="old", job_id=job_id, source="old", block_ids=[])
+    new = Segment(id="new", job_id=job_id, source="new", block_ids=[])
+    store.replace_segments(job_id, [first])
+    with pytest.raises(sqlite3.IntegrityError):
+        store.replace_segments(job_id, [new, new])
+    assert store.segments(job_id) == [first]
+    assert not store._db.in_transaction
+
+
+def test_busy_retries_whole_job_transaction(environment, monkeypatch):
+    pipeline, store, _ = environment
+    current = Job(id="0000000000000001", filename="synthetic.pdf")
+    save_stats = store._stats.job_saved
+    attempts = []
+
+    def busy_once(*args):
+        save_stats(*args)
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store._stats, "job_saved", busy_once)
+    pipeline.deps.store.create_job(current, CONTEXT)
+    assert attempts == [True, True]
+    assert len(store.all_jobs()) == 1
+    assert store.search_submissions(SubmissionSearch()).total == 1
+
+
+@pytest.mark.parametrize("file_name", ["layout.json", "ir.json", "glossary.json"])
+def test_failed_json_write_preserves_published_file_and_cleans_part(tmp_path, monkeypatch, file_name):
+    out = tmp_path / file_name
+    out.write_text('{"previous":true}', encoding="utf-8")
+    writer = Path.write_text
+
+    def fail(path, *args, **kwargs):
+        assert path != out
+        writer(path, '{"incomplete":', encoding="utf-8")
+        raise OSError("synthetic disk failure")
+
+    monkeypatch.setattr(Path, "write_text", fail)
+    with pytest.raises(OSError, match="synthetic disk failure"):
+        runner._write_json(out, '{"new":true}')
+    assert out.read_text(encoding="utf-8") == '{"previous":true}'
+    assert list(tmp_path.iterdir()) == [out]
+
+
+def test_chat_clients_are_closed_on_success_error_and_cancel(environment, monkeypatch):
+    from pdftr.domain.ir import Segment, SegmentStatus
+    from pdftr.domain.llm import ChatError, ChatResult
+    from pdftr.translation.service import TranslateReport
+
+    pipeline, store, artifacts = environment
+    current = Job(id="0000000000000001", filename="synthetic.pdf")
+    artifacts.path(current.id, "ir.json").write_text(Document(job_id=current.id, pages=[]).model_dump_json(), "utf-8")
+    clients = []
+
+    class Chat:
+        model = "synthetic-model"
+
+        def __init__(self):
+            self.closed = False
+            clients.append(self)
+
+        async def complete(self, system, user, opts):
+            return ChatResult(text='{"domain": "synthetic", "terms": {}}')
+
+        async def list_models(self):
+            raise ChatError("synthetic failure")
+
+        async def aclose(self):
+            await asyncio.sleep(0)
+            assert not self.closed
+            self.closed = True
+
+    pipeline.deps = replace(pipeline.deps, chat_factory=lambda _: Chat())
+
+    async def run():
+        await pipeline._glossary(current, SECRETS)
+        assert len(clients) == 1 and clients[0].closed
+        with pytest.raises(ChatError, match="synthetic failure"):
+            await usecases.llm_models(pipeline, SECRETS)
+        assert len(clients) == 2 and clients[1].closed
+        assert (await usecases.llm_check(pipeline, SECRETS)).ok
+        assert len(clients) == 3 and clients[2].closed
+
+        entered = asyncio.Event()
+
+        async def parse_wait(data, *, chat):
+            assert chat is clients[-1]
+            entered.set()
+            await asyncio.Future()
+
+        monkeypatch.setattr(usecases, "parse_upload", parse_wait)
+        task = asyncio.create_task(usecases.parse_glossary(pipeline, SECRETS, b"synthetic text", use_ai=True))
+        await asyncio.wait_for(entered.wait(), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(clients) == 4 and clients[3].closed
+
+        seg = Segment(id="synthetic", job_id=current.id, block_ids=[], source="Synthetic text.")
+        store.replace_segments(current.id, [seg])
+
+        async def translate_once(segments, *, chat, **kwargs):
+            assert chat is clients[-1] and not clients[-1].closed
+            return [
+                segment.model_copy(update={"target": "合成译文", "status": SegmentStatus.DONE}) for segment in segments
+            ], TranslateReport()
+
+        monkeypatch.setattr(runner, "translate", translate_once)
+        monkeypatch.setattr(usecases, "translate", translate_once)
+        await pipeline._translate(current, SECRETS)
+        assert len(clients) == 5 and clients[4].closed
+        current.status = JobStatus.DONE
+        store.save_job(current)
+        await usecases.retranslate_segments(pipeline, current.id, [seg.id], "default", SECRETS)
+        assert len(clients) == 6 and clients[5].closed
 
     asyncio.run(run())

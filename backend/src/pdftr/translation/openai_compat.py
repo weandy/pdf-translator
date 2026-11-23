@@ -45,6 +45,9 @@ class OpenAICompatChat:
         self.dialect: Dialect = dialect or guess_dialect(base_url)
         self._client = client or AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=3)
 
+    async def aclose(self) -> None:
+        await self._client.close()
+
     def request_kwargs(self, opts: ChatOptions) -> dict[str, Any]:
         kw: dict[str, Any] = {"model": self.model, "max_tokens": opts.max_tokens}
         if self.dialect == "deepseek":

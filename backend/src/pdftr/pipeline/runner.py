@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from pdftr.domain.document_name import paper_title
 from pdftr.domain.ir import BlockType, Document, PageKind, SegmentStatus
@@ -28,7 +29,7 @@ from pdftr.parsing.port import LayoutParser, ParseError
 from pdftr.pipeline.events import EventBus
 from pdftr.pipeline.memory import release_memory
 from pdftr.pipeline.secrets import Secrets, SecretStore
-from pdftr.pipeline.workers import run_thread
+from pdftr.pipeline.workers import finish_on_cancel, run_thread
 from pdftr.rendering.background import make_background
 from pdftr.storage.port import ArtifactStore, JobStore
 from pdftr.translation.cost import add_cost
@@ -81,6 +82,33 @@ STAGE_MESSAGES = {
 
 class StageError(RuntimeError):
     """面向用户的阶段失败原因。"""
+
+
+@runtime_checkable
+class _ClosableChat(Protocol):
+    async def aclose(self) -> None: ...
+
+
+@asynccontextmanager
+async def chat_session(chat: ChatModel) -> AsyncIterator[ChatModel]:
+    """关闭本次调用创建的客户端，兼容没有关闭方法的测试替身。"""
+    try:
+        yield chat
+    finally:
+        if isinstance(chat, _ClosableChat):
+            try:
+                await finish_on_cancel(asyncio.create_task(chat.aclose()))
+            except Exception as e:
+                log.warning("关闭翻译服务客户端失败（%s）", type(e).__name__)
+
+
+def _write_json(path: Path, content: str) -> None:
+    tmp = path.with_suffix(f"{path.suffix}.part")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def load_document(deps: PipelineDeps, job_id: str) -> Document:
@@ -317,7 +345,7 @@ class Pipeline:
 
         pdf = self.deps.artifacts.path(job.id, "original.pdf")
         result = await self._parse_with_retry(job, lambda: parser.parse(pdf, raw_dir=raw_dir, on_progress=progress))
-        out.write_text(result.model_dump_json(), encoding="utf-8")
+        _write_json(out, result.model_dump_json())
 
     async def _parse_with_retry(self, job: Job, attempt_parse: Callable[[], Awaitable[LayoutResult]]) -> LayoutResult:
         """网络错误或 MinerU 云端解析超时自动重试，最多使用配置的重试机会。"""
@@ -352,7 +380,7 @@ class Pipeline:
             raise StageError(str(e)) from e
         if report.missing_layout_pages:
             log.warning("任务 %s 的解析结果缺少 PDF 页号 %s", job.id, report.missing_layout_pages)
-        out.write_text(doc.model_dump_json(), encoding="utf-8")
+        _write_json(out, doc.model_dump_json())
         # IR 先落盘，恢复分支也会补写；标题持久化成功后才进入后续阶段。
         self.deps.store.update_submission_title(job.id, paper_title(doc.pages, fallback=doc.meta.title))
         skipped = [p.index + 1 for p in doc.pages if p.kind not in TRANSLATED_KINDS]
@@ -380,34 +408,36 @@ class Pipeline:
         headings = [s.source for s in segs if (b := doc.block(s.block_ids[0])) and b.type is BlockType.TITLE]
         body = " ".join(s.source for s in segs)
         intro = next((s.source for s in segs if len(s.source.split()) >= 30 and s.source != doc.meta.abstract), "")
-        found = await extract_terms(self.deps.chat_factory(secrets), title=doc.meta.title, abstract=doc.meta.abstract,
-                                    intro=intro, headings=headings)  # fmt: skip
+        async with chat_session(self.deps.chat_factory(secrets)) as chat:
+            found = await extract_terms(chat, title=doc.meta.title, abstract=doc.meta.abstract,
+                                        intro=intro, headings=headings)  # fmt: skip
+            cost = add_cost(None, chat.model, found.usage)
         terms = normalize_terms(found.terms, body, headings)
-        chat = self.deps.chat_factory(secrets)
-        if (cost := add_cost(None, chat.model, found.usage)) is not None:
+        if cost is not None:
             self._update(job, cost_cny=(job.cost_cny or 0) + cost)  # 术语抽取也计入任务花费
-        out.write_text(json.dumps({"domain": found.domain, "terms": terms}, ensure_ascii=False), encoding="utf-8")
+        _write_json(out, json.dumps({"domain": found.domain, "terms": terms}, ensure_ascii=False))
 
     async def _translate(self, job: Job, secrets: Secrets) -> None:
         segs = self.deps.store.segments(job.id)
-        chat = self.deps.chat_factory(secrets)
         matcher = await asyncio.to_thread(self.deps.term_matcher)
 
         def progress(done: int, total: int, note: str = "") -> None:
             message = f"翻译中 {done}/{total}" + (f"，{note}" if note else "")
             self._update(job, progress=done / total if total else 1.0, message=message)
 
-        out, report = await translate(
-            segs, chat=chat, cache=self.deps.cache, ctx=load_context(self.deps, job.id, job.options.user_terms),
-            lookup_terms=combine(job.options.user_terms, matcher),
-            opts=TranslateOptions(quality=job.options.quality, concurrency=self._concurrency(secrets)),
-            on_progress=progress,
-        )  # fmt: skip
+        async with chat_session(self.deps.chat_factory(secrets)) as chat:
+            out, report = await translate(
+                segs, chat=chat, cache=self.deps.cache, ctx=load_context(self.deps, job.id, job.options.user_terms),
+                lookup_terms=combine(job.options.user_terms, matcher),
+                opts=TranslateOptions(quality=job.options.quality, concurrency=self._concurrency(secrets)),
+                on_progress=progress,
+            )  # fmt: skip
+            model = chat.model
         self.deps.store.save_segments(out)
         cost = report.cost_cny
         total = None if cost is None and job.cost_cny is None else (job.cost_cny or 0) + (cost or 0)
         translated = sum(s.status in (SegmentStatus.DONE, SegmentStatus.EDITED) for s in out)
-        self._update(job, model=chat.model, cost_cny=total, message=f"已翻译 {translated}/{len(out)} 段")
+        self._update(job, model=model, cost_cny=total, message=f"已翻译 {translated}/{len(out)} 段")
         if report.failed:
             reasons = "；".join(list(dict.fromkeys(report.failures.values()))[:3])
             raise StageError(

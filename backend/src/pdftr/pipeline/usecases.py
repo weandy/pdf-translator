@@ -40,7 +40,7 @@ from pdftr.extraction.outline import pdf_outline
 from pdftr.glossary.matcher import TermMatcher, combine
 from pdftr.glossary.user_import import ParsedGlossary, parse_upload
 from pdftr.pipeline.memory import release_memory
-from pdftr.pipeline.runner import Pipeline, load_context, load_document
+from pdftr.pipeline.runner import Pipeline, chat_session, load_context, load_document
 from pdftr.pipeline.secrets import Secrets
 from pdftr.pipeline.workers import finish_on_cancel, run_thread
 from pdftr.rendering.background import crop_png
@@ -562,7 +562,10 @@ async def parse_glossary(pipeline: Pipeline, secrets: Secrets, data: bytes, *, u
         raise UserError("术语表文件太大（上限 2 MB），可以拆成几个文件分别导入")
     if use_ai and not secrets.llm_api_key:
         raise UserError("AI 识别要用翻译服务，请先在设置中填写 API Key")
-    return await parse_upload(data, chat=pipeline.deps.chat_factory(secrets) if use_ai else None)
+    if not use_ai:
+        return await parse_upload(data, chat=None)
+    async with chat_session(pipeline.deps.chat_factory(secrets)) as chat:
+        return await parse_upload(data, chat=chat)
 
 
 class LlmCheck(BaseModel):
@@ -576,7 +579,8 @@ class LlmCheck(BaseModel):
 async def llm_models(pipeline: Pipeline, secrets: Secrets) -> list[str]:
     """从翻译服务拉取可用模型；不支持查询的服务仍可手动填写模型名。"""
     _require_secrets(secrets, parser=None)
-    return await pipeline.deps.chat_factory(secrets).list_models()
+    async with chat_session(pipeline.deps.chat_factory(secrets)) as chat:
+        return await chat.list_models()
 
 
 async def llm_check(pipeline: Pipeline, secrets: Secrets) -> LlmCheck:
@@ -584,9 +588,8 @@ async def llm_check(pipeline: Pipeline, secrets: Secrets) -> LlmCheck:
     started = time.monotonic()
     try:
         _require_secrets(secrets, parser=None)
-        r = await pipeline.deps.chat_factory(secrets).complete(
-            "只回复 OK 两个字母。", "ping", ChatOptions(max_tokens=16)
-        )
+        async with chat_session(pipeline.deps.chat_factory(secrets)) as chat:
+            r = await chat.complete("只回复 OK 两个字母。", "ping", ChatOptions(max_tokens=16))
     except (ChatError, UserError) as e:
         return LlmCheck(ok=False, model=secrets.llm_model, latency_ms=_ms(started), detail=str(e))
     return LlmCheck(ok=True, model=secrets.llm_model, latency_ms=_ms(started), reply=r.text.strip()[:40])
@@ -679,11 +682,12 @@ async def retranslate_segments(
         for s in segs:
             s.status = SegmentStatus.PENDING
         deps = pipeline.deps
-        outs, report = await translate(
-            segs, chat=deps.chat_factory(secrets), cache=deps.cache, ctx=load_context(deps, job_id, terms),
-            lookup_terms=combine(terms, deps.term_matcher()),
-            opts=TranslateOptions(quality=quality, use_cache=False, total_timeout_s=45),
-        )  # fmt: skip
+        async with chat_session(deps.chat_factory(secrets)) as chat:
+            outs, report = await translate(
+                segs, chat=chat, cache=deps.cache, ctx=load_context(deps, job_id, terms),
+                lookup_terms=combine(terms, deps.term_matcher()),
+                opts=TranslateOptions(quality=quality, use_cache=False, total_timeout_s=45),
+            )  # fmt: skip
         for out in outs:
             before = befores[out.id]
             if (

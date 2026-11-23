@@ -236,7 +236,7 @@ def test_upload_reopens_path_on_retry_and_joins_cancelled_request(tmp_path, monk
         parser = MinerUCloudParser("tok", retry_delays=(0,))
         async with httpx2.AsyncClient() as http:
             monkeypatch.setattr(http, "request", client.request)
-            task = asyncio.create_task(parser._upload(http, UPLOAD, pdf, lambda *_: None))
+            task = asyncio.create_task(parser._upload(http, UPLOAD, pdf, lambda message, fraction=None: None))
             try:
                 await asyncio.wait_for(client.started.wait(), 1)
             finally:

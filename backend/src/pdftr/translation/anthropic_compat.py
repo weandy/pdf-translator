@@ -36,6 +36,9 @@ class AnthropicChat:
             base_url=base_url, api_key=api_key, timeout=timeout, max_retries=3, default_headers={"x-api-key": api_key}
         )
 
+    async def aclose(self) -> None:
+        await self._client.close()
+
     def request_kwargs(self, opts: ChatOptions) -> dict[str, Any]:
         kw: dict[str, Any] = {"model": self.model, "max_tokens": opts.max_tokens}
         if _EFFORT_MODELS.match(self.model):

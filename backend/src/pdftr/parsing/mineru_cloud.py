@@ -11,7 +11,7 @@ import logging
 import tempfile
 import time
 import zipfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
@@ -254,7 +254,7 @@ class MinerUCloudParser:
             try:
                 with pdf.open("rb") as source:
 
-                    async def body() -> AsyncIterator[bytes]:
+                    async def body() -> AsyncGenerator[bytes]:
                         nonlocal sent, last
                         while chunk := source.read(UPLOAD_CHUNK):
                             yield chunk

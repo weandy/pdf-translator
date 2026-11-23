@@ -114,3 +114,37 @@ def test_anthropic_pagination_shares_one_total_deadline(monkeypatch):
     with pytest.raises(ChatError, match="超时"):
         asyncio.run(_chat("anthropic", handler).list_models())
     assert len(seen) == 2
+
+
+@pytest.mark.parametrize("protocol", ["openai", "anthropic"])
+def test_adapter_closes_sdk_http_transport(protocol):
+    closed = []
+
+    class Transport(httpx2.MockTransport):
+        async def aclose(self) -> None:
+            closed.append(True)
+
+    async def run() -> None:
+        transport = Transport(lambda _: httpx2.Response(200, json=_page(protocol, ["m"])))
+        http = httpx2.AsyncClient(transport=transport)
+        base_url = "https://example.invalid"
+        if protocol == "openai":
+            chat = openai_compat.OpenAICompatChat(
+                base_url=base_url,
+                api_key="synthetic",
+                model="m",
+                client=AsyncOpenAI(base_url=base_url, api_key="synthetic", http_client=http),
+            )
+        else:
+            chat = anthropic_compat.AnthropicChat(
+                base_url=base_url,
+                api_key="synthetic",
+                model="m",
+                client=AsyncAnthropic(base_url=base_url, api_key="synthetic", http_client=http),
+            )
+        assert await chat.list_models() == ["m"]
+        await chat.aclose()
+        assert http.is_closed
+
+    asyncio.run(run())
+    assert closed == [True]
