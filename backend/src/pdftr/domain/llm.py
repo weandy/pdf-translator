@@ -40,6 +40,7 @@ class ChatUsage(BaseModel):
 
 class ChatResult(BaseModel):
     text: str
+    finish_reason: str | None = None
     usage: ChatUsage = ChatUsage()
 
 

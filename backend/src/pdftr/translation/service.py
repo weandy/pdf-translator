@@ -18,6 +18,7 @@ from pdftr.domain.ir import Segment, SegmentStatus
 from pdftr.domain.llm import ChatError, ChatModel, ChatOptions, ChatUsage
 from pdftr.translation.batching import (
     BATCH_TOKENS,
+    NumberedResponseError,
     bold_problems,
     estimate_tokens,
     italic_problems,
@@ -143,6 +144,7 @@ async def translate(
     sem = asyncio.Semaphore(o.concurrency)
     note = f"首次翻译（第 1/{o.max_attempts} 次）"
     reasons: dict[str, str] = {}
+    refused: list[_Unit] = []
     expired_deadlines: set[float] = set()
 
     def deadline_for(retry_deadline: float | None) -> tuple[float | None, str]:
@@ -203,7 +205,17 @@ async def translate(
             sem.release()
         report.usage = report.usage + result.usage
         report.cost_cny = add_cost(report.cost_cny, chat.model, result.usage)
-        got = parse_numbered(result.text)
+        if result.finish_reason in ("refusal", "content_filter"):
+            refused.extend(fail(batch, f"模型拒绝翻译（{result.finish_reason}）"))
+            return []
+        try:
+            got = parse_numbered(result.text, batch_size=len(batch))
+        except NumberedResponseError as e:
+            return fail(batch, str(e))
+        truncated = result.finish_reason in ("length", "max_tokens")
+        if truncated and got:
+            # 最后一项可能在段内或紧贴下一项编号中断，仅信任有后续完整编号分隔的前缀。
+            del got[next(reversed(got))]
         retry = []
         for n, u in enumerate(batch, start=1):
             target = got.get(n, "")
@@ -223,7 +235,8 @@ async def translate(
                     errors.append("粗体标记不一致：" + "；".join(bold_errors))
                 if italic_errors:
                     errors.append("斜体标记不一致：" + "；".join(italic_errors))
-                reasons[u.key] = "；".join(errors) if target else "返回编号缺失或译文为空"
+                missing = "模型输出截断" if truncated else "返回编号缺失或译文为空"
+                reasons[u.key] = "；".join(errors) if target else missing
                 retry.append(u)
         if on_progress:
             on_progress(done, total_units, note)
@@ -260,6 +273,7 @@ async def translate(
         # 首次失败后即拆开，避免同批段落编号错位；第三次起使用已有的低强度思考策略。
         retry_opts = chat_opts if attempt == 2 else ChatOptions(thinking="low", transport_retries=0)
         failed = await run_all([[u] for u in failed], retry_opts, retry_deadline)
+    failed.extend(refused)
     for u in failed:
         for i in u.seg_indexes:
             out[i].status = SegmentStatus.FAILED

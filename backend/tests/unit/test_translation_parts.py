@@ -26,6 +26,7 @@ def test_make_batches_respects_budget():
 
 def test_parse_numbered():
     text = "```\n1|第一段\n2｜第二段\n接着第二段\n\n3 | 第三段\n```"
+    assert parse_numbered("1|中文 Latin\ncontinuation 2\n3") == {1: "中文 Latin continuation 2 3"}
     assert parse_numbered(text) == {1: "第一段", 2: "第二段接着第二段", 3: "第三段"}
 
 

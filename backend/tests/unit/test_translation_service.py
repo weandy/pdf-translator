@@ -459,3 +459,51 @@ def test_cancellation_propagates_and_stops_all_model_requests():
 def test_attempt_limit_cannot_exceed_ten(attempts):
     with pytest.raises(ValueError):
         TranslateOptions(max_attempts=attempts)
+
+
+@pytest.mark.parametrize("reason", ["length", "max_tokens"])
+def test_truncated_batch_only_accepts_rows_before_the_last_number(reason):
+    class Truncated(FakeChat):
+        async def complete(self, system, user, opts):
+            await super().complete(system, user, opts)
+            if len(self.calls) == 1:
+                return ChatResult(text="1|完整译文\n2|不完整", finish_reason=reason)
+            assert all(value != "不完整" for value in cache.data.values())
+            assert "完整译文" in cache.data.values()
+            return ChatResult(text="1|修复后的译文")
+
+    cache = DictCache()
+    segs = [_seg(i, f"Synthetic segment {i}.") for i in range(3)]
+    out, report = asyncio.run(translate(segs, chat=Truncated(), cache=cache, ctx=DocContext()))
+    assert [s.target for s in out] == ["完整译文", "修复后的译文", "修复后的译文"]
+    assert list(report.attempts.values()) == [1, 2, 2]
+
+
+@pytest.mark.parametrize("reason", ["refusal", "content_filter"])
+def test_refusal_with_numbered_text_is_terminal(reason):
+    class Refusal(FakeChat):
+        async def complete(self, system, user, opts):
+            await super().complete(system, user, opts)
+            return ChatResult(text="说明如下\n1|不能使用的文字", finish_reason=reason)
+
+    cache, chat = DictCache(), Refusal()
+    out, report = asyncio.run(translate(SEGS[1:2], chat=chat, cache=cache, ctx=DocContext()))
+    assert report.requests == report.failed == 1 and report.translated == 0
+    assert out[0].status is SegmentStatus.FAILED and out[0].target is None
+    assert reason in out[0].failure_reason and not cache.data
+
+
+@pytest.mark.parametrize("text", ["1|甲\n1|乙", "1|甲\n3|乙", "2|乙\n1|甲"])
+def test_invalid_numbering_retries_entire_batch_without_caching(text):
+    class WrongBatch(FakeChat):
+        async def complete(self, system, user, opts):
+            answer = await super().complete(system, user, opts)
+            if len(self.calls) == 1:
+                return ChatResult(text=text)
+            assert all(value.startswith("译:") for value in cache.data.values())
+            return answer
+
+    cache = DictCache()
+    out, report = asyncio.run(translate(SEGS[2:], chat=WrongBatch(), cache=cache, ctx=DocContext()))
+    assert report.requests == 3
+    assert [s.target for s in out] == [f"译:{s.source}" for s in SEGS[2:]]

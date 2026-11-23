@@ -72,13 +72,14 @@ class AnthropicChat:
         except anthropic.APIStatusError as e:
             retryable = e.status_code in (408, 409, 425) or e.status_code >= 500
             raise ChatError(f"翻译服务返回错误：HTTP {e.status_code}", retryable=retryable) from e
-        # 模型拒绝（stop_reason=refusal）时没有正文，这批段落按格式错误处理、标为失败，不影响整个任务
         text = "".join(b.text for b in r.content if b.type == "text")
         u = r.usage
         hit = u.cache_read_input_tokens or 0
         prompt = u.input_tokens + hit + (u.cache_creation_input_tokens or 0)
         return ChatResult(
-            text=text, usage=ChatUsage(prompt_tokens=prompt, cache_hit_tokens=hit, completion_tokens=u.output_tokens)
+            text=text,
+            finish_reason=r.stop_reason,
+            usage=ChatUsage(prompt_tokens=prompt, cache_hit_tokens=hit, completion_tokens=u.output_tokens),
         )
 
     async def list_models(self) -> list[str]:

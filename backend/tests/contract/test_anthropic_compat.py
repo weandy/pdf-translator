@@ -11,7 +11,9 @@ from pdftr.domain.llm import ChatError, ChatOptions
 from pdftr.translation.anthropic_compat import AnthropicChat
 
 
-def _chat(model: str, status: int = 200, error: dict | None = None) -> tuple[AnthropicChat, list[httpx2.Request]]:
+def _chat(
+    model: str, status: int = 200, error: dict | None = None, *, stop_reason: str = "end_turn"
+) -> tuple[AnthropicChat, list[httpx2.Request]]:
     seen: list[httpx2.Request] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -31,7 +33,7 @@ def _chat(model: str, status: int = 200, error: dict | None = None) -> tuple[Ant
         return httpx2.Response(200, json={
             "id": "msg_1", "type": "message", "role": "assistant", "model": model,
             "content": [{"type": "thinking", "thinking": "", "signature": "s"}, {"type": "text", "text": "1|译文"}],
-            "stop_reason": "end_turn", "stop_sequence": None,
+            "stop_reason": stop_reason, "stop_sequence": None,
             "usage": {"input_tokens": 100, "cache_read_input_tokens": 400, "cache_creation_input_tokens": 50,
                       "output_tokens": 30},
         })  # fmt: skip
@@ -131,3 +133,10 @@ def test_default_transport_retries_remain_enabled():
     with pytest.raises(ChatError):
         asyncio.run(chat.complete("s", "u", ChatOptions()))
     assert len(seen) == 4
+
+
+@pytest.mark.parametrize("reason", ["max_tokens", "refusal"])
+def test_model_finish_reason(reason):
+    chat, _ = _chat("m", stop_reason=reason)
+    result = asyncio.run(chat.complete("s", "u", ChatOptions()))
+    assert result.finish_reason == reason

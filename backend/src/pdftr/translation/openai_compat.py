@@ -82,7 +82,12 @@ class OpenAICompatChat:
         except openai.APIStatusError as e:
             retryable = e.status_code in (408, 409, 425) or e.status_code >= 500
             raise ChatError(f"翻译服务返回错误：HTTP {e.status_code}", retryable=retryable) from e
-        return ChatResult(text=r.choices[0].message.content or "", usage=_usage(r.usage))
+        choice = r.choices[0]
+        return ChatResult(
+            text=choice.message.content or "",
+            finish_reason="refusal" if choice.message.refusal else choice.finish_reason,
+            usage=_usage(r.usage),
+        )
 
     async def list_models(self) -> list[str]:
         try:

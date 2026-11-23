@@ -33,7 +33,11 @@ def make_batches[T](items: Sequence[T], sizes: Sequence[int], limit: int = BATCH
     return batches
 
 
-def parse_numbered(text: str) -> dict[int, str]:
+class NumberedResponseError(ValueError):
+    """模型返回的编号无法可靠地匹配输入。"""
+
+
+def parse_numbered(text: str, *, batch_size: int | None = None) -> dict[int, str]:
     """解析「编号|译文」。没有编号的行视为上一行的续行（模型偶尔会在段内换行）。"""
     out: dict[int, str] = {}
     last: int | None = None
@@ -43,10 +47,23 @@ def parse_numbered(text: str) -> dict[int, str]:
             continue
         m = re.match(r"^(\d+)\s*[|｜]\s*(.*)$", line)
         if m:
-            last = int(m.group(1))
+            digits = m.group(1)
+            # 防止极长的数字触发 Python 的整数转换限制。
+            if len(digits) > 12:
+                raise NumberedResponseError("编号越界")
+            number = int(digits)
+            if number < 1 or (batch_size is not None and number > batch_size):
+                raise NumberedResponseError(f"编号 {number} 越界")
+            if number in out:
+                raise NumberedResponseError(f"编号 {number} 重复")
+            if last is not None and number < last:
+                raise NumberedResponseError(f"编号 {number} 乱序")
+            last = number
             out[last] = m.group(2).strip()
         elif last is not None:
-            out[last] = f"{out[last]}{line}"
+            previous = out[last]
+            space = " " if re.search(r"[A-Za-z0-9]$", previous) and re.match(r"[A-Za-z0-9]", line) else ""
+            out[last] = f"{previous}{space}{line}"
     return out
 
 

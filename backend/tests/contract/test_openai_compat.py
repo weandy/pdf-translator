@@ -21,7 +21,9 @@ USAGE_DEEPSEEK = {
 }
 
 
-def _chat(dialect, status: int = 200, error: dict | None = None) -> tuple[OpenAICompatChat, list[dict]]:
+def _chat(
+    dialect, status: int = 200, error: dict | None = None, *, finish_reason: str = "stop"
+) -> tuple[OpenAICompatChat, list[dict]]:
     seen: list[dict] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -30,7 +32,7 @@ def _chat(dialect, status: int = 200, error: dict | None = None) -> tuple[OpenAI
             return httpx2.Response(status, json={"error": error or {"message": "x"}}, headers={"retry-after-ms": "1"})
         return httpx2.Response(200, json={
             "id": "c1", "object": "chat.completion", "created": 0, "model": "m",
-            "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "1|译文"}}],
+            "choices": [{"index": 0, "finish_reason": finish_reason, "message": {"role": "assistant", "content": "1|译文"}}],
             "usage": USAGE_DEEPSEEK,
         })  # fmt: skip
 
@@ -163,3 +165,10 @@ def test_list_models():
     )  # fmt: skip
     chat = OpenAICompatChat(base_url="https://api.example/v1", api_key="k", model="m", client=client)
     assert asyncio.run(chat.list_models()) == ["deepseek-flash", "deepseek-v4-pro"]
+
+
+@pytest.mark.parametrize("reason", ["length", "content_filter"])
+def test_model_finish_reason(reason):
+    chat, _ = _chat("generic", finish_reason=reason)
+    result = asyncio.run(chat.complete("s", "u", ChatOptions()))
+    assert result.finish_reason == reason
