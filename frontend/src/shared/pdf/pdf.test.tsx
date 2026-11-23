@@ -11,7 +11,11 @@ const textLayerMocks = vi.hoisted(() => {
     update: ReturnType<typeof vi.fn>;
     cancel: ReturnType<typeof vi.fn>;
     resolveRender: () => void;
+    rejectRender: (err: Error) => void;
   }> = [];
+
+  let updateThrows = false;
+  let spanTexts = ["PDF text"];
 
   class MockTextLayer {
     container: HTMLElement;
@@ -20,22 +24,29 @@ const textLayerMocks = vi.hoisted(() => {
     update: ReturnType<typeof vi.fn>;
     cancel: ReturnType<typeof vi.fn>;
     resolveRender: () => void;
+    rejectRender: (err: Error) => void;
 
     constructor(opts: { container: HTMLElement; viewport: { scale: number } }) {
       this.container = opts.container;
       this.viewport = opts.viewport;
       let done = () => {};
-      const promise = new Promise<void>((resolve) => {
+      let fail: (err: Error) => void = () => {};
+      const promise = new Promise<void>((resolve, reject) => {
         done = resolve;
+        fail = reject;
       });
       this.resolveRender = done;
+      this.rejectRender = fail;
       this.render = vi.fn(() => {
-        const span = document.createElement("span");
-        span.textContent = "PDF text";
-        this.container.appendChild(span);
+        for (const text of spanTexts) {
+          const span = document.createElement("span");
+          span.textContent = text;
+          this.container.appendChild(span);
+        }
         return promise;
       });
       this.update = vi.fn(({ viewport }: { viewport: { scale: number } }) => {
+        if (updateThrows) throw new Error("update boom");
         this.viewport = viewport;
       });
       this.cancel = vi.fn();
@@ -43,7 +54,16 @@ const textLayerMocks = vi.hoisted(() => {
     }
   }
 
-  return { instances, MockTextLayer };
+  return {
+    instances,
+    MockTextLayer,
+    setUpdateThrows: (v: boolean) => {
+      updateThrows = v;
+    },
+    setSpanTexts: (texts: string[]) => {
+      spanTexts = texts;
+    },
+  };
 });
 
 vi.mock("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url", () => ({ default: "/mock-worker.mjs" }));
@@ -56,13 +76,16 @@ vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
   getDocument: vi.fn(),
 }));
 
-import { PdfTextLayer } from "@/shared/pdf/pdf";
+import { highlightTextLayerSpans, PdfTextLayer } from "@/shared/pdf/pdf";
 
-function createFakeDoc() {
+function createFakeDoc(rejectGetPage?: Error) {
   const streamTextContent = vi.fn(() => ({}) as ReadableStream);
   const getViewport = vi.fn(({ scale }: { scale: number }) => ({ scale, width: 600 * scale, height: 800 * scale }));
   const pageObj = { streamTextContent, getViewport };
-  const getPage = vi.fn(async () => pageObj);
+  const getPage = vi.fn(async () => {
+    if (rejectGetPage) throw rejectGetPage;
+    return pageObj;
+  });
   return {
     doc: { getPage } as unknown as PDFDocumentProxy,
     getPage,
@@ -71,7 +94,7 @@ function createFakeDoc() {
   };
 }
 
-describe("PdfTextLayer", () => {
+describe("PdfTextLayer 与词级术语高亮", () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -80,6 +103,8 @@ describe("PdfTextLayer", () => {
 
   beforeEach(() => {
     textLayerMocks.instances.length = 0;
+    textLayerMocks.setUpdateThrows(false);
+    textLayerMocks.setSpanTexts(["PDF text"]);
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -106,13 +131,11 @@ describe("PdfTextLayer", () => {
     expect(layer.render).toHaveBeenCalledTimes(1);
     expect(layer.container.style.getPropertyValue("--total-scale-factor")).toBe("1.25");
 
-    // 完成首次 render
     await act(async () => {
       layer.resolveRender();
       await Promise.resolve();
     });
 
-    // 仅缩放变化：应走 update 而不是重新 streamTextContent 或新建 TextLayer
     await act(async () => {
       root.render(<PdfTextLayer doc={fake.doc} page={0} scale={1.75} />);
       await Promise.resolve();
@@ -134,7 +157,6 @@ describe("PdfTextLayer", () => {
     const first = textLayerMocks.instances[0]!;
     expect(first.container.children.length).toBeGreaterThan(0);
 
-    // 切换到第 2 页
     await act(async () => {
       root.render(<PdfTextLayer doc={fake.doc} page={1} scale={1} />);
       await Promise.resolve();
@@ -143,7 +165,6 @@ describe("PdfTextLayer", () => {
     expect(textLayerMocks.instances).toHaveLength(2);
     expect(fake.getPage).toHaveBeenLastCalledWith(2);
 
-    // 卸载
     const second = textLayerMocks.instances[1]!;
     await act(async () => root.unmount());
     expect(second.cancel).toHaveBeenCalledTimes(1);
@@ -158,19 +179,109 @@ describe("PdfTextLayer", () => {
     const layer = textLayerMocks.instances[0]!;
     expect(layer.update).not.toHaveBeenCalled();
 
-    // 渲染尚未完成时先触发缩放
     await act(async () => {
       root.render(<PdfTextLayer doc={fake.doc} page={0} scale={2} />);
       await Promise.resolve();
     });
     expect(layer.update).not.toHaveBeenCalled();
 
-    // 首次 render 完成后应立即补一次 update(scale=2)
     await act(async () => {
       layer.resolveRender();
       await Promise.resolve();
     });
     expect(layer.update).toHaveBeenCalledTimes(1);
     expect(layer.viewport.scale).toBe(2);
+  });
+
+  it("支持跨 span 词级术语高亮与清空无损还原", async () => {
+    textLayerMocks.setSpanTexts(["Self-", "Attention ", "Mechanism"]);
+    const fake = createFakeDoc();
+    await act(async () => {
+      root.render(<PdfTextLayer doc={fake.doc} page={0} scale={1} highlight="attention mechanism" />);
+      await Promise.resolve();
+    });
+    const layer = textLayerMocks.instances[0]!;
+    await act(async () => {
+      layer.resolveRender();
+      await Promise.resolve();
+    });
+
+    const marks = [...layer.container.querySelectorAll("mark.term-highlight")].map((m) => m.textContent);
+    expect(marks).toEqual(["Attention ", "Mechanism"]);
+
+    // 清空高亮后无损还原原文本
+    await act(async () => {
+      root.render(<PdfTextLayer doc={fake.doc} page={0} scale={1} highlight={undefined} />);
+      await Promise.resolve();
+    });
+    expect(layer.container.querySelectorAll("mark.term-highlight")).toHaveLength(0);
+    expect(layer.container.textContent).toBe("Self-Attention Mechanism");
+  });
+
+  it("highlightTextLayerSpans 跳过 img 角色 span 并保留 span 内联样式", () => {
+    const host = document.createElement("div");
+    const imgSpan = document.createElement("span");
+    imgSpan.setAttribute("role", "img");
+    imgSpan.textContent = "Attention";
+    const textSpan = document.createElement("span");
+    textSpan.style.left = "12px";
+    textSpan.textContent = "Use Attention now";
+    host.append(imgSpan, textSpan);
+
+    highlightTextLayerSpans(host, "attention");
+    expect(imgSpan.querySelector("mark")).toBeNull();
+    expect(textSpan.querySelector("mark.term-highlight")?.textContent).toBe("Attention");
+    expect(textSpan.style.left).toBe("12px");
+  });
+
+  it("文本流渲染或缩放 update 出现非取消异常时清理残留 DOM 并回调 onError", async () => {
+    const onError = vi.fn();
+    const fake = createFakeDoc();
+    await act(async () => {
+      root.render(<PdfTextLayer doc={fake.doc} page={0} scale={1} onError={onError} />);
+      await Promise.resolve();
+    });
+    const layer = textLayerMocks.instances[0]!;
+    expect(layer.container.children.length).toBeGreaterThan(0);
+
+    await act(async () => {
+      layer.rejectRender(new Error("corrupt stream"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(layer.cancel).toHaveBeenCalledTimes(1);
+    expect(layer.container.children.length).toBe(0);
+
+    // 另一页测试 update() 抛出异常时也清理并触发 onError
+    const onErrorUpdate = vi.fn();
+    textLayerMocks.setUpdateThrows(true);
+    await act(async () => {
+      root.render(<PdfTextLayer doc={fake.doc} page={1} scale={1} onError={onErrorUpdate} />);
+      await Promise.resolve();
+    });
+    const layer2 = textLayerMocks.instances[1]!;
+    await act(async () => {
+      layer2.resolveRender();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      root.render(<PdfTextLayer doc={fake.doc} page={1} scale={1.5} onError={onErrorUpdate} />);
+      await Promise.resolve();
+    });
+    expect(onErrorUpdate).toHaveBeenCalledTimes(1);
+    expect(layer2.cancel).toHaveBeenCalledTimes(1);
+    expect(layer2.container.children.length).toBe(0);
+  });
+
+  it("getPage 拒绝时清理并通知 onError", async () => {
+    const onError = vi.fn();
+    const fake = createFakeDoc(new Error("page load failed"));
+    await act(async () => {
+      root.render(<PdfTextLayer doc={fake.doc} page={0} scale={1} onError={onError} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(onError).toHaveBeenCalledTimes(1);
   });
 });

@@ -194,20 +194,101 @@ export function PdfCanvas({ doc, page, scale }: CanvasProps) {
   );
 }
 
+interface TextLayerProps extends CanvasProps {
+  /** 需要词级高亮的原文术语（空字符串或 undefined 表示清除高亮） */
+  highlight?: string;
+  /** 文本流提取、渲染或缩放更新失败（非取消）时通知上层优雅降级 */
+  onError?: () => void;
+}
+
 interface TextLayerState {
   layer: pdfjs.TextLayer;
   page: PDFPageProxy;
   ready: boolean;
 }
 
+const rawSpanText = new WeakMap<HTMLSpanElement, string>();
+
 /**
- * 渲染原生 PDF 页的 pdf.js TextLayer（逐字与画布对齐，支持精准划选、复制与 Ctrl+F）。
- * 仅 scale 变化时复用已提取文本流并走 layer.update()，不重复请求 worker；翻页或卸载时取消任务并清空容器。
+ * 在 pdf.js TextLayer 的 span 集合内做无损词级高亮（支持单 span 及跨多 span 的术语匹配）。
+ * 仅替换 span 内部子节点，不触碰 pdf.js 写入在 span 上的定位与缩放内联样式。
  */
-export function PdfTextLayer({ doc, page, scale }: CanvasProps) {
+export function highlightTextLayerSpans(container: HTMLElement, needle: string | undefined): void {
+  const spans = [...container.querySelectorAll<HTMLSpanElement>("span")].filter(
+    (span) => span.getAttribute("role") !== "img",
+  );
+  // 先无损还原此前高亮过的 span
+  for (const span of spans) {
+    const original = rawSpanText.get(span);
+    if (original !== undefined) {
+      span.textContent = original;
+    } else {
+      rawSpanText.set(span, span.textContent ?? "");
+    }
+  }
+
+  const term = needle?.trim().toLowerCase();
+  if (!term) return;
+
+  const segments: Array<{ span: HTMLSpanElement; text: string; start: number; end: number }> = [];
+  let joined = "";
+  for (const span of spans) {
+    const text = rawSpanText.get(span) ?? "";
+    if (!text) continue;
+    const start = joined.length;
+    joined += text;
+    segments.push({ span, text, start, end: joined.length });
+  }
+  if (!joined) return;
+
+  const lower = joined.toLowerCase();
+  const matches: Array<[number, number]> = [];
+  let from = 0;
+  while (from < lower.length) {
+    const idx = lower.indexOf(term, from);
+    if (idx === -1) break;
+    matches.push([idx, idx + term.length]);
+    from = idx + term.length;
+  }
+  if (matches.length === 0) return;
+
+  for (const seg of segments) {
+    const localRanges: Array<[number, number]> = [];
+    for (const [mStart, mEnd] of matches) {
+      if (mEnd <= seg.start || mStart >= seg.end) continue;
+      localRanges.push([Math.max(mStart, seg.start) - seg.start, Math.min(mEnd, seg.end) - seg.start]);
+    }
+    if (localRanges.length === 0) continue;
+    const frag = document.createDocumentFragment();
+    let cursor = 0;
+    for (const [s, e] of localRanges) {
+      if (s > cursor) frag.append(document.createTextNode(seg.text.slice(cursor, s)));
+      const mark = document.createElement("mark");
+      mark.className = "term-highlight";
+      mark.textContent = seg.text.slice(s, e);
+      frag.append(mark);
+      cursor = e;
+    }
+    if (cursor < seg.text.length) frag.append(document.createTextNode(seg.text.slice(cursor)));
+    seg.span.replaceChildren(frag);
+  }
+}
+
+/**
+ * 渲染原生 PDF 页的 pdf.js TextLayer（逐字与画布对齐，支持精准划选、复制、Ctrl+F 与词级术语高亮）。
+ * 仅 scale 变化时复用已提取文本流并走 layer.update()，不重复请求 worker；翻页/卸载时 cancel()，真实失败时清理并回调 onError。
+ */
+export function PdfTextLayer({ doc, page, scale, highlight, onError }: TextLayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stateRef = useRef<TextLayerState | null>(null);
   const scaleRef = useRef(scale);
+  const highlightRef = useRef(highlight);
+  const onErrorRef = useRef(onError);
+
+  useEffect(() => {
+    highlightRef.current = highlight;
+    onErrorRef.current = onError;
+  }, [highlight, onError]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -215,6 +296,19 @@ export function PdfTextLayer({ doc, page, scale }: CanvasProps) {
     let alive = true;
     let localState: TextLayerState | null = null;
     container.replaceChildren();
+
+    const failAndCleanup = () => {
+      if (localState) {
+        if (stateRef.current === localState) stateRef.current = null;
+        try {
+          localState.layer.cancel();
+        } catch {
+          // 忽略取消时的二次异常
+        }
+      }
+      container.replaceChildren();
+      onErrorRef.current?.();
+    };
 
     void doc
       .getPage(page + 1)
@@ -238,17 +332,23 @@ export function PdfTextLayer({ doc, page, scale }: CanvasProps) {
             container.style.setProperty("--total-scale-factor", String(scaleRef.current));
             localState.layer.update({ viewport: p.getViewport({ scale: scaleRef.current }) });
           }
+          highlightTextLayerSpans(container, highlightRef.current);
         });
       })
       .catch((e: unknown) => {
         if (!alive || e instanceof pdfjs.AbortException) return;
+        failAndCleanup();
       });
 
     return () => {
       alive = false;
       if (localState) {
         if (stateRef.current === localState) stateRef.current = null;
-        localState.layer.cancel();
+        try {
+          localState.layer.cancel();
+        } catch {
+          // 忽略已结束任务的取消异常
+        }
       }
       container.replaceChildren();
     };
@@ -261,9 +361,26 @@ export function PdfTextLayer({ doc, page, scale }: CanvasProps) {
     container.style.setProperty("--total-scale-factor", String(scale));
     const current = stateRef.current;
     if (current?.ready) {
-      current.layer.update({ viewport: current.page.getViewport({ scale }) });
+      try {
+        current.layer.update({ viewport: current.page.getViewport({ scale }) });
+      } catch {
+        stateRef.current = null;
+        try {
+          current.layer.cancel();
+        } catch {
+          // 忽略取消异常
+        }
+        container.replaceChildren();
+        onErrorRef.current?.();
+      }
     }
   }, [scale]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !stateRef.current?.ready) return;
+    highlightTextLayerSpans(container, highlight);
+  }, [highlight]);
 
   return (
     <div

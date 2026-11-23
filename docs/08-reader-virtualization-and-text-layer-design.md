@@ -182,7 +182,9 @@ export interface PageLayout {
     - `onMouseLeave`：调用 `onHover(null)`；
     - `onClick`：若 `window.getSelection()?.toString()` 非空（用户正在划词复制），直接忽略不抢焦；否则命中某段落时调用 `onSelect(segId)` 打开/切换右侧编辑面板。
 - **术语高亮**：
-  - 原文侧继续通过 `.hit.marked` 清晰标出含该术语的段落块底纹；扫描页降级层保留 `highlightPlainText` 词级高亮；译文侧 `OverlayBlock` 的词级高亮保持不变。
+  - 原文原生页在 `PdfTextLayer` 渲染后经 `highlightTextLayerSpans` 实现无损词级 `<mark class="term-highlight">` 高亮（支持单 span 及跨多 span 匹配，清空时还原原文本且不改 pdf.js 定位样式），同时保留 `.hit.marked` 段落底纹；扫描页降级层保留 `highlightPlainText` 词级高亮；译文侧 `OverlayBlock` 的词级高亮保持不变。
+- **旋转页与异常降级**：
+  - `.pdf-text-layer` 补齐 `data-main-rotation="90" | "180" | "270"` 旋转变换规则；`getPage` / `render` / `update` 遇非 `AbortException` 错误时取消实例、清空残留 DOM 并通过 `onError` 自动降级到该页的 `.source-text-layer`。
 
 ---
 

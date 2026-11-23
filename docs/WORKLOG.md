@@ -8,8 +8,9 @@
 
 - 设计文档：`docs/08-reader-virtualization-and-text-layer-design.md`（方案 A1 + B1 + C1，选项 A，分两阶段实施）。
 - 阶段 1（`virtual.ts`、`search.ts`、`ReaderView.tsx`、`styles.css`）：基于每页已知 PDF 尺寸的前缀和窗口虚拟化，移除每页独立的 `IntersectionObserver` 与远端页常驻 `.hit` 节点，对 `PageRow` 做 `React.memo` 与按页属性收敛，跳转定位改用精确几何计算（支持未挂载远端页直接跳转并保留实测页宽缩放校准）；预构建搜索归一化索引并加入 150ms 输入防抖（按 Enter 立即触发）。
-- 阶段 2（`pdf.tsx`、`ReaderView.tsx`、`styles.css`）：新增 `PdfTextLayer`（基于 `pdfjs-dist@6.4.299` `TextLayer`，缩放时走 `update()` 不重提取文本流，切换/卸载时 `cancel()` 并处理加载中途缩放竞态）；原文页按画布 / 视觉底纹 `.hit-layer` / 文字层 / 链接层四层解耦，采用坐标命中驱动悬停联动与点击编辑（划词选区非空时不误触）；扫描页（`page.kind !== "native"`）继续保留块级 `.source-text-layer` 降级层。
-- 验证结果：Node `v22.23.5` 下前端全量 Vitest 40 文件 / 192 项通过（较基线 175 项新增 17 项单测），`npm run lint`、`npm run typecheck`、`npm run build` 均通过（仅前端改动，尚未部署上线，待 Grok 独立代码评审并经维护者确认后合并发布）。
+- 阶段 2（`pdf.tsx`、`ReaderView.tsx`、`styles.css`）：新增 `PdfTextLayer`（基于 `pdfjs-dist@6.4.299` `TextLayer`，缩放时走 `update()` 不重提取文本流，切换/卸载时 `cancel()` 并处理加载中途缩放竞态、旋转页 `data-main-rotation` 对齐、跨 span 词级术语高亮与非取消异常自动降级）；原文页按画布 / 视觉底纹 `.hit-layer` / 文字层 / 链接层四层解耦，采用坐标命中与拖拽阈值保护驱动悬停联动与点击编辑；扫描页（`page.kind !== "native"`）继续保留块级 `.source-text-layer` 降级层。
+- 双模型评审与修复闭环：经 Codex `gpt-6.1-sol` (high) 与 Grok `grok-4.7` (high) 独立评审，补齐缩放/切显示模式阅读锚点保持（`windowAnchor` + `useLayoutEffect`）、统一 `scrollTop - paddingTop` 布局坐标系、短距离平滑跳转 `pinnedPage` 防闪白与远距离 `auto` 直达、`data-main-rotation` 90°/180°/270° 旋转样式、原生页跨 span 词级术语高亮、`PdfTextLayer` 失败清理与块级降级、中文 IME `isComposing` 过滤、非连续 `page.index` 双向映射及 `pagehide` 同步落盘。
+- 验证结果：Node `v22.23.5` 下前端全量 Vitest 40 文件 / 199 项通过（较基线 175 项新增 24 项测试），`npm run lint`、`npm run typecheck`、`npm run build` 均通过（位于独立 worktree 分支 `feat/reader-virtualization-text-layer`，尚未合并主干或部署上线）。
 
 ### 部署：统一任务卡片与逐篇编辑入口上线（2026-11-23）
 

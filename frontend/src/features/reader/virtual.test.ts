@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildPageLayout,
+  captureScrollAnchor,
   currentPageAt,
   hitBlockAt,
   PAGE_ROW_GAP,
   pageJumpTop,
+  restoreScrollAnchor,
   visiblePageRange,
 } from "./virtual";
 import type { BlockData, PageData } from "@/shared/api/client";
@@ -41,11 +43,16 @@ describe("阅读器虚拟化几何计算", () => {
     expect(layout.byPageIndex.get(1)?.top).toBe(428);
   });
 
-  it("空文档布局返回 0 高度和空区间", () => {
-    const layout = buildPageLayout([], 1);
-    expect(layout.totalHeight).toBe(0);
-    expect(visiblePageRange(layout, 0, 900, 1200)).toEqual([0, -1]);
-    expect(currentPageAt(layout, 0)).toBe(0);
+  it("空文档布局与异常缩放/负高度输入具备单调性护栏", () => {
+    const empty = buildPageLayout([], 1);
+    expect(empty.totalHeight).toBe(0);
+    expect(visiblePageRange(empty, 0, 900, 1200)).toEqual([0, -1]);
+    expect(currentPageAt(empty, 0)).toBe(0);
+
+    const safe = buildPageLayout([makePage(0, -100), makePage(1, 800)], 0, 28);
+    expect(safe.items[0]?.height).toBe(0);
+    expect(safe.items[1]?.height).toBe(800);
+    expect(safe.totalHeight).toBe(828);
   });
 
   it("支持非零起始或不连续的 page.index", () => {
@@ -58,20 +65,18 @@ describe("阅读器虚拟化几何计算", () => {
     const pages = Array.from({ length: 100 }, (_, i) => makePage(i, 800));
     const layout = buildPageLayout(pages, 1, 28); // 每页步进 828px
     expect(visiblePageRange(layout, 0, 900, 1200)).toEqual([0, 2]);
-    // 滚动到第 50 页（top = 50 * 828 = 41400）
     const [start, end] = visiblePageRange(layout, 41400, 900, 1200);
     expect(start).toBe(48);
     expect(end).toBe(52);
-    // 滚到底部不越界
     expect(visiblePageRange(layout, layout.totalHeight, 900, 1200)).toEqual([98, 99]);
   });
 
-  it("按滚动位置与锚点偏移精确判定当前页", () => {
+  it("按布局坐标与锚点偏移精确判定当前页", () => {
     const pages = Array.from({ length: 10 }, (_, i) => makePage(i, 800));
     const layout = buildPageLayout(pages, 1, 28);
     expect(currentPageAt(layout, 0, 80)).toBe(0);
     expect(currentPageAt(layout, 747, 80)).toBe(0);
-    expect(currentPageAt(layout, 748, 80)).toBe(1); // 748 + 80 = 828 === 第 1 页 top
+    expect(currentPageAt(layout, 748, 80)).toBe(1);
     expect(currentPageAt(layout, 99999, 80)).toBe(9);
   });
 
@@ -79,16 +84,31 @@ describe("阅读器虚拟化几何计算", () => {
     const pages = [makePage(0, 800), makePage(1, 800)];
     const layout = buildPageLayout(pages, 1, 28);
     expect(pageJumpTop(layout, 0, 100, 1, 56, 0)).toBe(44);
-    expect(pageJumpTop(layout, 0, 10, 1, 56, 0)).toBe(0); // 不小于 0
+    expect(pageJumpTop(layout, 0, 10, 1, 56, 0)).toBe(0);
     expect(pageJumpTop(layout, 1, 100, 1, 56, 24)).toBe(24 + 828 + 100 - 56);
     expect(pageJumpTop(layout, 0, 100, 1, 56, 0, 1.5)).toBe(94);
     expect(pageJumpTop(layout, 99, 0, 1)).toBeNull();
   });
 
-  it("坐标命中块时返回包含该点的最小面积块", () => {
+  it("缩放前后通过锚点精确保持阅读页与页内 PDF 偏移", () => {
+    const pages = Array.from({ length: 50 }, (_, i) => makePage(i, 800));
+    const oldLayout = buildPageLayout(pages, 1, 28);
+    const newLayout = buildPageLayout(pages, 2, 28);
+    // 位于第 25 页顶部往下 200pt 处
+    const oldLayoutScroll = oldLayout.byPageIndex.get(25)!.top + 200;
+    const anchor = captureScrollAnchor(oldLayout, oldLayoutScroll, 1);
+    expect(anchor).toEqual({ pageIndex: 25, offsetInPt: 200 });
+
+    const restoredScrollTop = restoreScrollAnchor(newLayout, anchor!, 2, 24);
+    expect(restoredScrollTop).toBe(24 + newLayout.byPageIndex.get(25)!.top + 400);
+    expect(currentPageAt(newLayout, restoredScrollTop! - 24, 0)).toBe(25);
+  });
+
+  it("坐标命中块时返回包含该点的最小正面积块，跳过零面积退化框", () => {
+    const degenerate = makeBlock("zero", 60, 60, 60, 80);
     const outer = makeBlock("outer", 10, 10, 200, 200);
     const inner = makeBlock("inner", 50, 50, 100, 80);
-    expect(hitBlockAt([outer, inner], 60, 60)?.id).toBe("inner");
+    expect(hitBlockAt([degenerate, outer, inner], 60, 60)?.id).toBe("inner");
     expect(hitBlockAt([outer, inner], 20, 20)?.id).toBe("outer");
     expect(hitBlockAt([outer, inner], 300, 300)).toBeNull();
   });

@@ -30,12 +30,16 @@ import { OutlinePanel } from "./OutlinePanel";
 import { buildSearchIndex, querySearchIndex, type SearchHit } from "./search";
 import {
   buildPageLayout,
+  captureScrollAnchor,
+  CURRENT_PAGE_ANCHOR_PX,
   currentPageAt,
   DEFAULT_OVERSCAN_PX,
   hitBlockAt,
   PAGE_ROW_GAP,
   pageJumpTop,
+  restoreScrollAnchor,
   visiblePageRange,
+  type ScrollAnchor,
 } from "./virtual";
 
 export type ViewMode = "both" | "translated" | "original";
@@ -64,6 +68,7 @@ const NARROW = 760; // 视口窄于这个宽度时默认只显示译文
 const POSITIONS = "pdftr.pos.v1"; // 每篇文档上次读到的页（浏览器本地）
 const SEARCH_DEBOUNCE_MS = 150;
 const DEFAULT_VIEWPORT_HEIGHT = 800;
+const DRAG_THRESHOLD_PX = 5;
 
 interface JumpTarget {
   page: number;
@@ -82,6 +87,15 @@ function savePage(jobId: string, page: number): void {
   writeJSON(POSITIONS, all);
 }
 
+function scrollerPaddingTop(el: HTMLElement | null): number {
+  if (!el) return 0;
+  return Number.parseFloat(window.getComputedStyle(el).paddingTop) || 0;
+}
+
+function isImeComposing(e: React.KeyboardEvent): boolean {
+  return e.nativeEvent.isComposing || e.keyCode === 229;
+}
+
 export function ReaderView({
   doc,
   jobId,
@@ -94,27 +108,40 @@ export function ReaderView({
   spot = null,
   marked,
 }: Props) {
+  const firstPageIndex = doc.pages[0]?.index ?? 0;
   // 窄屏（手机）上默认只显示译文、适应宽度；用户切换后以用户的选择为准
   const [mode, setMode] = useState<ViewMode>(() => (window.innerWidth < NARROW ? "translated" : "both"));
   const [zoom, setZoom] = useState<number | null>(null); // null = 自适应宽度
   const [width, setWidth] = useState(1200);
   const [viewportHeight, setViewportHeight] = useState(DEFAULT_VIEWPORT_HEIGHT);
-  const [windowScrollTop, setWindowScrollTop] = useState(0);
+  // 缩放无关的阅读锚点：scale / mode / 宽度变化时首帧即能挂载正确页，不跳页、不闪白
+  const [windowAnchor, setWindowAnchor] = useState<ScrollAnchor>(() => ({
+    pageIndex: firstPageIndex,
+    offsetInPt: 0,
+  }));
+  // 短距离平滑滚动期间临时保留目标页在挂载集合中，避免动画首帧卸载起点页闪白
+  const [pinnedPage, setPinnedPage] = useState<number | null>(null);
+  const [failedTextPages, setFailedTextPages] = useState<ReadonlySet<number>>(() => new Set());
   const [hovered, setHovered] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null); // 刚跳到的标题段落：原文与译文上短暂高亮
   const flashTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const jumpTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const pinTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null);
   const [showOutline, setShowOutline] = useState(() => window.innerWidth >= 1280 && doc.outline.length > 0);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [searchIndex, setSearchIndex] = useState(0);
-  const [current, setCurrent] = useState(0); // 当前页（0 起）
-  const [pageDraft, setPageDraft] = useState<string | null>(null); // 正在输入的页码
+  const [current, setCurrent] = useState(firstPageIndex); // 当前页（page.index）
+  const [pageDraft, setPageDraft] = useState<string | null>(null); // 正在输入的显示页码（1 起）
   const scroller = useRef<HTMLDivElement>(null);
-  const scrollTopRef = useRef(0);
+  // 统一存布局坐标（已扣掉 paddingTop）
+  const layoutScrollRef = useRef(0);
+  const anchorRef = useRef<ScrollAnchor>({ pageIndex: firstPageIndex, offsetInPt: 0 });
+  const pendingSavePageRef = useRef<number | null>(null);
   const frame = useRef(0);
+  const syncFrame = useRef(0);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const restoreTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const searchTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -159,29 +186,6 @@ export function ReaderView({
     return { blockById: bById, blocksByPage: bByPage, pagesBySegment: pBySeg, firstPageBySegment: firstBySeg };
   }, [doc, texts]);
 
-  useEffect(() => {
-    const el = scroller.current;
-    if (!el) return;
-    const ro = new ResizeObserver(([entry]) => {
-      if (!entry) return;
-      if (entry.contentRect.width > 0) setWidth(entry.contentRect.width);
-      if (entry.contentRect.height > 0) setViewportHeight(entry.contentRect.height);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      clearTimeout(flashTimer.current);
-      clearTimeout(jumpTimer.current);
-      clearTimeout(saveTimer.current);
-      clearTimeout(restoreTimer.current);
-      clearTimeout(searchTimer.current);
-      if (frame.current) cancelAnimationFrame(frame.current);
-    };
-  }, []);
-
   const maxPageWidth = useMemo(
     () => (doc.pages.length ? Math.max(...doc.pages.map((p) => p.width)) : 600),
     [doc.pages],
@@ -192,14 +196,89 @@ export function ReaderView({
   const layout = useMemo(() => buildPageLayout(doc.pages, scale, PAGE_ROW_GAP), [doc.pages, scale]);
   const contentMinWidth = maxPageWidth * scale * columns + (columns - 1) * SPINE;
 
+  const windowLayoutScroll = useMemo(
+    () => restoreScrollAnchor(layout, windowAnchor, scale, 0) ?? 0,
+    [layout, windowAnchor, scale],
+  );
   const [visibleStart, visibleEnd] = useMemo(
-    () => visiblePageRange(layout, windowScrollTop, viewportHeight, DEFAULT_OVERSCAN_PX),
-    [layout, windowScrollTop, viewportHeight],
+    () => visiblePageRange(layout, windowLayoutScroll, viewportHeight, DEFAULT_OVERSCAN_PX),
+    [layout, windowLayoutScroll, viewportHeight],
   );
   const visibleRangeRef = useRef<[number, number]>([visibleStart, visibleEnd]);
+  const layoutRef = useRef(layout);
+  const scaleRef = useRef(scale);
+  const viewportHeightRef = useRef(viewportHeight);
+  const prevScaleRef = useRef(scale);
+
   useEffect(() => {
     visibleRangeRef.current = [visibleStart, visibleEnd];
-  }, [visibleStart, visibleEnd]);
+    layoutRef.current = layout;
+    scaleRef.current = scale;
+    viewportHeightRef.current = viewportHeight;
+  }, [visibleStart, visibleEnd, layout, scale, viewportHeight]);
+
+  // 缩放或切换显示方式导致 scale 变化时，在绘制前把真实 scrollTop 同步回锚点对应的文档位置
+  useLayoutEffect(() => {
+    if (prevScaleRef.current === scale) return;
+    prevScaleRef.current = scale;
+    const el = scroller.current;
+    if (!el) return;
+    const paddingTop = scrollerPaddingTop(el);
+    const restoredScrollTop = restoreScrollAnchor(layout, anchorRef.current, scale, paddingTop);
+    if (restoredScrollTop === null) return;
+    el.scrollTop = restoredScrollTop;
+    const actualLayoutScroll = Math.max(0, el.scrollTop - paddingTop);
+    layoutScrollRef.current = actualLayoutScroll;
+    const clampedAnchor = captureScrollAnchor(layout, actualLayoutScroll, scale);
+    if (clampedAnchor) anchorRef.current = clampedAnchor;
+    if (syncFrame.current) cancelAnimationFrame(syncFrame.current);
+    syncFrame.current = requestAnimationFrame(() => {
+      syncFrame.current = 0;
+      const synced = captureScrollAnchor(layoutRef.current, layoutScrollRef.current, scaleRef.current);
+      if (synced) setWindowAnchor(synced);
+      setCurrent(currentPageAt(layoutRef.current, layoutScrollRef.current, CURRENT_PAGE_ANCHOR_PX));
+    });
+  }, [layout, scale]);
+
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      if (!entry) return;
+      const nextWidth = entry.contentRect.width;
+      const nextHeight = entry.contentRect.height;
+      if (nextWidth > 0) {
+        setWindowAnchor(anchorRef.current);
+        setWidth(nextWidth);
+      }
+      if (nextHeight > 0) setViewportHeight(nextHeight);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // 离开页面或卸载时立即落盘尚未写入的阅读页位置并清理所有定时器
+  useEffect(() => {
+    const flushPage = () => {
+      if (pendingSavePageRef.current !== null) {
+        savePage(jobId, pendingSavePageRef.current);
+        pendingSavePageRef.current = null;
+      }
+    };
+    window.addEventListener("pagehide", flushPage);
+    return () => {
+      window.removeEventListener("pagehide", flushPage);
+      flushPage();
+      clearTimeout(flashTimer.current);
+      clearTimeout(jumpTimer.current);
+      clearTimeout(pinTimer.current);
+      clearTimeout(saveTimer.current);
+      clearTimeout(restoreTimer.current);
+      clearTimeout(searchTimer.current);
+      if (frame.current) cancelAnimationFrame(frame.current);
+      if (syncFrame.current) cancelAnimationFrame(syncFrame.current);
+    };
+  }, [jobId]);
 
   const searchIndexData = useMemo(() => buildSearchIndex(doc), [doc]);
   const searchResults = useMemo(
@@ -254,26 +333,59 @@ export function ReaderView({
     return () => document.removeEventListener("keydown", onKey);
   }, [searchOpen]);
 
+  const handleTextLayerError = useCallback((pageIndex: number) => {
+    setFailedTextPages((prev) => {
+      if (prev.has(pageIndex)) return prev;
+      const next = new Set(prev);
+      next.add(pageIndex);
+      return next;
+    });
+  }, []);
+
   // 跳到某页的某个位置（top 为离页顶的 PDF 点），不依赖目标页已挂载
   const goTo = useCallback(
     (page: number, top = 0, smooth = true, inset = 56) => {
       const el = scroller.current;
       if (!el) return;
-      const paddingTop = Number.parseFloat(window.getComputedStyle(el).paddingTop) || 0;
+      const paddingTop = scrollerPaddingTop(el);
       const pageWidth = doc.pages.find((p) => p.index === page)?.width;
       const shownWidth = el
         .querySelector<HTMLElement>(`.page-row[data-page="${page}"] .page`)
         ?.getBoundingClientRect().width;
       // 滚动条、侧栏会改变实际页宽；布局已更新但 ResizeObserver 中的比例可能还未同步。
       const actualScale = pageWidth && shownWidth ? shownWidth / pageWidth : undefined;
-      const targetTop = pageJumpTop(layout, page, top, scale, inset, paddingTop, actualScale);
-      if (targetTop === null) return;
-      el.scrollTo({ top: targetTop, behavior: smooth ? "smooth" : "auto" });
-      scrollTopRef.current = targetTop;
-      setWindowScrollTop(targetTop);
-      setCurrent(page);
+      const targetScrollTop = pageJumpTop(layout, page, top, scale, inset, paddingTop, actualScale);
+      if (targetScrollTop === null) return;
+      const currentScrollTop = paddingTop + layoutScrollRef.current;
+      const distance = Math.abs(targetScrollTop - currentScrollTop);
+      // 远距离跳转不做跨几十页的长平滑动画，直接落位避免闪白与无谓挂载
+      const useSmooth = smooth && distance <= viewportHeightRef.current * 1.5;
+      el.scrollTo({ top: targetScrollTop, behavior: useSmooth ? "smooth" : "auto" });
+
+      const targetLayoutScroll = Math.max(0, targetScrollTop - paddingTop);
+      const targetAnchor = captureScrollAnchor(layout, targetLayoutScroll, scale);
+      if (useSmooth) {
+        // 短距离平滑滚动：保留起点页不闪白，同时把目标页临时并入挂载集合
+        setPinnedPage(page);
+        clearTimeout(pinTimer.current);
+        pinTimer.current = setTimeout(() => setPinnedPage(null), 900);
+      } else {
+        layoutScrollRef.current = targetLayoutScroll;
+        if (targetAnchor) {
+          anchorRef.current = targetAnchor;
+          setWindowAnchor(targetAnchor);
+        }
+        setPinnedPage(null);
+        setCurrent(page);
+      }
+      pendingSavePageRef.current = page;
+      clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        savePage(jobId, page);
+        pendingSavePageRef.current = null;
+      }, 500);
     },
-    [layout, scale, doc.pages],
+    [layout, scale, doc.pages, jobId],
   );
 
   const jump = useCallback(
@@ -320,28 +432,43 @@ export function ReaderView({
     if (hit) jumpSearchHit(hit, next);
   };
 
-  // 滚动时按二分几何算出当前页与可见窗口，只有窗口或当前页变化才触发重渲染
+  // 滚动时统一转成布局坐标（扣除 paddingTop），仅在窗口范围或当前页变化时更新 React 状态
   const onScroll = () => {
     if (frame.current) return;
     frame.current = requestAnimationFrame(() => {
       frame.current = 0;
       const el = scroller.current;
       if (!el) return;
-      const nextTop = el.scrollTop;
-      scrollTopRef.current = nextTop;
+      const paddingTop = scrollerPaddingTop(el);
+      const layoutScroll = Math.max(0, el.scrollTop - paddingTop);
+      layoutScrollRef.current = layoutScroll;
+      const nextAnchor = captureScrollAnchor(layout, layoutScroll, scale);
+      if (nextAnchor) anchorRef.current = nextAnchor;
+
       const [prevStart, prevEnd] = visibleRangeRef.current;
-      const [nextStart, nextEnd] = visiblePageRange(layout, nextTop, viewportHeight, DEFAULT_OVERSCAN_PX);
-      if (nextStart !== prevStart || nextEnd !== prevEnd) {
-        setWindowScrollTop(nextTop);
+      const [nextStart, nextEnd] = visiblePageRange(layout, layoutScroll, viewportHeight, DEFAULT_OVERSCAN_PX);
+      if ((nextStart !== prevStart || nextEnd !== prevEnd) && nextAnchor) {
+        setWindowAnchor(nextAnchor);
       }
-      const page = currentPageAt(layout, nextTop, 80);
+      const page = currentPageAt(layout, layoutScroll, CURRENT_PAGE_ANCHOR_PX);
       setCurrent(page);
+      setHovered((prev) => (prev === null ? prev : null));
+      if (pinnedPage !== null) {
+        const pinnedMetric = layout.byPageIndex.get(pinnedPage);
+        if (pinnedMetric && pinnedMetric.order >= nextStart && pinnedMetric.order <= nextEnd) {
+          setPinnedPage(null);
+        }
+      }
+      pendingSavePageRef.current = page;
       clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => savePage(jobId, page), 500);
+      saveTimer.current = setTimeout(() => {
+        savePage(jobId, page);
+        pendingSavePageRef.current = null;
+      }, 500);
     });
   };
 
-  // 打开时回到上次读到的页：等缩放比例稳定后再跳（期间 goTo 会随缩放变化，用引用拿最新的）
+  // 打开时回到上次读到的页：用 byPageIndex 校验以兼容非连续 page.index
   const goToRef = useRef(goTo);
   useEffect(() => {
     goToRef.current = goTo;
@@ -350,27 +477,22 @@ export function ReaderView({
     if (restored.current) return;
     restored.current = true;
     const page = savedPage(jobId);
-    if (page > 0 && page < doc.pages.length)
+    if (page !== firstPageIndex && layoutRef.current.byPageIndex.has(page)) {
       restoreTimer.current = setTimeout(() => goToRef.current(page, 0, false), 400);
+    }
     return () => clearTimeout(restoreTimer.current);
-  }, [jobId, doc.pages.length]);
+  }, [jobId, firstPageIndex]);
 
-  // 从别处（如修改记录）打开的段落不在视野里时，按几何坐标滚到它所在的页
-  const layoutRef = useRef(layout);
-  const viewportHeightRef = useRef(viewportHeight);
-  useEffect(() => {
-    layoutRef.current = layout;
-    viewportHeightRef.current = viewportHeight;
-  }, [layout, viewportHeight]);
+  // 从别处（如修改记录）打开的段落不在视野里时，按统一布局坐标滚到它所在的页
   useEffect(() => {
     if (!selectedSegment) return;
     const pageIndex = firstPageBySegment.get(selectedSegment);
     if (pageIndex === undefined) return;
     const metric = layoutRef.current.byPageIndex.get(pageIndex);
     if (!metric) return;
-    const top = scrollTopRef.current;
-    const bottom = top + viewportHeightRef.current;
-    if (metric.bottom < top || metric.top > bottom) {
+    const viewTop = layoutScrollRef.current;
+    const viewBottom = viewTop + viewportHeightRef.current;
+    if (metric.bottom < viewTop || metric.top > viewBottom) {
       goToRef.current(pageIndex, 0, false, 0);
     }
   }, [selectedSegment, firstPageBySegment, revealKey]);
@@ -390,11 +512,11 @@ export function ReaderView({
           .map((id) => ({ block: blockById.get(id), text: texts.get(id) }))
           .find(({ text }) => {
             if (!text) return false;
-            const source = spot.term?.source.trim().toLocaleLowerCase();
-            const target = spot.term?.target.trim().toLocaleLowerCase();
+            const source = spot.term?.source.trim().toLowerCase();
+            const target = spot.term?.target.trim().toLowerCase();
             return Boolean(
-              (source && text.sourceText.toLocaleLowerCase().includes(source)) ||
-                (target && text.text.toLocaleLowerCase().includes(target)),
+              (source && text.sourceText.toLowerCase().includes(source)) ||
+                (target && text.text.toLowerCase().includes(target)),
             );
           })?.block
       : blockById.get(seg.block_ids[0] ?? "");
@@ -410,8 +532,8 @@ export function ReaderView({
         clearTimeout(flashTimer.current);
         const hasTerm = Boolean(
           spot.term &&
-            ((spot.term.source && seg.source.toLocaleLowerCase().includes(spot.term.source.toLocaleLowerCase())) ||
-              (spot.term.target && seg.target?.toLocaleLowerCase().includes(spot.term.target.toLocaleLowerCase()))),
+            ((spot.term.source && seg.source.toLowerCase().includes(spot.term.source.toLowerCase())) ||
+              (spot.term.target && seg.target?.toLowerCase().includes(spot.term.target.toLowerCase()))),
         );
         setFlash(hasTerm ? null : spot.id);
         flashTimer.current = setTimeout(() => setFlash(null), 2400);
@@ -433,7 +555,39 @@ export function ReaderView({
     if (window.innerWidth < NARROW) setShowOutline(false); // 手机上点完收起
   };
 
-  const mountedPages = visibleEnd >= visibleStart ? doc.pages.slice(visibleStart, visibleEnd + 1) : [];
+  // 工具栏页码显示序号（1..doc.pages.length），双向映射到真实的 page.index
+  const currentOrder = layout.byPageIndex.get(current)?.order ?? 0;
+
+  // 合并窗口内页面与短距离平滑跳转的 pinnedPage，按文档顺序渲染且不重复
+  const mountedPages = useMemo(() => {
+    const list: PageData[] = [];
+    const seen = new Set<number>();
+    if (visibleEnd >= visibleStart) {
+      for (let i = visibleStart; i <= visibleEnd; i++) {
+        const p = doc.pages[i];
+        if (p && !seen.has(p.index)) {
+          seen.add(p.index);
+          list.push(p);
+        }
+      }
+    }
+    if (pinnedPage !== null && !seen.has(pinnedPage)) {
+      const metric = layout.byPageIndex.get(pinnedPage);
+      const pinned = metric ? doc.pages[metric.order] : undefined;
+      if (pinned) list.push(pinned);
+    }
+    return list;
+  }, [doc.pages, visibleStart, visibleEnd, pinnedPage, layout]);
+
+  const changeMode = (nextMode: ViewMode) => {
+    setWindowAnchor(anchorRef.current);
+    setMode(nextMode);
+  };
+
+  const changeZoom = (nextZoom: number | null) => {
+    setWindowAnchor(anchorRef.current);
+    setZoom(nextZoom);
+  };
 
   return (
     <div className="reader">
@@ -453,7 +607,7 @@ export function ReaderView({
                 type="button"
                 className={mode === m ? "on" : ""}
                 aria-pressed={mode === m}
-                onClick={() => setMode(m)}
+                onClick={() => changeMode(m)}
               >
                 {label}
               </button>
@@ -463,18 +617,18 @@ export function ReaderView({
             <button
               type="button"
               className="quiet"
-              onClick={() => setZoom(Math.max(0.3, scale - 0.15))}
+              onClick={() => changeZoom(Math.max(0.3, scale - 0.15))}
               aria-label="缩小"
             >
               −
             </button>
-            <button type="button" className="quiet zoom-label" onClick={() => setZoom(null)} title="适应宽度">
+            <button type="button" className="quiet zoom-label" onClick={() => changeZoom(null)} title="适应宽度">
               {Math.round(scale * 100)}%
             </button>
             <button
               type="button"
               className="quiet"
-              onClick={() => setZoom(Math.min(4, scale + 0.15))}
+              onClick={() => changeZoom(Math.min(4, scale + 0.15))}
               aria-label="放大"
             >
               +
@@ -486,14 +640,15 @@ export function ReaderView({
               className="num"
               inputMode="numeric"
               aria-label="跳到第几页"
-              value={pageDraft ?? String(current + 1)}
+              value={pageDraft ?? String(currentOrder + 1)}
               onFocus={(e) => e.currentTarget.select()}
               onChange={(e) => setPageDraft(e.target.value.replace(/\D/g, ""))}
               onBlur={() => setPageDraft(null)}
               onKeyDown={(e) => {
-                if (e.key !== "Enter") return;
+                if (isImeComposing(e) || e.key !== "Enter") return;
                 const n = Number(pageDraft);
-                if (n >= 1 && n <= doc.pages.length) goTo(n - 1);
+                const targetPage = n >= 1 && n <= doc.pages.length ? doc.pages[n - 1] : undefined;
+                if (targetPage) goTo(targetPage.index);
                 setPageDraft(null);
                 e.currentTarget.blur();
               }}
@@ -533,7 +688,7 @@ export function ReaderView({
               placeholder="搜索原文或译文"
               onChange={(e) => onSearchChange(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key !== "Enter") return;
+                if (isImeComposing(e) || e.key !== "Enter") return;
                 e.preventDefault();
                 if (debouncedQuery !== searchQuery) {
                   clearTimeout(searchTimer.current);
@@ -586,7 +741,7 @@ export function ReaderView({
                     className={index === activeSearchIndex ? "search-result on" : "search-result"}
                     onClick={() => jumpSearchHit(hit, index)}
                   >
-                    <span>第 {hit.page + 1} 页</span>
+                    <span>第 {(layout.byPageIndex.get(hit.page)?.order ?? hit.page) + 1} 页</span>
                     <strong>{shortLabel(hit.target || hit.source, 90)}</strong>
                   </button>
                 </li>
@@ -613,6 +768,7 @@ export function ReaderView({
             {mountedPages.map((page) => {
               const metric = layout.byPageIndex.get(page.index);
               const pageTop = metric?.top ?? 0;
+              const pageHeight = metric?.height ?? page.height * scale;
               const pageHovered = hovered && pagesBySegment.get(hovered)?.has(page.index) ? hovered : null;
               const pageSelected =
                 selectedSegment && pagesBySegment.get(selectedSegment)?.has(page.index) ? selectedSegment : null;
@@ -624,11 +780,14 @@ export function ReaderView({
                   key={page.index}
                   page={page}
                   top={pageTop}
+                  rowHeight={pageHeight}
                   blocks={blocksByPage.get(page.index) ?? EMPTY_BLOCKS}
                   scale={scale}
                   mode={mode}
                   original={original.doc}
                   background={background.doc}
+                  textLayerFailed={failedTextPages.has(page.index)}
+                  onTextLayerError={handleTextLayerError}
                   texts={texts}
                   hovered={pageHovered}
                   flash={pageFlash}
@@ -660,11 +819,14 @@ const EMPTY_BLOCKS: readonly BlockData[] = [];
 interface RowProps {
   page: PageData;
   top: number;
+  rowHeight: number;
   blocks: readonly BlockData[];
   scale: number;
   mode: ViewMode;
   original: PDFDocumentProxy | null;
   background: PDFDocumentProxy | null;
+  textLayerFailed: boolean;
+  onTextLayerError: (pageIndex: number) => void;
   texts: Map<string, BlockText>;
   hovered: string | null;
   flash: string | null;
@@ -767,11 +929,14 @@ function highlightPlainText(text: string, needle: string | undefined, key: strin
 const PageRow = memo(function PageRow({
   page,
   top,
+  rowHeight,
   blocks,
   scale,
   mode,
   original,
   background,
+  textLayerFailed,
+  onTextLayerError,
   texts,
   hovered,
   flash,
@@ -791,13 +956,15 @@ const PageRow = memo(function PageRow({
 }: RowProps) {
   const size = { width: page.width * scale, height: page.height * scale };
   const hoveredSegRef = useRef<string | null>(null);
+  const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
   const mark = (segId: string) =>
     (segId === selected ? " selected" : segId === hovered ? " hovered" : "") +
     (segId === flash ? " flash" : marked?.has(segId) ? " marked" : "") +
     (searchIds?.has(segId) ? " search-hit" : "") +
     (currentSearchId === segId ? " search-current" : "");
 
-  const useNativeTextLayer = Boolean(original && page.kind === "native");
+  const useNativeTextLayer = Boolean(original && page.kind === "native" && !textLayerFailed);
+  const handleError = useCallback(() => onTextLayerError(page.index), [onTextLayerError, page.index]);
 
   const segmentAtPointer = (e: React.MouseEvent<HTMLDivElement>): string | null => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -809,6 +976,10 @@ const PageRow = memo(function PageRow({
     return block ? (texts.get(block.id)?.segment.id ?? null) : null;
   };
 
+  const onOriginalPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    pointerDownRef.current = { x: e.clientX, y: e.clientY };
+  };
+
   const onOriginalMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     const segId = segmentAtPointer(e);
     if (segId === hoveredSegRef.current) return;
@@ -817,12 +988,17 @@ const PageRow = memo(function PageRow({
   };
 
   const onOriginalMouseLeave = () => {
+    pointerDownRef.current = null;
     if (hoveredSegRef.current === null && hovered === null) return;
     hoveredSegRef.current = null;
     onHover(null);
   };
 
   const onOriginalClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const down = pointerDownRef.current;
+    pointerDownRef.current = null;
+    // 拖拽划词刚松开或存在非空选区时，不触发段落编辑选中
+    if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > DRAG_THRESHOLD_PX) return;
     if (window.getSelection()?.toString()) return;
     const segId = segmentAtPointer(e);
     if (segId) onSelect(segId);
@@ -832,13 +1008,14 @@ const PageRow = memo(function PageRow({
     <div
       className={`page-row${mode === "both" ? "" : " single"}${side === "left" ? " side-left" : ""}`}
       data-page={page.index}
-      style={{ transform: `translateY(${top}px)` }}
+      style={{ height: rowHeight, transform: `translateY(${top}px)` }}
     >
       {mode !== "translated" && (
         <div
           className="page"
           style={size}
           aria-label={`原文第 ${page.index + 1} 页`}
+          onPointerDown={onOriginalPointerDown}
           onMouseMove={onOriginalMouseMove}
           onMouseLeave={onOriginalMouseLeave}
           onClick={onOriginalClick}
@@ -863,7 +1040,13 @@ const PageRow = memo(function PageRow({
             })}
           </div>
           {useNativeTextLayer && original ? (
-            <PdfTextLayer doc={original} page={page.index} scale={scale} />
+            <PdfTextLayer
+              doc={original}
+              page={page.index}
+              scale={scale}
+              highlight={term?.source}
+              onError={handleError}
+            />
           ) : (
             <div className="source-text-layer" aria-label={`原文第 ${page.index + 1} 页文字`}>
               {blocks.map((b) => {

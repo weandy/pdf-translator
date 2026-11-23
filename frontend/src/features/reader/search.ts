@@ -23,17 +23,19 @@ export function searchableText(text: string): string {
     .replace(/<\/?(?:sup|sub|b|i)>/g, "")
     .replace(/\s+/g, " ")
     .trim()
-    .toLocaleLowerCase();
+    .toLowerCase();
 }
 
 /** 预构建文档搜索索引，仅在文档变化时清洗一次全部段落与页号映射。 */
 export function buildSearchIndex(doc: DocumentData): SearchIndex {
   const pageByBlock = new Map(doc.pages.flatMap((p) => p.blocks.map((b) => [b.id, p.index] as const)));
+  const fallbackPage = doc.pages[0]?.index ?? 0;
   const entries: SearchEntry[] = doc.segments.map((segment) => {
     const target = segment.target ?? "";
+    const matchedPage = segment.block_ids.map((id) => pageByBlock.get(id)).find((p) => p !== undefined);
     return {
       segmentId: segment.id,
-      page: pageByBlock.get(segment.block_ids[0] ?? "") ?? 0,
+      page: matchedPage ?? fallbackPage,
       source: segment.source,
       target,
       sourceNorm: searchableText(segment.source),
