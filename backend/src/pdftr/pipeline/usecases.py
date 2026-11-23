@@ -3,16 +3,18 @@
 接口层（api）只做 HTTP 与这些函数之间的转换，不含业务规则。
 """
 
+import asyncio
 import hashlib
 import json
 import logging
 import re
 import shutil
+import tempfile
 import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import BinaryIO, Literal
 
 from pydantic import BaseModel
 
@@ -38,6 +40,7 @@ from pdftr.glossary.user_import import ParsedGlossary, parse_upload
 from pdftr.pipeline.memory import release_memory
 from pdftr.pipeline.runner import Pipeline, load_context, load_document
 from pdftr.pipeline.secrets import Secrets
+from pdftr.pipeline.workers import finish_on_cancel
 from pdftr.rendering.background import crop_png
 from pdftr.rendering.export import ExportMode, Side, export_pdf, page_links, place_links
 from pdftr.rendering.links import VERSION as LINKS_VERSION
@@ -81,6 +84,17 @@ def _require_secrets(secrets: Secrets, *, parser: str | None) -> None:
         raise UserError(f"请先在设置中填写 {PARSER_NAMES.get(parser, parser)} Token")
 
 
+def _validate_upload_options(options: JobOptions, secrets: Secrets) -> None:
+    if not options.cloud_consent:  # 两个解析服务都在云端
+        raise UserError(f"使用云端解析前需要确认文件会上传到 {PARSER_NAMES.get(options.parser, options.parser)}")
+    _require_secrets(secrets, parser=options.parser)
+
+
+def _check_admission(pipeline: Pipeline, limits: Limits) -> None:
+    if pipeline.active_count() + pipeline.receiving >= limits.max_active_jobs:
+        raise ServiceBusy("服务器正忙，排队的任务太多，请稍后再试")
+
+
 def create_job(
     pipeline: Pipeline,
     data: bytes,
@@ -90,15 +104,79 @@ def create_job(
     limits: Limits,
     submission_context: SubmissionContext | None = None,
 ) -> Job:
+    """兼容直接提交字节的调用方，调度仍由调用线程完成。"""
     if len(data) > limits.max_upload_mb * 1024 * 1024:
         raise UserError(f"文件超过 {limits.max_upload_mb} MB")
     if not data.startswith(b"%PDF"):
         raise UserError("只支持 PDF 文件")
-    if not options.cloud_consent:  # 两个解析服务都在云端
-        raise UserError(f"使用云端解析前需要确认文件会上传到 {PARSER_NAMES.get(options.parser, options.parser)}")
-    _require_secrets(secrets, parser=options.parser)
-    if pipeline.active_count() >= limits.max_active_jobs:
-        raise ServiceBusy("服务器正忙，排队的任务太多，请稍后再试")
+    _validate_upload_options(options, secrets)
+    _check_admission(pipeline, limits)
+    job = _persist_job(pipeline, data, filename, options, secrets, limits, submission_context)
+    _submit_received_job(pipeline, job, secrets)
+    return job
+
+
+async def receive_upload(
+    pipeline: Pipeline,
+    upload: BinaryIO,
+    filename: str,
+    options: JobOptions,
+    secrets: Secrets,
+    limits: Limits,
+    submission_context: SubmissionContext | None = None,
+) -> Job:
+    _validate_upload_options(options, secrets)
+    _check_admission(pipeline, limits)
+    cancelled = threading.Event()
+
+    def stage_and_persist() -> Job:
+        tmp: Path | None = None
+        limit = limits.max_upload_mb * 1024 * 1024
+        size = 0
+        try:
+            with tempfile.NamedTemporaryFile(dir=limits.data_dir, prefix=".upload-", suffix=".part", delete=False) as f:
+                tmp = Path(f.name)
+                while not cancelled.is_set():
+                    chunk = upload.read(min(256 * 1024, limit - size + 1))
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > limit:
+                        raise UserError(f"文件超过 {limits.max_upload_mb} MB")
+                    f.write(chunk)
+            if cancelled.is_set():
+                raise asyncio.CancelledError
+            return _persist_job(pipeline, tmp, filename, options, secrets, limits, submission_context)
+        finally:
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
+
+    async def accept() -> Job:
+        job = await asyncio.to_thread(stage_and_persist)
+        # 接收事务已提交，即使请求中断也要调度，避免留下孤立的 queued 任务。
+        _submit_received_job(pipeline, job, secrets)
+        return job
+
+    pipeline.receiving += 1
+    try:
+        return await finish_on_cancel(asyncio.create_task(accept()), cancelled.set)
+    finally:
+        pipeline.receiving -= 1
+
+
+def _persist_job(
+    pipeline: Pipeline,
+    data: bytes | Path,
+    filename: str,
+    options: JobOptions,
+    secrets: Secrets,
+    limits: Limits,
+    submission_context: SubmissionContext | None,
+) -> Job:
+    if isinstance(data, Path):
+        with data.open("rb") as f:
+            if f.read(4) != b"%PDF":
+                raise UserError("只支持 PDF 文件")
     if shutil.disk_usage(limits.data_dir).free < limits.min_free_disk_mb * 1024 * 1024:
         raise ServiceBusy("服务器存储空间不足，请稍后再试")
     try:
@@ -117,7 +195,13 @@ def create_job(
     job = Job(id=new_job_id(), filename=Path(filename).name[:200] or "document.pdf", page_count=pages,
               options=options, model=secrets.llm_model, expires_at=expires)  # fmt: skip
     try:
-        deps.artifacts.path(job.id, "original.pdf").write_bytes(data)
+        original = deps.artifacts.path(job.id, "original.pdf")
+        if isinstance(data, Path):
+            data.replace(original)
+        else:
+            tmp = original.with_suffix(".part")
+            tmp.write_bytes(data)
+            tmp.replace(original)
         deps.store.create_job(job, submission_context)
     except Exception:
         # 数据库没有接收成功时不能留下不可追踪的临时正文。
@@ -127,6 +211,11 @@ def create_job(
             deps.store.queue_artifact_cleanup(job.id)
             log.warning("未接收任务的临时目录已加入清理重试队列")
         raise
+    return job
+
+
+def _submit_received_job(pipeline: Pipeline, job: Job, secrets: Secrets) -> None:
+    deps = pipeline.deps
     try:
         pipeline.submit(job, secrets)
     except Exception:
@@ -135,7 +224,6 @@ def create_job(
         deps.secrets.drop(job.id)
         job.status, job.error = JobStatus.FAILED, "任务调度失败，请点击重试"
         deps.store.save_job(job)
-    return job
 
 
 def get_job(pipeline: Pipeline, job_id: str) -> Job:

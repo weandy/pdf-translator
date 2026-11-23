@@ -222,3 +222,83 @@ def test_remove_validates_workspace_and_does_not_create_missing_dir(tmp_path: Pa
     with pytest.raises(ValueError):
         artifacts.remove(link.name)
     assert outside.exists()
+
+
+def test_upload_offloads_validation_and_dispatches_only_on_loop(environment, tmp_path, monkeypatch):
+    import io
+    import threading
+
+    pipeline, store, _ = environment
+    reached, release = threading.Event(), threading.Event()
+    submitted = []
+
+    def count(path):
+        assert isinstance(path, Path) and path.read_bytes() == b"%PDF-synthetic"
+        reached.set()
+        assert release.wait(2)
+        return 2
+
+    def submit(job, secrets):
+        asyncio.get_running_loop()
+        submitted.append(job.id)
+
+    monkeypatch.setattr(usecases, "page_count", count)
+    monkeypatch.setattr(pipeline, "submit", submit)
+
+    async def run():
+        limits = usecases.Limits(max_upload_mb=1, max_pages=10, max_active_jobs=1, data_dir=tmp_path)
+        first = asyncio.create_task(
+            usecases.receive_upload(
+                pipeline,
+                io.BytesIO(b"%PDF-synthetic"),
+                "synthetic.pdf",
+                JobOptions(cloud_consent=True),
+                SECRETS,
+                limits,
+                CONTEXT,
+            )
+        )
+        try:
+            assert await asyncio.to_thread(reached.wait, 1)
+            with pytest.raises(usecases.ServiceBusy, match="排队"):
+                await usecases.receive_upload(
+                    pipeline, io.BytesIO(), "other.pdf", JobOptions(cloud_consent=True), SECRETS, limits
+                )
+            first.cancel()
+            await asyncio.sleep(0)
+            assert not first.done()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+    asyncio.run(run())
+    assert submitted == [job.id for job in store.all_jobs()]
+    assert len(submitted) == 1
+    assert not list(tmp_path.glob(".upload-*.part"))
+
+
+def test_upload_enforces_size_with_bounded_reads_and_removes_temp(environment, tmp_path, monkeypatch):
+    import io
+
+    pipeline, store, artifacts = environment
+
+    class Upload(io.BytesIO):
+        def read(self, size=-1):
+            assert 0 < size <= 256 * 1024
+            return super().read(size)
+
+    monkeypatch.setattr(usecases, "page_count", lambda _: unexpected())
+    with pytest.raises(usecases.UserError, match="超过 1 MB"):
+        asyncio.run(
+            usecases.receive_upload(
+                pipeline,
+                Upload(b"%PDF" + b"x" * 2**20),
+                "synthetic.pdf",
+                JobOptions(cloud_consent=True),
+                SECRETS,
+                usecases.Limits(max_upload_mb=1, max_pages=10, data_dir=tmp_path),
+            )
+        )
+    assert not store.all_jobs() and not artifacts.root.exists()
+    assert not list(tmp_path.glob(".upload-*.part"))

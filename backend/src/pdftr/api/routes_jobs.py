@@ -41,7 +41,6 @@ async def create_job(
         opts = JobOptions.model_validate_json(options)
     except ValidationError as e:
         raise usecases.UserError("任务选项格式错误") from e
-    data = await file.read(settings.max_upload_mb * 1024 * 1024 + 1)
     limits = usecases.Limits(
         max_upload_mb=settings.max_upload_mb,
         max_pages=settings.max_pages,
@@ -56,7 +55,7 @@ async def create_job(
         context = SubmissionContext(
             submitter_ip=client_ip.address, ip_source=client_ip.source, notice_version=NOTICE_VERSION
         )
-    job = usecases.create_job(p, data, file.filename or "document.pdf", opts, sec, limits, context)
+    job = await usecases.receive_upload(p, file.file, file.filename or "document.pdf", opts, sec, limits, context)
     return JobOut.of(job)
 
 

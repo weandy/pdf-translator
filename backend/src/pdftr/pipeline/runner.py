@@ -135,6 +135,7 @@ class Pipeline:
         llm = Slots(deps.max_concurrent_translations, lambda n: f"等待翻译，前面还有 {n} 篇")
         self._slots = {"parse": parse, "fuse": local, "segment": local, "glossary": llm, "translate": llm,
                        "render": local}  # fmt: skip
+        self.receiving = 0  # 正在接收且尚未调度的上传，只在事件循环读写
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._cancelling: set[str] = set()  # 用户要求取消的任务（与服务停止时的取消区分开）
         self._mutations: set[str] = set()  # 已完成任务的编辑/重翻/撤回互斥标记

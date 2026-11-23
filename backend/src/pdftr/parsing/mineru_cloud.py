@@ -6,9 +6,9 @@
 
 import asyncio
 import contextlib
-import io
 import json
 import logging
+import tempfile
 import time
 import zipfile
 from collections.abc import AsyncIterator
@@ -23,6 +23,8 @@ from pdftr.parsing.port import ParseError, ParseProgress
 
 API = "https://mineru.net/api/v4"
 UPLOAD_CHUNK = 64 * 1024
+MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
+MAX_LAYOUT_BYTES = 64 * 1024 * 1024
 
 log = logging.getLogger(__name__)
 
@@ -86,25 +88,57 @@ class MinerUCloudParser:
         ):  # fmt: skip
             on_progress("正在上传到 MinerU 云端")
             batch_id, upload_url = await self._request_upload(api, pdf, pages, deadline_at=deadline_at)
-            data = pdf.read_bytes()
+            size = pdf.stat().st_size
             started = time.monotonic()
-            r = await self._upload(plain, upload_url, data, on_progress, deadline_at=deadline_at)
+            r = await self._upload(plain, upload_url, pdf, on_progress, deadline_at=deadline_at)
             _check(r, "上传文件")
             # 走代理时上传往往一两秒就结束，进度来不及看到：把上传结果带进后续的状态里一直显示
-            uploaded = upload_summary(len(data), time.monotonic() - started)
+            uploaded = upload_summary(size, time.monotonic() - started)
 
             def with_upload(message: str, fraction: float | None = None) -> None:
                 on_progress(f"{message}（{uploaded}）", fraction)
 
             zip_url = await self._wait(api, batch_id, with_upload, deadline_at=deadline_at)
             on_progress("正在下载解析结果", 1.0)
-            r = await self._send(plain, "GET", zip_url, deadline=self._remaining(deadline_at))
-            _check(r, "下载解析结果")
-        data = r.content
+            return await self._download(plain, zip_url, raw_dir, deadline_at)
+
+    async def _download(
+        self, client: httpx2.AsyncClient, url: str, raw_dir: Path | None, deadline_at: float
+    ) -> LayoutResult:
         if raw_dir is not None:
             raw_dir.mkdir(parents=True, exist_ok=True)
-            (raw_dir / "mineru.zip").write_bytes(data)
-        return normalize(_read_layout(data))
+        tmp: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=raw_dir, prefix="mineru-", suffix=".part", delete=False) as f:
+                tmp = Path(f.name)
+                async with asyncio.timeout(self._remaining(deadline_at)):
+                    for delay in (*self._retry_delays, None):
+                        try:
+                            async with client.stream("GET", url, headers={"Accept-Encoding": "identity"}) as response:
+                                _check(response, "下载解析结果", read_json=False)
+                                size = 0
+                                async for chunk in response.aiter_bytes(UPLOAD_CHUNK):
+                                    size += len(chunk)
+                                    if size > MAX_ARCHIVE_BYTES:
+                                        raise ParseError("MinerU 解析结果 ZIP 超过大小上限")
+                                    f.write(chunk)
+                            break
+                        except httpx2.TransportError as e:
+                            if delay is None:
+                                raise
+                            f.seek(0)
+                            f.truncate()
+                            log.warning("下载 MinerU 结果出错（%s），%.0f 秒后重试", type(e).__name__, delay)
+                            await asyncio.sleep(delay)
+            result = normalize(_read_layout(tmp))
+            if raw_dir is not None:
+                tmp.replace(raw_dir / "mineru.zip")
+            return result
+        except TimeoutError as e:
+            raise httpx2.TimeoutException("下载 MinerU 结果超过剩余解析时限") from e
+        finally:
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
 
     async def _request_upload(
         self, api: httpx2.AsyncClient, pdf: Path, pages: list[int] | None, *, deadline_at: float | None = None
@@ -197,7 +231,7 @@ class MinerUCloudParser:
         self,
         client: httpx2.AsyncClient,
         url: str,
-        data: bytes,
+        pdf: Path,
         on_progress: ParseProgress,
         *,
         deadline_at: float | None = None,
@@ -207,6 +241,7 @@ class MinerUCloudParser:
         只在连续 stall_timeout 秒没有任何进展时才中断重传：网络慢但仍在推进时不打断
         （此前按文件大小设总时限，慢速链路上会把快传完的上传掐断重来）。预签名地址不支持续传，重传从头开始。
         """
+        size = pdf.stat().st_size
         attempts = len(self._retry_delays) + 1
         for n, delay in enumerate((*self._retry_delays, None), start=1):
             remaining = self._remaining(deadline_at)
@@ -215,30 +250,35 @@ class MinerUCloudParser:
             sent, start = 0, time.monotonic()
             last = start
 
-            async def body() -> AsyncIterator[bytes]:
-                nonlocal sent, last
-                for i in range(0, len(data), UPLOAD_CHUNK):
-                    yield data[i : i + UPLOAD_CHUNK]
-                    sent, last = min(i + UPLOAD_CHUNK, len(data)), time.monotonic()
-
-            headers = {"Content-Length": str(len(data))}  # 显式给出长度：预签名上传不接受分块传输编码
-            task = asyncio.ensure_future(client.request("PUT", url, content=body(), headers=headers))
+            headers = {"Content-Length": str(size)}  # 预签名上传需要精确长度
             try:
-                while True:
-                    done, _ = await asyncio.wait({task}, timeout=min(1.0, remaining))
-                    if done:
-                        return task.result()
-                    now = time.monotonic()
-                    if now >= (deadline_at or float("inf")):
-                        raise TimeoutError
-                    if now - last > self._stall_timeout:
-                        raise TimeoutError
-                    retry = f"（第 {n}/{attempts} 次尝试）" if n > 1 else ""
-                    on_progress(upload_status(sent, len(data), now - start) + retry, sent / len(data))
+                with pdf.open("rb") as source:
+
+                    async def body() -> AsyncIterator[bytes]:
+                        nonlocal sent, last
+                        while chunk := source.read(UPLOAD_CHUNK):
+                            yield chunk
+                            sent, last = sent + len(chunk), time.monotonic()
+
+                    async with contextlib.aclosing(body()) as stream:
+                        task = asyncio.create_task(client.request("PUT", url, content=stream, headers=headers))
+                        try:
+                            while True:
+                                done, _ = await asyncio.wait({task}, timeout=min(1.0, remaining))
+                                if done:
+                                    return task.result()
+                                now = time.monotonic()
+                                if now >= (deadline_at or float("inf")) or now - last > self._stall_timeout:
+                                    raise TimeoutError
+                                retry = f"（第 {n}/{attempts} 次尝试）" if n > 1 else ""
+                                on_progress(upload_status(sent, size, now - start) + retry, sent / max(1, size))
+                                remaining = self._remaining(deadline_at)
+                        finally:
+                            if not task.done():
+                                task.cancel()
+                            # 回收内部请求后才能关闭文件或开始重传。
+                            await asyncio.gather(task, return_exceptions=True)
             except (httpx2.TransportError, TimeoutError) as e:
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
                 if delay is None:
                     raise ParseError(
                         f"上传到 MinerU 云端失败：网络连续 {self._stall_timeout:.0f} 秒没有进展，"
@@ -246,7 +286,7 @@ class MinerUCloudParser:
                         retryable=True,
                     ) from e
                 log.warning("上传到 MinerU 卡住或出错（%s），%.0f 秒后重传", type(e).__name__, delay)
-                await asyncio.sleep(delay)
+                await asyncio.sleep(min(delay, self._remaining(deadline_at)))
         raise AssertionError("unreachable")
 
     def _remaining(self, deadline_at: float | None) -> float:
@@ -299,14 +339,14 @@ def _describe(state: str | None, progress: dict) -> tuple[str, float | None]:
     return "MinerU 已提交任务，正在等待状态更新", None
 
 
-def _check(r: httpx2.Response, action: str) -> dict:
+def _check(r: httpx2.Response, action: str, *, read_json: bool = True) -> dict:
     if r.status_code in (401, 403):
         raise ParseError("MinerU Token 无效或已过期")
     if r.status_code == 429:
         raise ParseError("MinerU 请求过于频繁或额度不足，请稍后再试")
     if r.status_code >= 400:
         raise ParseError(f"MinerU {action}失败：HTTP {r.status_code}", retryable=r.status_code >= 500)
-    if not r.headers.get("content-type", "").startswith("application/json"):
+    if not read_json or not r.headers.get("content-type", "").startswith("application/json"):
         return {}
     body = r.json()
     if isinstance(body, dict) and body.get("code", 0) != 0:
@@ -314,9 +354,23 @@ def _check(r: httpx2.Response, action: str) -> dict:
     return body
 
 
-def _read_layout(zip_bytes: bytes) -> dict:
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-        name = next((n for n in z.namelist() if n.endswith("layout.json")), None)
-        if name is None:
-            raise ParseError("MinerU 结果中缺少 layout.json")
-        return json.loads(z.read(name))
+def _read_layout(archive: Path) -> dict:
+    try:
+        with zipfile.ZipFile(archive) as z:
+            info = next((item for item in z.infolist() if item.filename.endswith("layout.json")), None)
+            if info is None:
+                raise ParseError("MinerU 结果中缺少 layout.json")
+            if info.file_size > MAX_LAYOUT_BYTES:
+                raise ParseError("MinerU 结果的 layout.json 解压后超过大小上限")
+            with z.open(info) as layout:
+                data = layout.read(MAX_LAYOUT_BYTES + 1)
+            if len(data) > MAX_LAYOUT_BYTES:
+                raise ParseError("MinerU 结果的 layout.json 解压后超过大小上限")
+            parsed = json.loads(data)
+            if not isinstance(parsed, dict):
+                raise ParseError("MinerU 结果的 layout.json 格式异常")
+            return parsed
+    except ParseError:
+        raise
+    except (zipfile.BadZipFile, ValueError, RuntimeError) as e:
+        raise ParseError("MinerU 结果 ZIP 或 layout.json 格式异常") from e

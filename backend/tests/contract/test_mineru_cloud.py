@@ -204,3 +204,74 @@ def test_proxy_setting_reaches_parser(tmp_path: Path):
 
     paddle = deps.parser_factory(Secrets(**{**secrets.__dict__, "paddle_token": "pt"}), "paddleocr-vl")
     assert isinstance(paddle, PaddleVLParser) and paddle._proxy is None  # 默认不走代理
+
+
+def test_upload_reopens_path_on_retry_and_joins_cancelled_request(tmp_path, monkeypatch):
+    from pdftr.parsing import mineru_cloud
+
+    monkeypatch.setattr(mineru_cloud, "UPLOAD_CHUNK", 4)
+    pdf = tmp_path / "original.pdf"
+    pdf.write_bytes(b"%PDF-content")
+
+    class Client:
+        def __init__(self):
+            self.first_chunks = []
+            self.started = asyncio.Event()
+            self.closed = asyncio.Event()
+
+        async def request(self, method, url, *, content, headers):
+            assert method == "PUT" and headers == {"Content-Length": "12"}
+            self.first_chunks.append(await anext(content))
+            if len(self.first_chunks) == 1:
+                raise httpx2.WriteError("synthetic failure")
+            self.started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                await asyncio.sleep(0)
+                self.closed.set()
+
+    async def run():
+        client = Client()
+        parser = MinerUCloudParser("tok", retry_delays=(0,))
+        async with httpx2.AsyncClient() as http:
+            monkeypatch.setattr(http, "request", client.request)
+            task = asyncio.create_task(parser._upload(http, UPLOAD, pdf, lambda *_: None))
+            try:
+                await asyncio.wait_for(client.started.wait(), 1)
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            assert client.closed.is_set()
+            assert client.first_chunks == [b"%PDF", b"%PDF"]
+        # Windows 上也必须已经释放句柄。
+        pdf.unlink()
+
+    asyncio.run(run())
+
+
+def test_streamed_zip_enforces_layout_limit_and_cleans_up(tmp_path, monkeypatch):
+    from pdftr.parsing import mineru_cloud
+
+    class ZipStream(httpx2.AsyncByteStream):
+        async def __aiter__(self):
+            payload = _zip()
+            for offset in range(0, len(payload), 31):
+                yield payload[offset : offset + 31]
+
+    fake = FakeMinerU()
+
+    async def handler(request):
+        if str(request.url) == ZIP:
+            return httpx2.Response(200, stream=ZipStream())
+        return await fake(request)
+
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-fake")
+    parser = MinerUCloudParser("tok", poll_interval=0, transport=httpx2.MockTransport(handler))
+    raw = tmp_path / "raw"
+    monkeypatch.setattr(mineru_cloud, "MAX_LAYOUT_BYTES", 30, raising=False)
+    with pytest.raises(ParseError, match=r"layout\.json.*超过"):
+        asyncio.run(parser.parse(pdf, raw_dir=raw))
+    assert not list(raw.iterdir())
