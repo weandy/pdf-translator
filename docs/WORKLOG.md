@@ -4,6 +4,18 @@
 >
 > 最后更新：2026-11-23（Asia/Shanghai）
 
+### 部署：阶段 A 前后端确定性护栏与内存预算上线（2026-11-23）
+
+- 设计文档：`docs/09-stage-a-backend-guardrails-design.md`（后端）、`docs/10-stage-a-frontend-guardrails-design.md`（前端）。
+- 双 worktree 独立并行开发并经独立代码评审收尾后，线性合入 `main`（`5f617a9..25ee3c8`，12 条提交）：
+  - **后端**（`cf07107..bb676b8`）：`POST /api/jobs` 流式写盘（前置磁盘空间与 `%PDF` 魔数检查、同盘 staging、`to_thread` 移出事件循环）、MinerU 流式 PUT + 屏蔽二次取消回收 + ZIP 流式限额与工作线程解压、`fusion` 按真实 PDF `page_idx` 对齐校验、导出改 `doc.save()` 流式写盘并与流水线共享容量为 1 的 PyMuPDF 重任务预算（含同快照去重、停机等待与过期清理互斥）、SQLite 统一显式 `write_tx`（`BEGIN IMMEDIATE` + 失败回滚 + 15s `busy_timeout` + 锁冲突重试，覆盖 `sqlite`/`cache`/`admin`）、阶段 JSON 原子落盘与 LLM SDK 连接池关闭。
+  - **前端**（`782ef66..25ee3c8`）：`PdfCanvas` 单画布像素（桌面 600 万 / 移动端 400 万）与 4096 单边上限、卸载后显存归零及与 `PdfTextLayer` 协调的异步 `page.cleanup()`；`UploadPanel` 多选计页并发上限 2 与重选/卸载中止；`Caddyfile` 拆出 `/assets/*`、`/pdfjs/*` 独立静态块与 `Cache-Control` 分层（缺失旧分包返回真实 404，SPA 入口 `no-cache`）。
+- 主仓全量门禁实测通过：后端 Ruff format/check、Pyright 0 错误、import-linter 3/3 kept、Pytest **487 passed / 6 skipped**（含 OpenAPI 同步）；前端 lint / typecheck / Vitest **40 files / 205 passed** / build（575ms）。
+- HW-SGP 上线结果（源码 `25ee3c8`，双镜像均已更新）：
+  - 构建前后进行中任务均为空（`进行中: []`）；数据库备份 `/data/backups/pre-stage-a-25ee3c8-20261123.db`（`PRAGMA integrity_check: ok`）；双回滚镜像保留为 `pdf-translator-app:before-stage-a-20261123`（`931bd5509c92`）与 `pdf-translator-web:before-stage-a-20261123`（`0af970a91068`）。
+  - `app` 构建沿用仓库 `backend/Dockerfile` 运行阶段并复用已校验的 `before-stage-a-20261123` `/app/fonts`（19 文件 / 17 MB，避免 1.8 GB 小机重跑字体精简 OOM），新镜像 `b27d373cd237`（healthy）；`web` 新镜像 `128c667cbd0c`。
+  - 公网验收：`/api/health` 200（`data_dir_writable: true`），`/` 与 `/guide` 200（`Cache-Control: no-cache`），首页引用新 `/assets/index-Bmt0kiY2.js`（`Cache-Control: public, max-age=31536000, immutable`），`/pdfjs/jbig2_nowasm_fallback.js` 200（`public, max-age=86400`），缺失资源 `/assets/nonexistent-old-chunk-test.js` 返回真实 404 且无长缓存。
+
 ### 部署：长论文阅读器虚拟化与原文 pdf.js 文字层上线（2026-11-23）
 
 - 已将 `feat/reader-virtualization-text-layer` 快进合入 `main`（`ea435d7..4af35cc`）并推送至 `origin/main`，前端在 `main` 上全量复测 40 文件 / 199 项通过，`lint` / `typecheck` / `build` 全绿。
