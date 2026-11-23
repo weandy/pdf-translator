@@ -76,12 +76,45 @@ vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
   getDocument: vi.fn(),
 }));
 
-import { highlightTextLayerSpans, PdfTextLayer } from "@/shared/pdf/pdf";
+import {
+  canvasRenderScale,
+  highlightTextLayerSpans,
+  MAX_CANVAS_DIMENSION,
+  MAX_CANVAS_PIXELS_DESKTOP,
+  MAX_CANVAS_PIXELS_MOBILE,
+  PdfCanvas,
+  PdfTextLayer,
+} from "@/shared/pdf/pdf";
 
-function createFakeDoc(rejectGetPage?: Error) {
+function createFakeDoc(
+  rejectGetPage?: Error,
+  pageSize: { width: number; height: number } = { width: 600, height: 800 },
+) {
   const streamTextContent = vi.fn(() => ({}) as ReadableStream);
-  const getViewport = vi.fn(({ scale }: { scale: number }) => ({ scale, width: 600 * scale, height: 800 * scale }));
-  const pageObj = { streamTextContent, getViewport };
+  const cleanup = vi.fn();
+  const renderCalls: Array<{
+    cancel: ReturnType<typeof vi.fn>;
+    resolve: () => void;
+    reject: (err: Error) => void;
+    viewport: { scale: number; width: number; height: number };
+  }> = [];
+  const getViewport = vi.fn(({ scale }: { scale: number }) => ({
+    scale,
+    width: pageSize.width * scale,
+    height: pageSize.height * scale,
+  }));
+  const render = vi.fn(({ viewport }: { canvas: HTMLCanvasElement; viewport: { scale: number; width: number; height: number } }) => {
+    let resolve = () => {};
+    let reject: (err: Error) => void = () => {};
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    const cancel = vi.fn();
+    renderCalls.push({ cancel, resolve, reject, viewport });
+    return { promise, cancel };
+  });
+  const pageObj = { streamTextContent, getViewport, render, cleanup };
   const getPage = vi.fn(async () => {
     if (rejectGetPage) throw rejectGetPage;
     return pageObj;
@@ -91,6 +124,9 @@ function createFakeDoc(rejectGetPage?: Error) {
     getPage,
     streamTextContent,
     getViewport,
+    render,
+    renderCalls,
+    cleanup,
   };
 }
 
@@ -283,5 +319,124 @@ describe("PdfTextLayer 与词级术语高亮", () => {
       await Promise.resolve();
     });
     expect(onError).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("PdfCanvas 像素预算、卸载归零与页级 cleanup 协调", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  const originalDpr = window.devicePixelRatio;
+  const originalInnerWidth = window.innerWidth;
+
+  beforeAll(() => Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }));
+  afterAll(() => Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT"));
+
+  beforeEach(() => {
+    textLayerMocks.instances.length = 0;
+    textLayerMocks.setUpdateThrows(false);
+    textLayerMocks.setSpanTexts(["PDF text"]);
+    Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 2 });
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1440 });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: originalDpr });
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
+    vi.clearAllMocks();
+  });
+
+  it("canvasRenderScale 对正常缩放不降质，对高缩放与超长边按像素和 4096 上限封顶", () => {
+    // 常规 A4 1x + dpr=2：1190×1684 ≈ 2.0M px，远低于桌面 6M 上限，保持全精度
+    expect(canvasRenderScale(595, 842, 1, 2, { maxPixels: MAX_CANVAS_PIXELS_DESKTOP })).toBeCloseTo(2, 5);
+
+    // A4 4x + dpr=2：原需 4760×6736 ≈ 32M px，应被压到 <= 6M px 且单边 <= 4096
+    const cappedDesktop = canvasRenderScale(595, 842, 4, 2, { maxPixels: MAX_CANVAS_PIXELS_DESKTOP });
+    expect(595 * cappedDesktop * (842 * cappedDesktop)).toBeLessThanOrEqual(MAX_CANVAS_PIXELS_DESKTOP + 1);
+    expect(842 * cappedDesktop).toBeLessThanOrEqual(MAX_CANVAS_DIMENSION + 0.01);
+
+    // 移动端上限更严（<= 4M px）
+    const cappedMobile = canvasRenderScale(595, 842, 4, 2, { maxPixels: MAX_CANVAS_PIXELS_MOBILE });
+    expect(595 * cappedMobile * (842 * cappedMobile)).toBeLessThanOrEqual(MAX_CANVAS_PIXELS_MOBILE + 1);
+    expect(cappedMobile).toBeLessThan(cappedDesktop);
+
+    // 超细长海报页（400×3000 pt，面积未必超但单边超 4096）受单边上限约束
+    const cappedStrip = canvasRenderScale(400, 3000, 1, 2, { maxPixels: MAX_CANVAS_PIXELS_DESKTOP });
+    expect(3000 * cappedStrip).toBeLessThanOrEqual(MAX_CANVAS_DIMENSION + 0.01);
+  });
+
+  it("PdfCanvas 在高缩放下限制画布像素，卸载且渲染结算后归零 canvas 宽高释放显存", async () => {
+    const fake = createFakeDoc(undefined, { width: 595, height: 842 });
+    await act(async () => {
+      root.render(<PdfCanvas doc={fake.doc} page={0} scale={4} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const canvas = container.querySelector("canvas")!;
+    expect(canvas.width * canvas.height).toBeLessThanOrEqual(MAX_CANVAS_PIXELS_DESKTOP);
+    expect(Math.max(canvas.width, canvas.height)).toBeLessThanOrEqual(MAX_CANVAS_DIMENSION);
+    expect(canvas.width).toBeGreaterThan(0);
+
+    const task = fake.renderCalls[0]!;
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+    expect(task.cancel).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      task.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(canvas.width).toBe(0);
+    expect(canvas.height).toBe(0);
+    expect(fake.cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("同一页同时挂载 PdfCanvas 与 PdfTextLayer 时，仅在两者都卸载且任务结束后才调用 page.cleanup", async () => {
+    const fake = createFakeDoc();
+    await act(async () => {
+      root.render(
+        <>
+          <PdfCanvas doc={fake.doc} page={0} scale={1} />
+          <PdfTextLayer doc={fake.doc} page={0} scale={1} />
+        </>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const canvasTask = fake.renderCalls[0]!;
+    const textLayer = textLayerMocks.instances[0]!;
+
+    // 画布先渲染完成，文字层仍在运行：绝不能提前 cleanup
+    await act(async () => {
+      canvasTask.resolve();
+      await Promise.resolve();
+    });
+    expect(fake.cleanup).not.toHaveBeenCalled();
+
+    // 卸载 PdfCanvas 但保留 PdfTextLayer：仍不 cleanup
+    await act(async () => {
+      root.render(<PdfTextLayer doc={fake.doc} page={0} scale={1} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(fake.cleanup).not.toHaveBeenCalled();
+
+    // 卸载 PdfTextLayer 后两者引用均归零：触发一次 page.cleanup
+    await act(async () => {
+      textLayer.resolveRender();
+      root.unmount();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(fake.cleanup).toHaveBeenCalledTimes(1);
   });
 });

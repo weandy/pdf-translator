@@ -16,6 +16,87 @@ const DECODERS = "/pdfjs/";
 // 一个任务最多同时使用原文和译文两份 PDF；保留当前任务和最近 3 个任务。
 export const MAX_CACHED_PDFS = 8;
 
+// 单张 Canvas 背板像素与边长预算：桌面约 24 MiB、移动端约 16 MiB（对照双画布分别 ≤ 48 / 32 MiB），
+// 仅限制内部绘制像素，不改变 CSS 尺寸、文字层与坐标命中。
+export const MAX_CANVAS_PIXELS_DESKTOP = 6_000_000;
+export const MAX_CANVAS_PIXELS_MOBILE = 4_000_000;
+export const MAX_CANVAS_DIMENSION = 4096;
+const MOBILE_BREAKPOINT_PX = 768;
+
+export function canvasRenderScale(
+  pageWidth: number,
+  pageHeight: number,
+  cssScale: number,
+  dpr: number,
+  limits?: { maxPixels?: number; maxDimension?: number },
+): number {
+  const safeScale = Number.isFinite(cssScale) && cssScale > 0 ? cssScale : 1;
+  const safeDpr = Math.min(Math.max(Number.isFinite(dpr) ? dpr : 1, 1), 2);
+  const wanted = safeScale * safeDpr;
+  if (!(pageWidth > 0 && pageHeight > 0)) return wanted;
+  const maxPixels = limits?.maxPixels ?? MAX_CANVAS_PIXELS_DESKTOP;
+  const maxDim = limits?.maxDimension ?? MAX_CANVAS_DIMENSION;
+  const width = pageWidth * wanted;
+  const height = pageHeight * wanted;
+  const maxSide = Math.max(width, height);
+  const dimFactor = maxSide > maxDim ? maxDim / maxSide : 1;
+  const area = width * height;
+  const areaFactor = area > maxPixels ? Math.sqrt(maxPixels / area) : 1;
+  return wanted * Math.min(dimFactor, areaFactor);
+}
+
+interface PageUsage {
+  refs: number;
+  page: PDFPageProxy | null;
+}
+
+// 同一页可能同时挂载 PdfCanvas 与 PdfTextLayer，必须等两者全部退出且无在途任务后再 cleanup()，
+// 避免画布绘制结束时提前释放正在被 TextLayer 使用的页面解码缓存或文本流。
+const pageUsages = new WeakMap<PDFDocumentProxy, Map<number, PageUsage>>();
+
+function acquirePageUsage(
+  doc: PDFDocumentProxy,
+  page: number,
+): { attach: (proxy: PDFPageProxy) => void; release: () => void } {
+  let map = pageUsages.get(doc);
+  if (!map) {
+    map = new Map<number, PageUsage>();
+    pageUsages.set(doc, map);
+  }
+  let usage = map.get(page);
+  if (!usage) {
+    usage = { refs: 0, page: null };
+    map.set(page, usage);
+  }
+  usage.refs += 1;
+  let released = false;
+  return {
+    attach: (proxy) => {
+      usage.page = proxy;
+    },
+    release: () => {
+      if (released) return;
+      released = true;
+      usage.refs = Math.max(0, usage.refs - 1);
+      if (usage.refs === 0) {
+        map.delete(page);
+        const proxy = usage.page as (PDFPageProxy & { cleanup?: () => void }) | null;
+        usage.page = null;
+        try {
+          proxy?.cleanup?.();
+        } catch {
+          // 文档已销毁时忽略清理异常
+        }
+      }
+    },
+  };
+}
+
+function attachPageProxy(doc: PDFDocumentProxy, page: number, proxy: PDFPageProxy): void {
+  const usage = pageUsages.get(doc)?.get(page);
+  if (usage) usage.page = proxy;
+}
+
 interface PdfEntry {
   url: string;
   task: ReturnType<typeof pdfjs.getDocument>;
@@ -153,10 +234,30 @@ interface CanvasProps {
 // 每个 canvas 上正在进行的渲染：pdf.js 的取消是异步的，旧渲染没停下时在同一 canvas 上开始新渲染会直接报错
 const rendering = new WeakMap<HTMLCanvasElement, Promise<unknown>>();
 
-/** 渲染一页；按设备像素比提高分辨率，缩放变化或卸载时取消上一次渲染。失败时显示原因，不留空白。 */
+/** 渲染一页；按设备像素比提高分辨率并受最大像素/边长预算约束，缩放变化或卸载时取消上一次渲染并释放显存。 */
 export function PdfCanvas({ doc, page, scale }: CanvasProps) {
   const ref = useRef<HTMLCanvasElement>(null);
+  const mountedRef = useRef(true);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const canvas = ref.current;
+    return () => {
+      mountedRef.current = false;
+      if (!canvas) return;
+      const pending = rendering.get(canvas) ?? Promise.resolve();
+      void pending
+        .catch(() => undefined)
+        .finally(() => {
+          if (!mountedRef.current) {
+            canvas.width = 0;
+            canvas.height = 0;
+          }
+        });
+    };
+  }, []);
+
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
@@ -167,10 +268,18 @@ export function PdfCanvas({ doc, page, scale }: CanvasProps) {
       .then(() => (alive ? doc.getPage(page + 1) : null))
       .then((p) => {
         if (!alive || !p) return;
-        const ratio = Math.min(window.devicePixelRatio || 1, 2);
-        const viewport = p.getViewport({ scale: scale * ratio });
-        canvas.width = Math.floor(viewport.width);
-        canvas.height = Math.floor(viewport.height);
+        attachPageProxy(doc, page, p);
+        const base = p.getViewport({ scale: 1 });
+        const maxPixels =
+          typeof window !== "undefined" && window.innerWidth <= MOBILE_BREAKPOINT_PX
+            ? MAX_CANVAS_PIXELS_MOBILE
+            : MAX_CANVAS_PIXELS_DESKTOP;
+        const renderScale = canvasRenderScale(base.width, base.height, scale, window.devicePixelRatio || 1, {
+          maxPixels,
+        });
+        const viewport = p.getViewport({ scale: renderScale });
+        canvas.width = Math.max(1, Math.floor(viewport.width));
+        canvas.height = Math.max(1, Math.floor(viewport.height));
         task = p.render({ canvas, viewport });
         return task.promise;
       })
@@ -186,6 +295,21 @@ export function PdfCanvas({ doc, page, scale }: CanvasProps) {
       task?.cancel();
     };
   }, [doc, page, scale]);
+
+  // 页级引用放在 render effect 之后，确保卸载时先 cancel()，再在渲染链结算后释放 page 引用。
+  useEffect(() => {
+    const usage = acquirePageUsage(doc, page);
+    const canvas = ref.current;
+    return () => {
+      const pending = (canvas && rendering.get(canvas)) || Promise.resolve();
+      void pending
+        .catch(() => undefined)
+        .finally(() => {
+          usage.release();
+        });
+    };
+  }, [doc, page]);
+
   return (
     <>
       <canvas ref={ref} className="pdf-canvas" />
@@ -295,6 +419,7 @@ export function PdfTextLayer({ doc, page, scale, highlight, onError }: TextLayer
     if (!container) return;
     let alive = true;
     let localState: TextLayerState | null = null;
+    const usage = acquirePageUsage(doc, page);
     container.replaceChildren();
 
     const failAndCleanup = () => {
@@ -314,6 +439,7 @@ export function PdfTextLayer({ doc, page, scale, highlight, onError }: TextLayer
       .getPage(page + 1)
       .then((p) => {
         if (!alive) return;
+        usage.attach(p);
         const initialScale = scaleRef.current;
         container.style.setProperty("--total-scale-factor", String(initialScale));
         const viewport = p.getViewport({ scale: initialScale });
@@ -351,6 +477,7 @@ export function PdfTextLayer({ doc, page, scale, highlight, onError }: TextLayer
         }
       }
       container.replaceChildren();
+      usage.release();
     };
   }, [doc, page]);
 
