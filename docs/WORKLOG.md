@@ -4,6 +4,11 @@
 >
 > 最后更新：2026-11-23（Asia/Shanghai）
 
+### 本轮完成：Q1 翻译质量护栏（2026-11-23）
+
+- 在本地分支 `fix/q1-translation-quality-guardrails` 完成选页续接、局部斜体、模型结束状态与编号解析、富文本与正文复验、扫描公式、跨页链接、解析漏页和导出溢出修复。具体行为见 [Q1 设计文档](11-q1-translation-quality-guardrails-design.md)。
+- 串行门禁全部通过。后端 Pytest 522 项通过、6 项跳过，含 OpenAPI 同步。前端 Vitest 40 个文件、212 项通过。导出缓存版本为 4。
+
 ### 部署：阶段 A 前后端确定性护栏与内存预算上线（2026-11-23）
 
 - 设计文档：`docs/09-stage-a-backend-guardrails-design.md`（后端）、`docs/10-stage-a-frontend-guardrails-design.md`（前端）。
