@@ -18,6 +18,22 @@ interface Props {
 
 const MAX_BATCH = 10; // 一次最多选几个文件
 const PARALLEL_UPLOADS = 4; // 同时上传几个
+const MAX_INSPECT_CONCURRENCY = 2; // 限制同时 arrayBuffer 计页的文件数，避免多选大 PDF 触发浏览器内存尖峰
+
+async function runWithConcurrency<T>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const item = items[cursor++]!;
+      await worker(item);
+    }
+  });
+  await Promise.all(runners);
+}
 
 interface Item {
   file: File;
@@ -84,6 +100,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
   });
 
   const actions = useRef<HTMLDivElement>(null);
+  const pickSeqRef = useRef(0);
   const ready = items.length > 0 && items.every((it) => it.pages !== null || it.error);
   const shown = ready && Boolean(estimate);
   useEffect(() => {
@@ -100,6 +117,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
   const pick = async (picked: File[]) => {
     setError(null);
     if (!picked.length) return;
+    const seq = ++pickSeqRef.current;
     if (picked.length > MAX_BATCH) setError(`一次最多上传 ${MAX_BATCH} 个文件，只取前 ${MAX_BATCH} 个`);
     const chosen = picked.slice(0, MAX_BATCH);
     const check = (f: File) =>
@@ -121,28 +139,34 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
       })),
     );
     const { countPages } = await import("@/shared/pdf/pdf"); // pdf.js 较大，选了文件才加载
-    await Promise.all(
-      chosen
-        .filter((f) => !check(f))
-        .map(async (f) => {
-          try {
-            const n = await countPages(f);
-            const over = config && n > config.max_pages ? `共 ${n} 页，超过上限 ${config.max_pages} 页` : null;
-            update(f, { pages: n, error: over });
-          } catch {
-            update(f, { error: "无法打开，请确认是有效的 PDF" });
-          }
-          // 与本机历史比对（指纹不发给服务器）；翻译过的问一下服务器上那次的任务还在不在
-          const hash = await fingerprint(f);
-          const prior = hash ? findByHash(hash)[0] : undefined;
-          const alive = prior
-            ? await api.job(prior.id).then(
-                () => true,
-                () => false,
-              )
-            : false;
-          update(f, { hash, seen: prior ? { entry: prior, alive } : null });
-        }),
+    if (seq !== pickSeqRef.current) return;
+    await runWithConcurrency(
+      chosen.filter((f) => !check(f)),
+      MAX_INSPECT_CONCURRENCY,
+      async (f) => {
+        if (seq !== pickSeqRef.current) return;
+        try {
+          const n = await countPages(f);
+          if (seq !== pickSeqRef.current) return;
+          const over = config && n > config.max_pages ? `共 ${n} 页，超过上限 ${config.max_pages} 页` : null;
+          update(f, { pages: n, error: over });
+        } catch {
+          if (seq !== pickSeqRef.current) return;
+          update(f, { error: "无法打开，请确认是有效的 PDF" });
+        }
+        // 与本机历史比对（指纹不发给服务器）；翻译过的问一下服务器上那次的任务还在不在
+        const hash = await fingerprint(f);
+        if (seq !== pickSeqRef.current) return;
+        const prior = hash ? findByHash(hash)[0] : undefined;
+        const alive = prior
+          ? await api.job(prior.id).then(
+              () => true,
+              () => false,
+            )
+          : false;
+        if (seq !== pickSeqRef.current) return;
+        update(f, { hash, seen: prior ? { entry: prior, alive } : null });
+      },
     );
   };
 

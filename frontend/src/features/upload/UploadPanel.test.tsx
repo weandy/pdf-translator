@@ -123,4 +123,142 @@ describe("共享 MinerU 上传流程", () => {
     expect(host.querySelector(".setup-hint")?.textContent).not.toContain("本站已提供 MinerU 版面解析");
     expect(host.querySelector(".setup-hint")?.textContent).not.toContain("MinerU Token 在 MinerU API 管理中申请");
   });
+
+  it("一次选择多个 PDF 时限制 countPages 并发度不超过 2，避免浏览器内存尖峰", async () => {
+    const pdfMod = await import("@/shared/pdf/pdf");
+    let active = 0;
+    let peak = 0;
+    const resolvers: Array<() => void> = [];
+    vi.mocked(pdfMod.countPages).mockImplementation(
+      () =>
+        new Promise<number>((resolve) => {
+          active += 1;
+          peak = Math.max(peak, active);
+          resolvers.push(() => {
+            active -= 1;
+            resolve(5);
+          });
+        }),
+    );
+
+    const config: ServerConfig = {
+      version: "test",
+      default_base_url: "https://example.invalid",
+      default_model: "synthetic-model",
+      default_protocol: "openai",
+      admin_path: "/weandy",
+      server_has_llm_key: false,
+      server_has_parser_token: true,
+      server_has_paddle_token: false,
+      max_upload_mb: 50,
+      max_pages: 200,
+      retention_hours: 24,
+      submission_audit_enabled: false,
+      attributions: [],
+    };
+    client.setQueryData(["config"], config);
+    await act(async () =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <MemoryRouter>
+            <UploadPanel onCreated={onCreated} onBatchCreated={vi.fn()} onNeedSettings={vi.fn()} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      ),
+    );
+
+    const files = Array.from({ length: 6 }, (_, i) => new File(["synthetic"], `paper-${i + 1}.pdf`, { type: "application/pdf" }));
+    await act(async () => {
+      const input = host.querySelector('input[type="file"]')!;
+      Object.defineProperty(input, "files", { configurable: true, value: files });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(peak).toBeLessThanOrEqual(2);
+    expect(resolvers).toHaveLength(2);
+
+    while (resolvers.length > 0) {
+      await act(async () => {
+        resolvers.shift()?.();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+    expect(peak).toBe(2);
+    expect(host.textContent).toContain("共 30 页");
+  });
+
+  it("快速重新选择文件时丢弃上一批延迟返回的计页结果", async () => {
+    const pdfMod = await import("@/shared/pdf/pdf");
+    let resolveFirst: ((n: number) => void) | null = null;
+    vi.mocked(pdfMod.countPages).mockImplementation((file: File) => {
+      if (file.name === "old.pdf") {
+        return new Promise<number>((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return Promise.resolve(9);
+    });
+
+    const config: ServerConfig = {
+      version: "test",
+      default_base_url: "https://example.invalid",
+      default_model: "synthetic-model",
+      default_protocol: "openai",
+      admin_path: "/weandy",
+      server_has_llm_key: false,
+      server_has_parser_token: true,
+      server_has_paddle_token: false,
+      max_upload_mb: 50,
+      max_pages: 200,
+      retention_hours: 24,
+      submission_audit_enabled: false,
+      attributions: [],
+    };
+    client.setQueryData(["config"], config);
+    await act(async () =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <MemoryRouter>
+            <UploadPanel onCreated={onCreated} onBatchCreated={vi.fn()} onNeedSettings={vi.fn()} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      ),
+    );
+
+    const fpMod = await import("@/shared/file/fingerprint");
+    vi.mocked(fpMod.fingerprint).mockClear();
+
+    const input = host.querySelector('input[type="file"]')!;
+    await act(async () => {
+      Object.defineProperty(input, "files", {
+        configurable: true,
+        value: [new File(["old"], "old.pdf", { type: "application/pdf" })],
+      });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Object.defineProperty(input, "files", {
+        configurable: true,
+        value: [new File(["fresh"], "fresh.pdf", { type: "application/pdf" })],
+      });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      resolveFirst?.(999);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(host.textContent).toContain("fresh.pdf");
+    expect(host.textContent).toContain("9 页");
+    expect(host.textContent).not.toContain("999");
+    expect(vi.mocked(fpMod.fingerprint)).toHaveBeenCalledTimes(1);
+    expect((vi.mocked(fpMod.fingerprint).mock.calls[0]?.[0] as File | undefined)?.name).toBe("fresh.pdf");
+  });
 });
