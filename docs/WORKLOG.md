@@ -4,6 +4,13 @@
 >
 > 最后更新：2026-11-23（Asia/Shanghai）
 
+### 本轮目标：长论文阅读器虚拟化、搜索防抖与原文 pdf.js 文字层（2026-11-23）
+
+- 设计文档：`docs/08-reader-virtualization-and-text-layer-design.md`（方案 A1 + B1 + C1，选项 A，分两阶段实施）。
+- 阶段 1：基于精确页高的零依赖窗口虚拟化（移除每页 `IntersectionObserver` 与远端页常驻 `.hit` DOM、`PageRow` 记忆化与按页 props 收敛），以及搜索索引预构建与输入防抖。
+- 阶段 2：原生 PDF 页升级为 pdf.js `TextLayer`（缩放增量 `update`、卸载 `cancel`），原文页交互按画布 / 视觉底纹 / 文字层 / 链接层解耦，扫描页保留块级降级层。
+- 验收标准：仅改动前端，保持 `eslint` 架构分层零违规；覆盖虚拟化、未挂载页跳转、搜索防抖、原生/扫描页分流与 `PdfTextLayer` 生命周期的单元测试通过；`npm test`、`npm run lint`、`npm run typecheck`、`npm run build` 全通；经 Grok 独立代码评审并闭环。
+
 ### 部署：统一任务卡片与逐篇编辑入口上线（2026-11-23）
 
 - 首页统一任务卡片、逐篇重试与逐篇“编辑译文”入口已部署到 HW-SGP（源码与 web 镜像 `d6e5198`）。
