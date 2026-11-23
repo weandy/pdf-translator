@@ -38,6 +38,10 @@ LABEL_GAP = 1.5  # 同一行里相距超过 1.5 个字高的文字（如横排�
 _LABEL_WORD = re.compile(r"[A-Za-z]{3,}")  # 至少有一个 3 个字母以上的词才翻译；纯数字、L1 这类编号保留原样
 
 
+class InvalidLayoutPages(ValueError):
+    """解析页号与原 PDF 不一致。"""
+
+
 @dataclass
 class FusionReport:
     pages: int = 0
@@ -53,6 +57,7 @@ class FusionReport:
     figure_labels: int = 0
     formulas_unlocated: int = 0  # 块级解析结果里没能推算出位置的行内公式（按正文保留）
     non_native_pages: list[int] = field(default_factory=list)
+    missing_layout_pages: list[int] = field(default_factory=list)
 
     @property
     def coverage(self) -> float:
@@ -62,17 +67,29 @@ class FusionReport:
 def fuse(
     job_id: str, layout: LayoutResult, char_pages: Sequence[CharPage], *, used_cloud: bool
 ) -> tuple[Document, FusionReport]:
-    report = FusionReport()
+    pdf_indexes = {page.index for page in char_pages}
+    seen: set[int] = set()
+    for page in layout.pages:
+        if not 0 <= page.index < len(char_pages) or page.index not in pdf_indexes:
+            raise InvalidLayoutPages(f"解析返回的页号 {page.index} 超出 PDF 页号范围")
+        if page.index in seen:
+            raise InvalidLayoutPages(f"解析返回重复页号 {page.index}")
+        seen.add(page.index)
+    report = FusionReport(missing_layout_pages=sorted(pdf_indexes - seen))
     relocated, rel = relocate(layout)
     report.moved_lines, report.unmatched_lines = rel.moved_lines, rel.unmatched_lines
     report.continuations = len(rel.links)
 
     pages: list[Page] = []
-    for lp, cp in zip(relocated.pages, char_pages, strict=False):
+    by_index = {page.index: page for page in relocated.pages}
+    for cp in sorted(char_pages, key=lambda page: page.index):
         if cp.kind is not PageKind.NATIVE:
             report.non_native_pages.append(cp.index)
         visible = [c for c in cp.chars if not c.c.isspace()]
         report.chars_total += len(visible)
+        if (lp := by_index.get(cp.index)) is None:
+            pages.append(Page(index=cp.index, width=cp.width, height=cp.height, rotation=cp.rotation, kind=cp.kind))
+            continue
         per_block, orphans = align(cp.chars, [b.bbox for b in lp.blocks])
         report.chars_assigned += len(visible) - sum(1 for c in orphans if not c.c.isspace())
 

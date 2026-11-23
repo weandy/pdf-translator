@@ -20,7 +20,7 @@ from pdftr.domain.job import STAGES, Job, JobStatus
 from pdftr.domain.layout import LayoutResult
 from pdftr.domain.llm import ChatError, ChatModel
 from pdftr.extraction.chars import extract
-from pdftr.fusion.build import fuse
+from pdftr.fusion.build import InvalidLayoutPages, fuse
 from pdftr.glossary.extract import extract_terms
 from pdftr.glossary.matcher import TermMatcher, combine, override
 from pdftr.glossary.normalize import normalize_terms
@@ -279,7 +279,12 @@ class Pipeline:
         layout = LayoutResult.model_validate_json(self.deps.artifacts.path(job.id, "layout.json").read_text("utf-8"))
         pdf = self.deps.artifacts.path(job.id, "original.pdf")
         chars = await asyncio.to_thread(extract, pdf)
-        doc, report = await asyncio.to_thread(fuse, job.id, layout, chars, used_cloud=True)
+        try:
+            doc, report = await asyncio.to_thread(fuse, job.id, layout, chars, used_cloud=True)
+        except InvalidLayoutPages as e:
+            raise StageError(str(e)) from e
+        if report.missing_layout_pages:
+            log.warning("任务 %s 的解析结果缺少 PDF 页号 %s", job.id, report.missing_layout_pages)
         out.write_text(doc.model_dump_json(), encoding="utf-8")
         # IR 先落盘，恢复分支也会补写；标题持久化成功后才进入后续阶段。
         self.deps.store.update_submission_title(job.id, paper_title(doc.pages, fallback=doc.meta.title))

@@ -29,8 +29,10 @@ def _inside(line: LayoutLine, block: LayoutBlock) -> bool:
 def relocate(layout: LayoutResult) -> tuple[LayoutResult, RelocationReport]:
     result = layout.model_copy(deep=True)
     report = RelocationReport()
-    pages = result.pages
-    for pi, page in enumerate(pages):
+    pages = sorted(result.pages, key=lambda page: page.index)
+    by_index = {page.index: page for page in pages}
+    for page in pages:
+        pi = page.index
         for block in page.blocks:
             if block.placeholder or not block.lines:
                 continue
@@ -40,8 +42,8 @@ def relocate(layout: LayoutResult) -> tuple[LayoutResult, RelocationReport]:
             candidates: list[tuple[int, LayoutBlock]] = [
                 (pi, b) for b in page.blocks if b.placeholder and b.order > block.order
             ]
-            if pi + 1 < len(pages):
-                candidates += [(pi + 1, b) for b in pages[pi + 1].blocks if b.placeholder]
+            if (following := by_index.get(pi + 1)) is not None:
+                candidates += [(following.index, b) for b in following.blocks if b.placeholder]
             stays = {id(ln) for ln in block.lines if _inside(ln, block)}
             prev = (pi, block.order)
             cursor = 0

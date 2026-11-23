@@ -27,3 +27,20 @@ def test_continuation_lines_move_to_placeholders():
     assert (report.moved_lines, report.unmatched_lines) == (2, 0)
     # 不修改输入
     assert len(layout.pages[0].blocks[1].lines) == 3
+
+
+def test_continuations_use_true_neighbor_even_when_pages_are_reversed():
+    layout = normalize(json.loads(FIXTURE.read_text(encoding="utf-8")))
+    layout.pages.reverse()
+    _, report = relocate(layout)
+    assert report.links == {(0, 2): (0, 1), (1, 0): (0, 2)}
+    assert report.moved_lines == 2
+
+
+def test_continuation_does_not_cross_missing_page():
+    layout = normalize(json.loads(FIXTURE.read_text(encoding="utf-8")))
+    layout.pages[1].index = 2
+    moved, report = relocate(layout)
+    assert report.links == {(0, 2): (0, 1)}
+    assert report.unmatched_lines == 1
+    assert moved.pages[1].blocks[0].placeholder

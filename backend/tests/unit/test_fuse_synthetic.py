@@ -120,3 +120,49 @@ def test_figure_text_becomes_labels(tmp_path: Path):
     assert sorted(" ".join(s.text for s in b.spans) for b in labels) == ["Training loss", "Validation"]
     assert report.figure_labels == 2 and all(b.translatable for b in labels)
     assert all(b.bbox.x0 >= 50 and b.bbox.x1 <= 290 and b.bbox.y0 >= 400 for b in labels)
+
+
+@pytest.mark.parametrize("indexes", [[2, 1, 0], [0, 2]])
+def test_fuse_aligns_page_numbers_and_preserves_missing_page(tmp_path, indexes):
+    from pdftr.domain.geometry import Rect
+    from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutPage, LayoutResult, LayoutSpan
+
+    path = tmp_path / "indexed.pdf"
+    with pymupdf.open() as source:
+        for index, text in enumerate(("Alpha", "Bravo", "Charlie")):
+            page = source.new_page(width=600 + index, height=800)
+            page.insert_text((52, 70), f"{text} synthetic page with independent text.")
+        source.save(path)
+
+    def block(index: int) -> LayoutBlock:
+        box = Rect(x0=47, y0=50, x1=450 + index, y1=80)
+        text = ("Alpha", "Bravo", "Charlie")[index]
+        line = LayoutLine(
+            bbox=box, spans=[LayoutSpan(kind="text", content=f"{text} synthetic page with independent text.", bbox=box)]
+        )
+        return LayoutBlock(type=BlockType.TEXT, bbox=box, order=0, lines=[line])
+
+    layout = LayoutResult(
+        parser="synthetic",
+        pages=[LayoutPage(index=index, width=600 + index, height=800, blocks=[block(index)]) for index in indexes],
+    )
+    doc, report = fuse("synthetic", layout, extract(path), used_cloud=True)
+    assert [p.index for p in doc.pages] == [0, 1, 2]
+    assert [p.width for p in doc.pages] == [600, 601, 602]
+    assert report.pages == 3
+    assert report.missing_layout_pages == ([1] if 1 not in indexes else [])
+    for index, text in enumerate(("Alpha", "Bravo", "Charlie")):
+        if index in indexes:
+            assert doc.pages[index].blocks[0].bbox.x1 == 450 + index
+            assert doc.pages[index].blocks[0].spans[0].text.startswith(text)
+        else:
+            assert not doc.pages[index].blocks
+
+
+@pytest.mark.parametrize(("indexes", "message"), [([0, 0], "重复"), ([0, 2], "范围"), ([-1, 1], "范围")])
+def test_fuse_rejects_invalid_layout_page_numbers(pdf, indexes, message):
+    layout = normalize(json.loads(FIXTURE.read_text(encoding="utf-8")))
+    for page, index in zip(layout.pages, indexes, strict=True):
+        page.index = index
+    with pytest.raises(ValueError, match=message):
+        fuse("synthetic", layout, extract(pdf), used_cloud=True)
