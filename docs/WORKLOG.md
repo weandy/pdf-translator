@@ -4,12 +4,12 @@
 >
 > 最后更新：2026-11-23（Asia/Shanghai）
 
-### 本轮目标：长论文阅读器虚拟化、搜索防抖与原文 pdf.js 文字层（2026-11-23）
+### 本轮完成：长论文阅读器虚拟化、搜索防抖与原文 pdf.js 文字层（2026-11-23）
 
 - 设计文档：`docs/08-reader-virtualization-and-text-layer-design.md`（方案 A1 + B1 + C1，选项 A，分两阶段实施）。
-- 阶段 1：基于精确页高的零依赖窗口虚拟化（移除每页 `IntersectionObserver` 与远端页常驻 `.hit` DOM、`PageRow` 记忆化与按页 props 收敛），以及搜索索引预构建与输入防抖。
-- 阶段 2：原生 PDF 页升级为 pdf.js `TextLayer`（缩放增量 `update`、卸载 `cancel`），原文页交互按画布 / 视觉底纹 / 文字层 / 链接层解耦，扫描页保留块级降级层。
-- 验收标准：仅改动前端，保持 `eslint` 架构分层零违规；覆盖虚拟化、未挂载页跳转、搜索防抖、原生/扫描页分流与 `PdfTextLayer` 生命周期的单元测试通过；`npm test`、`npm run lint`、`npm run typecheck`、`npm run build` 全通；经 Grok 独立代码评审并闭环。
+- 阶段 1（`virtual.ts`、`search.ts`、`ReaderView.tsx`、`styles.css`）：基于每页已知 PDF 尺寸的前缀和窗口虚拟化，移除每页独立的 `IntersectionObserver` 与远端页常驻 `.hit` 节点，对 `PageRow` 做 `React.memo` 与按页属性收敛，跳转定位改用精确几何计算（支持未挂载远端页直接跳转并保留实测页宽缩放校准）；预构建搜索归一化索引并加入 150ms 输入防抖（按 Enter 立即触发）。
+- 阶段 2（`pdf.tsx`、`ReaderView.tsx`、`styles.css`）：新增 `PdfTextLayer`（基于 `pdfjs-dist@6.4.299` `TextLayer`，缩放时走 `update()` 不重提取文本流，切换/卸载时 `cancel()` 并处理加载中途缩放竞态）；原文页按画布 / 视觉底纹 `.hit-layer` / 文字层 / 链接层四层解耦，采用坐标命中驱动悬停联动与点击编辑（划词选区非空时不误触）；扫描页（`page.kind !== "native"`）继续保留块级 `.source-text-layer` 降级层。
+- 验证结果：Node `v22.23.5` 下前端全量 Vitest 40 文件 / 192 项通过（较基线 175 项新增 17 项单测），`npm run lint`、`npm run typecheck`、`npm run build` 均通过（仅前端改动，尚未部署上线，待 Grok 独立代码评审并经维护者确认后合并发布）。
 
 ### 部署：统一任务卡片与逐篇编辑入口上线（2026-11-23）
 
@@ -218,12 +218,10 @@
 
 开始新功能前，先在本文件追加目标和验收标准，再编码：
 
-1. 长论文阅读器虚拟化，减少所有页面同时创建 DOM 和观察器。
-2. 搜索输入防抖或使用 `useDeferredValue`。
-3. 整批 ZIP 下载、批次信息跨设备恢复和批量重试。
-4. 并发编辑版本锁，避免后台翻译与手动编辑互相覆盖。
-5. 上传幂等键、接口限流和自定义 LLM Base URL 的 SSRF 防护。
-6. 浏览器级 smoke test，覆盖上传、任务完成、阅读器和导出。
+1. 整批 ZIP 下载、批次信息跨设备恢复和批量重试。
+2. 并发编辑版本锁，避免后台翻译与手动编辑互相覆盖。
+3. 上传幂等键、接口限流和自定义 LLM Base URL 的 SSRF 防护。
+4. 浏览器级 smoke test，覆盖上传、任务完成、阅读器和导出。
 
 ## 新对话继续开发模板
 

@@ -5,7 +5,22 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { ReaderView } from "@/features/reader/ReaderView";
 import type { DocumentData } from "@/shared/api/client";
 
-vi.mock("@/shared/pdf/pdf", () => ({ usePdf: () => ({ doc: null, error: null }), PdfCanvas: () => null }));
+const pdfMock = vi.hoisted(() => ({
+  originalDoc: null as unknown,
+  textLayerCalls: [] as Array<{ page: number; scale: number }>,
+}));
+
+vi.mock("@/shared/pdf/pdf", () => ({
+  usePdf: (url: string | null) => ({
+    doc: url && url.includes("original.pdf") ? pdfMock.originalDoc : null,
+    error: null,
+  }),
+  PdfCanvas: () => null,
+  PdfTextLayer: ({ page, scale }: { page: number; scale: number }) => {
+    pdfMock.textLayerCalls.push({ page, scale });
+    return <div className="pdf-text-layer textLayer" data-testid={`pdf-text-layer-${page}`} />;
+  },
+}));
 
 function makeDoc(pageCount = 3): DocumentData {
   const pages = Array.from({ length: pageCount }, (_, index) => ({
@@ -80,6 +95,8 @@ describe("阅读位置恢复、手动段落定位与虚拟化搜索", () => {
     localStorage.setItem("pdftr.pos.v1", JSON.stringify({ synthetic: 2 }));
     scrollTo.mockClear();
     ioSpy.mockClear();
+    pdfMock.originalDoc = null;
+    pdfMock.textLayerCalls.length = 0;
     vi.stubGlobal(
       "ResizeObserver",
       class {
@@ -118,10 +135,11 @@ describe("阅读位置恢复、手动段落定位与虚拟化搜索", () => {
     spot: { id: string; n: number } | null = null,
     targetDoc: DocumentData = doc,
     jobId = "synthetic",
+    onSelect: (id: string) => void = () => {},
   ) {
     await act(async () =>
       root.render(
-        <ReaderView doc={targetDoc} jobId={jobId} selectedSegment={null} onSelectSegment={() => {}} spot={spot} />,
+        <ReaderView doc={targetDoc} jobId={jobId} selectedSegment={null} onSelectSegment={onSelect} spot={spot} />,
       ),
     );
   }
@@ -223,5 +241,71 @@ describe("阅读位置恢复、手动段落定位与虚拟化搜索", () => {
     });
     expect(scrollTo).toHaveBeenCalledTimes(1);
     expect((scrollTo.mock.calls[0]?.[0] as { top: number } | undefined)?.top).toBeGreaterThan(10000);
+  });
+
+  it("原生页渲染 PdfTextLayer，扫描页降级保留块级 .source-text-layer", async () => {
+    pdfMock.originalDoc = { fake: true };
+    const mixedDoc = makeDoc(2);
+    mixedDoc.pages[1]!.kind = "scanned";
+    await render(null, mixedDoc, "mixed-doc");
+
+    const nativePage = container.querySelector('.page-row[data-page="0"] .page[aria-label="原文第 1 页"]');
+    const scannedPage = container.querySelector('.page-row[data-page="1"] .page[aria-label="原文第 2 页"]');
+    expect(nativePage?.querySelector('[data-testid="pdf-text-layer-0"]')).not.toBeNull();
+    expect(nativePage?.querySelector(".source-text-layer")).toBeNull();
+    expect(scannedPage?.querySelector('[data-testid="pdf-text-layer-1"]')).toBeNull();
+    expect(scannedPage?.querySelector(".source-text-layer")).not.toBeNull();
+  });
+
+  it("原文页通过坐标命中触发点击选中与悬停联动，且划词选区非空时不误触点击", async () => {
+    pdfMock.originalDoc = { fake: true };
+    const onSelect = vi.fn();
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      return this.classList.contains("page") ? new DOMRect(100, 50, 600, 800) : new DOMRect();
+    });
+    await render(null, doc, "hit-doc", onSelect);
+
+    const origPage = container.querySelector<HTMLElement>('.page-row[data-page="0"] .page[aria-label="原文第 1 页"]');
+    expect(origPage).not.toBeNull();
+    // b-0 bbox: x=[20, 200], y=[100, 140], page rect=(100, 50, 600, 800) -> shownScale = 1
+    // 命中点：(100 + 50, 50 + 120) = (150, 170)
+    await act(async () => {
+      origPage!.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 150, clientY: 170 }));
+    });
+    expect(container.querySelector(".hit.hovered")).not.toBeNull();
+    expect(container.querySelector(".tblock.hovered")).not.toBeNull();
+
+    await act(async () => {
+      origPage!.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 150, clientY: 170 }));
+    });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith("s1");
+
+    // 划词复制期间（selection 非空）不触发段落选中
+    const getSelectionSpy = vi
+      .spyOn(window, "getSelection")
+      .mockReturnValue({ toString: () => "Synthetic" } as unknown as Selection);
+    await act(async () => {
+      origPage!.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 150, clientY: 170 }));
+    });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    getSelectionSpy.mockRestore();
+
+    // 点击空白处不触发选中，鼠标移到空白处与移出页面均清除 hovered
+    await act(async () => {
+      origPage!.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 500, clientY: 500 }));
+      origPage!.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 500, clientY: 500 }));
+    });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".hit.hovered")).toBeNull();
+
+    await act(async () => {
+      origPage!.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 150, clientY: 170 }));
+    });
+    expect(container.querySelector(".hit.hovered")).not.toBeNull();
+    await act(async () => {
+      origPage!.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }));
+    });
+    expect(container.querySelector(".hit.hovered")).toBeNull();
   });
 });

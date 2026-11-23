@@ -24,7 +24,7 @@ import { InlineMathText, type InlineLink } from "@/shared/math/inline";
 import { countCompact } from "@/shared/text/links";
 import { splitCaptionNo } from "@/shared/text/script";
 import { dropFakeScripts, keyActivate, shortLabel, spaceCjkLatin, wantsIndent } from "@/shared/text/typeset";
-import { PdfCanvas, usePdf } from "@/shared/pdf/pdf";
+import { PdfCanvas, PdfTextLayer, usePdf } from "@/shared/pdf/pdf";
 
 import { OutlinePanel } from "./OutlinePanel";
 import { buildSearchIndex, querySearchIndex, type SearchHit } from "./search";
@@ -32,6 +32,7 @@ import {
   buildPageLayout,
   currentPageAt,
   DEFAULT_OVERSCAN_PX,
+  hitBlockAt,
   PAGE_ROW_GAP,
   pageJumpTop,
   visiblePageRange,
@@ -789,15 +790,42 @@ const PageRow = memo(function PageRow({
   onJump,
 }: RowProps) {
   const size = { width: page.width * scale, height: page.height * scale };
+  const hoveredSegRef = useRef<string | null>(null);
   const mark = (segId: string) =>
     (segId === selected ? " selected" : segId === hovered ? " hovered" : "") +
     (segId === flash ? " flash" : marked?.has(segId) ? " marked" : "") +
     (searchIds?.has(segId) ? " search-hit" : "") +
     (currentSearchId === segId ? " search-current" : "");
 
-  const selectSegment = (id: string) => {
+  const useNativeTextLayer = Boolean(original && page.kind === "native");
+
+  const segmentAtPointer = (e: React.MouseEvent<HTMLDivElement>): string | null => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const effectiveScale = page.width > 0 && rect.width > 0 ? rect.width / page.width : scale;
+    if (effectiveScale <= 0) return null;
+    const xPt = (e.clientX - rect.left) / effectiveScale;
+    const yPt = (e.clientY - rect.top) / effectiveScale;
+    const block = hitBlockAt(blocks, xPt, yPt);
+    return block ? (texts.get(block.id)?.segment.id ?? null) : null;
+  };
+
+  const onOriginalMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const segId = segmentAtPointer(e);
+    if (segId === hoveredSegRef.current) return;
+    hoveredSegRef.current = segId;
+    onHover(segId);
+  };
+
+  const onOriginalMouseLeave = () => {
+    if (hoveredSegRef.current === null && hovered === null) return;
+    hoveredSegRef.current = null;
+    onHover(null);
+  };
+
+  const onOriginalClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (window.getSelection()?.toString()) return;
-    onSelect(id);
+    const segId = segmentAtPointer(e);
+    if (segId) onSelect(segId);
   };
 
   return (
@@ -807,55 +835,64 @@ const PageRow = memo(function PageRow({
       style={{ transform: `translateY(${top}px)` }}
     >
       {mode !== "translated" && (
-        <div className="page" style={size} aria-label={`原文第 ${page.index + 1} 页`}>
+        <div
+          className="page"
+          style={size}
+          aria-label={`原文第 ${page.index + 1} 页`}
+          onMouseMove={onOriginalMouseMove}
+          onMouseLeave={onOriginalMouseLeave}
+          onClick={onOriginalClick}
+        >
           {original && <PdfCanvas doc={original} page={page.index} scale={scale} />}
-          {jumpTarget && <JumpMarker top={jumpTarget.top} scale={scale} />}
-          <div className="source-text-layer" aria-label={`原文第 ${page.index + 1} 页文字`}>
+          <div className="hit-layer" aria-hidden="true">
             {blocks.map((b) => {
               const t = texts.get(b.id);
-              return t ? (
+              if (!t) return null;
+              return (
                 <div
                   key={b.id}
-                  className={`source-text${mark(t.segment.id)}`}
+                  className={`hit${mark(t.segment.id)}`}
                   style={{
                     left: b.bbox.x0 * scale,
                     top: b.bbox.y0 * scale,
                     width: (b.bbox.x1 - b.bbox.x0) * scale,
                     height: (b.bbox.y1 - b.bbox.y0) * scale,
-                    fontSize: b.font_size * scale,
                   }}
-                  aria-label={t.sourceText}
-                  onClick={() => selectSegment(t.segment.id)}
-                >
-                  {highlightPlainText(
-                    t.sourceText.replace(/<m\d+\/>/g, "[公式]").replace(/<\/?(?:sup|sub|b|i)>/g, ""),
-                    term?.source,
-                    `source-${b.id}`,
-                  )}
-                </div>
-              ) : null;
+                />
+              );
             })}
           </div>
-          {blocks.map((b) => {
-            const t = texts.get(b.id);
-            if (!t) return null;
-            return (
-              <div
-                key={b.id}
-                className={`hit${mark(t.segment.id)}`}
-                style={{
-                  left: b.bbox.x0 * scale,
-                  top: b.bbox.y0 * scale,
-                  width: (b.bbox.x1 - b.bbox.x0) * scale,
-                  height: (b.bbox.y1 - b.bbox.y0) * scale,
-                }}
-                onMouseEnter={() => onHover(t.segment.id)}
-                onMouseLeave={() => onHover(null)}
-                onClick={() => selectSegment(t.segment.id)}
-              />
-            );
-          })}
+          {useNativeTextLayer && original ? (
+            <PdfTextLayer doc={original} page={page.index} scale={scale} />
+          ) : (
+            <div className="source-text-layer" aria-label={`原文第 ${page.index + 1} 页文字`}>
+              {blocks.map((b) => {
+                const t = texts.get(b.id);
+                return t ? (
+                  <div
+                    key={b.id}
+                    className="source-text"
+                    style={{
+                      left: b.bbox.x0 * scale,
+                      top: b.bbox.y0 * scale,
+                      width: (b.bbox.x1 - b.bbox.x0) * scale,
+                      height: (b.bbox.y1 - b.bbox.y0) * scale,
+                      fontSize: b.font_size * scale,
+                    }}
+                    aria-label={t.sourceText}
+                  >
+                    {highlightPlainText(
+                      t.sourceText.replace(/<m\d+\/>/g, "[公式]").replace(/<\/?(?:sup|sub|b|i)>/g, ""),
+                      term?.source,
+                      `source-${b.id}`,
+                    )}
+                  </div>
+                ) : null;
+              })}
+            </div>
+          )}
           {pageLinks && <LinkLayer links={pageLinks} scale={scale} onJump={onJump} />}
+          {jumpTarget && <JumpMarker top={jumpTarget.top} scale={scale} />}
         </div>
       )}
       {mode !== "original" && (

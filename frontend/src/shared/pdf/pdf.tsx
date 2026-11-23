@@ -6,9 +6,9 @@
  * 稍旧的 Chrome 上整页画不出来（原文页空白、译文页没有图片），legacy 构建自带补丁。
  */
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
-import type { PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
+import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 import workerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -191,5 +191,85 @@ export function PdfCanvas({ doc, page, scale }: CanvasProps) {
       <canvas ref={ref} className="pdf-canvas" />
       {error && <p className="pdf-error">这一页没能画出来：{error}。请把浏览器更新到最新版后刷新。</p>}
     </>
+  );
+}
+
+interface TextLayerState {
+  layer: pdfjs.TextLayer;
+  page: PDFPageProxy;
+  ready: boolean;
+}
+
+/**
+ * 渲染原生 PDF 页的 pdf.js TextLayer（逐字与画布对齐，支持精准划选、复制与 Ctrl+F）。
+ * 仅 scale 变化时复用已提取文本流并走 layer.update()，不重复请求 worker；翻页或卸载时取消任务并清空容器。
+ */
+export function PdfTextLayer({ doc, page, scale }: CanvasProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const stateRef = useRef<TextLayerState | null>(null);
+  const scaleRef = useRef(scale);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    let alive = true;
+    let localState: TextLayerState | null = null;
+    container.replaceChildren();
+
+    void doc
+      .getPage(page + 1)
+      .then((p) => {
+        if (!alive) return;
+        const initialScale = scaleRef.current;
+        container.style.setProperty("--total-scale-factor", String(initialScale));
+        const viewport = p.getViewport({ scale: initialScale });
+        const layer = new pdfjs.TextLayer({
+          textContentSource: p.streamTextContent(),
+          container,
+          viewport,
+        });
+        localState = { layer, page: p, ready: false };
+        stateRef.current = localState;
+        return layer.render().then(() => {
+          if (!alive || !localState || stateRef.current !== localState) return;
+          localState.ready = true;
+          // 文本流加载期间若缩放已变，立即追平到最新缩放比例
+          if (scaleRef.current !== initialScale) {
+            container.style.setProperty("--total-scale-factor", String(scaleRef.current));
+            localState.layer.update({ viewport: p.getViewport({ scale: scaleRef.current }) });
+          }
+        });
+      })
+      .catch((e: unknown) => {
+        if (!alive || e instanceof pdfjs.AbortException) return;
+      });
+
+    return () => {
+      alive = false;
+      if (localState) {
+        if (stateRef.current === localState) stateRef.current = null;
+        localState.layer.cancel();
+      }
+      container.replaceChildren();
+    };
+  }, [doc, page]);
+
+  useEffect(() => {
+    scaleRef.current = scale;
+    const container = containerRef.current;
+    if (!container) return;
+    container.style.setProperty("--total-scale-factor", String(scale));
+    const current = stateRef.current;
+    if (current?.ready) {
+      current.layer.update({ viewport: current.page.getViewport({ scale }) });
+    }
+  }, [scale]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="pdf-text-layer textLayer"
+      style={{ "--total-scale-factor": scale } as CSSProperties}
+    />
   );
 }

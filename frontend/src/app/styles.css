@@ -1218,13 +1218,78 @@ input[type="radio"] {
 .pdf-canvas {
   position: absolute;
   inset: 0;
+  z-index: 0;
   width: 100%;
   height: 100%;
+  pointer-events: none;
+}
+.hit-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+/* 原生 PDF 页 pdf.js TextLayer 最小必需样式（不引入整份 pdf_viewer.css 避免全局污染） */
+.pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow: clip;
+  line-height: 1;
+  text-align: initial;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  --scale-round-x: 1px;
+  --scale-round-y: 1px;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor, 1) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.pdf-text-layer :is(span, br) {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+}
+.pdf-text-layer > :not(.markedContent),
+.pdf-text-layer .markedContent span:not(.markedContent) {
+  --font-height: 0;
+  --scale-x: 1;
+  --rotate: 0deg;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.pdf-text-layer .markedContent {
+  display: contents;
+}
+.pdf-text-layer span[role="img"] {
+  user-select: none;
+  cursor: default;
+}
+.pdf-text-layer ::selection {
+  color: transparent;
+  background: rgb(50 130 220 / 0.28);
+}
+.pdf-text-layer br::selection {
+  background: transparent;
+}
+.pdf-text-layer .endOfContent {
+  position: absolute;
+  inset: 100% 0 0;
+  display: block;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
 }
 .source-text-layer {
   position: absolute;
   inset: 0;
-  z-index: 1;
+  z-index: 2;
 }
 .source-text {
   position: absolute;
@@ -1235,14 +1300,6 @@ input[type="radio"] {
   white-space: pre-wrap;
   user-select: text;
   cursor: text;
-}
-.source-text.search-hit {
-  outline: 2px solid var(--pencil-strong);
-  background: rgb(118 190 220 / 0.16);
-}
-.source-text.search-current {
-  outline-color: var(--pen);
-  background: var(--pencil-strong);
 }
 .pdf-error {
   position: absolute;
@@ -1282,7 +1339,15 @@ input[type="radio"] {
 .hit {
   position: absolute;
   border-radius: 2px;
-  cursor: pointer;
+  pointer-events: none;
+}
+.hit.search-hit {
+  outline: 2px solid var(--pencil-strong);
+  background: rgb(118 190 220 / 0.16);
+}
+.hit.search-current {
+  outline-color: var(--pen);
+  background: var(--pencil-strong);
 }
 .hit.hovered,
 .tblock.hovered {
@@ -2027,7 +2092,7 @@ input[type="radio"] {
 /* 链接：原文页与译文块外按原位置铺热区；译文里的引用、网址用笔色标出 */
 .pdf-link {
   position: absolute;
-  z-index: 2;
+  z-index: 3;
   border-radius: 2px;
   cursor: pointer;
 }
