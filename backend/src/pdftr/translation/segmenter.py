@@ -24,6 +24,15 @@ def _merge_bold(text: str) -> str:
     return re.sub(r"</b>(\s*)<b>", r"\1", text)
 
 
+def _merge_italic(text: str) -> str:
+    text = re.sub(r"</b></i>(\s*)<i><b>", r"\1", text)
+    return re.sub(r"</i>(\s*)<i>", r"\1", text)
+
+
+def _merge_emphasis(text: str) -> str:
+    return _merge_italic(_merge_bold(text))
+
+
 def _join(prev: str, nxt: str) -> str:
     """拼接两行文字，处理行尾断词。"""
     if not prev:
@@ -35,13 +44,13 @@ def _join(prev: str, nxt: str) -> str:
     if m and plain_next and plain_next[0].islower():
         word = m.group(1)
         if "-" in word:  # 复合词在连字符处换行：保留连字符
-            return _merge_bold(prev + nxt)
+            return _merge_emphasis(prev + nxt)
         # 粗体结束标签可能位于断词连字符后面，删字符时保留样式标签。
-        return _merge_bold(re.sub(r"-((?:</(?:b|i|sup|sub)>)*$)", r"\1", prev) + nxt)
-    return _merge_bold(f"{prev} {nxt}")
+        return _merge_emphasis(re.sub(r"-((?:</(?:b|i|sup|sub)>)*$)", r"\1", prev) + nxt)
+    return _merge_emphasis(f"{prev} {nxt}")
 
 
-def _span_source(span: Span, *, inline_bold: bool) -> str:
+def _span_source(span: Span, *, inline_bold: bool, inline_italic: bool) -> str:
     text = span.text
     start = len(text) - len(text.lstrip())
     end = len(text.rstrip())
@@ -56,12 +65,13 @@ def _span_source(span: Span, *, inline_bold: bool) -> str:
             if hi > lo:
                 bold[lo:hi] = [True] * (hi - lo)
     italic = [False] * len(text)
-    if span.italic:
+    if inline_italic and span.italic:
         italic[start:end] = [True] * (end - start)
-    for lo, hi in span.italic_ranges:
-        lo, hi = max(lo, start), min(hi, end)
-        if hi > lo:
-            italic[lo:hi] = [True] * (hi - lo)
+    if inline_italic:
+        for lo, hi in span.italic_ranges:
+            lo, hi = max(lo, start), min(hi, end)
+            if hi > lo:
+                italic[lo:hi] = [True] * (hi - lo)
     pieces: list[str] = []
     active: list[str] = []
     for pos in range(start, end):
@@ -92,17 +102,18 @@ def block_source(block: Block, key_map: dict[str, str]) -> str:
     latex = {f.key: f.latex for f in block.formulas}
     lines: dict[int, list[str]] = {}
     inline_bold = not block.style.bold and block.type is not BlockType.TITLE
+    inline_italic = not block.style.italic and block.type is not BlockType.TITLE
     for s in block.spans:
         if s.kind == "formula" and s.formula:
             key = key_map.get(s.formula)
             piece = f"<{key}/>" if key else (textual_formula(latex.get(s.formula, "")) or "")
         else:
-            piece = _span_source(s, inline_bold=inline_bold)
+            piece = _span_source(s, inline_bold=inline_bold, inline_italic=inline_italic)
         if piece:
             lines.setdefault(s.line, []).append(piece)
     text = ""
     for li in sorted(lines):
-        text = _join(text, _merge_bold(" ".join(lines[li])))
+        text = _join(text, _merge_emphasis(" ".join(lines[li])))
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -151,18 +162,28 @@ def segment(
     pages: Iterable[int] | None = None,
 ) -> list[Segment]:
     page_set = set(pages) if pages is not None else None
-    next_of = {b.continues_from: b for b in doc.blocks() if b.continues_from}
+    blocks = doc.blocks()
+    selected = {b.id for b in blocks if page_set is None or b.page in page_set}
+    next_of = {
+        b.continues_from: b
+        for b in blocks
+        if b.continues_from is not None and b.continues_from in selected and b.id in selected
+    }
     skip = front_matter_ids(doc)
     segments: list[Segment] = []
     section = ""
-    for block in doc.blocks():
+    for block in blocks:
         if block.type is BlockType.TITLE:
             section = (
                 block_source(block, {f.key: f.key for f in block.formulas if not textual_formula(f.latex)}) or section
             )
-        if block.continues_from or block.id in skip or not _wanted(block, include_references, include_figures):
+        if (
+            block.continues_from in selected
+            or block.id in skip
+            or not _wanted(block, include_references, include_figures)
+        ):
             continue  # 续接块随链头一起处理
-        if page_set is not None and block.page not in page_set:
+        if block.id not in selected:
             continue
         chain = _chain(block, next_of)
         formulas: dict[str, str] = {}

@@ -73,7 +73,13 @@ def test_references_and_page_filter():
     with_refs = segment(_doc(), include_references=True)
     assert any(s.block_ids == ["p0-b3"] for s in with_refs)
     only_page1 = segment(_doc(), pages=[1])
-    assert [s.block_ids for s in only_page1] == [["p1-b1"]]  # 续接块随链头所在页处理
+    assert [s.block_ids for s in only_page1] == [["p1-b0"], ["p1-b1"]]
+    assert only_page1[0].formulas == {"m1": "g(y)"}
+    assert [s.block_ids for s in segment(_doc(), pages=[0])] == [["p0-b0"], ["p0-b1"]]
+    doc = _doc()
+    tail = _block("p2-b0", 2, BlockType.TEXT, [_text("The last part")], continues_from="p1-b0")
+    doc.pages.append(Page(index=2, width=600, height=800, blocks=[tail]))
+    assert [s.block_ids for s in segment(doc, pages=[0, 2])] == [["p0-b0"], ["p0-b1"], ["p2-b0"]]
 
 
 def test_ordinal_formulas_become_text():
@@ -120,3 +126,19 @@ def test_figure_labels_follow_option():
     doc = Document(job_id="0123456789abcdef", pages=[Page(index=0, width=600, height=800, blocks=[label])])
     assert [s.source for s in segment(doc)] == ["Training loss"]
     assert segment(doc, include_figures=False) == []
+
+
+def test_italic_runs_merge_across_lines_and_hyphenation():
+    assert _join("<i>the first</i>", "<i>line</i>") == "<i>the first line</i>"
+    assert _join("<b><i>represen-</i></b>", "<b><i>tation</i></b>") == "<b><i>representation</i></b>"
+    assert _join("<i><b>represen-</b></i>", "<i><b>tation</b></i>") == "<i><b>representation</b></i>"
+
+    def italic(text: str, line: int = 0) -> Span:
+        return _text(text, line).model_copy(update={"italic": True})
+
+    whole = _block("p0-b0", 0, BlockType.TEXT, [italic("The first"), italic("statement", 1)])
+    whole.style = BlockStyle(font_size=10, italic=True)
+    mixed = _block("p0-b1", 0, BlockType.TEXT, [_text("The"), italic("second"), italic("statement", 1)])
+    title = _block("p0-b2", 0, BlockType.TITLE, [italic("A title")])
+    doc = Document(job_id="synthetic", pages=[Page(index=0, width=600, height=800, blocks=[whole, mixed, title])])
+    assert [s.source for s in segment(doc)] == ["The first statement", "The <i>second statement</i>", "A title"]
