@@ -47,6 +47,7 @@ function makeDoc(pageCount = 3, customIndices?: number[]): DocumentData {
     width: 600,
     height: 800,
     kind: "native" as const,
+    missing_layout: false,
     blocks:
       order === 0 || order === indices.length - 1 || order === 79
         ? [
@@ -150,6 +151,13 @@ describe("阅读位置恢复、手动段落定位与虚拟化搜索", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.useRealTimers();
+  });
+
+  it("在阅读器显示缺少版面解析结果的页码", async () => {
+    const incomplete = makeDoc(3);
+    incomplete.pages[1] = { ...incomplete.pages[1]!, missing_layout: true };
+    await render(null, incomplete);
+    expect(container.querySelector('.notice[role="status"]')?.textContent).toContain("第 2 页未返回版面解析结果");
   });
 
   async function render(

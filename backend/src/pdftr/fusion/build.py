@@ -7,7 +7,7 @@
 import re
 import statistics
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
 from pdftr.domain.chars import Char, CharPage
@@ -65,7 +65,12 @@ class FusionReport:
 
 
 def fuse(
-    job_id: str, layout: LayoutResult, char_pages: Sequence[CharPage], *, used_cloud: bool
+    job_id: str,
+    layout: LayoutResult,
+    char_pages: Sequence[CharPage],
+    *,
+    used_cloud: bool,
+    pages_to_translate: Iterable[int] | None = None,
 ) -> tuple[Document, FusionReport]:
     pdf_indexes = {page.index for page in char_pages}
     seen: set[int] = set()
@@ -81,6 +86,7 @@ def fuse(
     report.continuations = len(rel.links)
 
     pages: list[Page] = []
+    selected = set(pages_to_translate) if pages_to_translate is not None else pdf_indexes
     by_index = {page.index: page for page in relocated.pages}
     for cp in sorted(char_pages, key=lambda page: page.index):
         if cp.kind is not PageKind.NATIVE:
@@ -88,7 +94,10 @@ def fuse(
         visible = [c for c in cp.chars if not c.c.isspace()]
         report.chars_total += len(visible)
         if (lp := by_index.get(cp.index)) is None:
-            pages.append(Page(index=cp.index, width=cp.width, height=cp.height, rotation=cp.rotation, kind=cp.kind))
+            pages.append(
+                Page(index=cp.index, width=cp.width, height=cp.height, rotation=cp.rotation, kind=cp.kind,
+                     missing_layout=cp.index in selected and (bool(visible) or cp.has_images))
+            )  # fmt: skip
             continue
         per_block, orphans = align(cp.chars, [b.bbox for b in lp.blocks])
         report.chars_assigned += len(visible) - sum(1 for c in orphans if not c.c.isspace())

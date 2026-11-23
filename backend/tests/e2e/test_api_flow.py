@@ -81,6 +81,9 @@ class FakeChat:
             if m := re.match(r"^(\d+)\|(.*)$", line):
                 text = re.sub(r"<(m\d+)>.*?</\1>", r"<\1/>", m.group(2))
                 tag = "精" if opts.thinking == "low" else "译"
+                if "be a function that" in text:
+                    suffix = "并在下一页结束。" if "ends on the next page" in text else "。"
+                    text = "设 <m1/> 为 function，跨栏续接" + suffix
                 out.append(f"{m.group(1)}|{tag}:{text}")
         return ChatResult(text="\n".join(out), usage=ChatUsage(prompt_tokens=100, completion_tokens=40))
 
@@ -600,3 +603,29 @@ def test_job_terms_and_batch_retranslate(client: TestClient):
     assert sorted(x["segment_id"] for x in revs if x["action"] == "retranslate") == sorted(ids)  # 每段可撤回
     too_many = {"segment_ids": [ids[0]] * 21}
     assert client.post(f"/api/jobs/{job['id']}/retranslate", json=too_many, headers=HEADERS).status_code == 422
+
+
+def test_selected_content_pages_missing_layout_are_reported(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    original_parse = FakeParser.parse
+
+    async def only_first(self, pdf, pages=None, raw_dir=None, on_progress=None):
+        layout = await original_parse(self, pdf, pages, raw_dir, on_progress)
+        return layout.model_copy(update={"pages": layout.pages[:1]})
+
+    monkeypatch.setattr(FakeParser, "parse", only_first)
+    with pymupdf.open(stream=make_pdf(), filetype="pdf") as pdf, pymupdf.open() as image:
+        picture = image.new_page(width=40, height=30)
+        picture.draw_rect(picture.rect, fill=(0, 0, 0))
+        pix = picture.get_pixmap()
+        pdf.new_page(width=600, height=800).insert_image(pymupdf.Rect(35, 40, 75, 70), pixmap=pix)
+        pdf.new_page(width=600, height=800).insert_text((50, 50), "   ")
+        pdf.new_page(width=600, height=800).insert_text((50, 50), "Unselected content")
+        data = pdf.tobytes()
+
+    upload = _upload(client, data=data, options={"cloud_consent": True, "pages": [0, 1, 2, 3]})
+    assert upload.status_code == 202
+    job = _wait(client, upload.json()["id"])
+    assert job["status"] == "done", job
+    assert "第 2、3 页未返回版面解析结果" in job["message"]
+    doc = client.get(f"/api/jobs/{job['id']}/document").json()
+    assert [page["missing_layout"] for page in doc["pages"]] == [False, True, True, False, False]

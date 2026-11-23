@@ -859,6 +859,11 @@ export interface components {
             height: number;
             /** Kind */
             kind: string;
+            /**
+             * Missing Layout
+             * @default false
+             */
+            missing_layout: boolean;
             /** Blocks */
             blocks: components["schemas"]["BlockOut"][];
         };

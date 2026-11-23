@@ -8,7 +8,7 @@ import asyncio
 import json
 import logging
 import threading
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import NamedTuple, Protocol, runtime_checkable
 
 from pdftr.domain.document_name import paper_title
-from pdftr.domain.ir import BlockType, Document, PageKind, SegmentStatus
+from pdftr.domain.ir import BlockType, Document, PageKind, Segment, SegmentStatus
 from pdftr.domain.job import STAGES, Job, JobStatus
 from pdftr.domain.layout import LayoutResult
 from pdftr.domain.llm import ChatError, ChatModel
@@ -392,7 +392,9 @@ class Pipeline:
         pdf = self.deps.artifacts.path(job.id, "original.pdf")
         chars = await run_thread(extract, pdf)
         try:
-            doc, report = await run_thread(fuse, job.id, layout, chars, used_cloud=True)
+            doc, report = await run_thread(
+                fuse, job.id, layout, chars, used_cloud=True, pages_to_translate=job.options.pages
+            )
         except InvalidLayoutPages as e:
             raise StageError(str(e)) from e
         if report.missing_layout_pages:
@@ -413,7 +415,7 @@ class Pipeline:
         segs = segment(doc, include_references=job.options.include_references,
                        include_figures=job.options.translate_figures, pages=pages)  # fmt: skip
         if not segs:
-            raise StageError("没有找到可翻译的文字")
+            raise StageError("没有找到可翻译的文字" + _missing_layout_note(doc))
         self.deps.store.replace_segments(job.id, segs)
 
     async def _glossary(self, job: Job, secrets: Secrets) -> None:
@@ -453,8 +455,7 @@ class Pipeline:
         self.deps.store.save_segments(out)
         cost = report.cost_cny
         total = None if cost is None and job.cost_cny is None else (job.cost_cny or 0) + (cost or 0)
-        translated = sum(s.status in (SegmentStatus.DONE, SegmentStatus.EDITED) for s in out)
-        self._update(job, model=model, cost_cny=total, message=f"已翻译 {translated}/{len(out)} 段")
+        self._update(job, model=model, cost_cny=total, message=_translation_summary(out))
         if report.failed:
             reasons = "；".join(list(dict.fromkeys(report.failures.values()))[:3])
             raise StageError(
@@ -467,11 +468,23 @@ class Pipeline:
 
     async def _render(self, job: Job, _: Secrets) -> None:
         doc = load_document(self.deps, job.id)
-        ids = {bid for s in self.deps.store.segments(job.id) for bid in s.block_ids}
+        segments = self.deps.store.segments(job.id)
+        ids = {bid for s in segments for bid in s.block_ids}
         blocks = [b for b in doc.blocks() if b.id in ids]
         scanned = {p.index for p in doc.pages if p.kind is PageKind.SCANNED}
         await run_thread(make_background, self.deps.artifacts.path(job.id, "original.pdf"), blocks,
                                 self.deps.artifacts.path(job.id, "background.pdf"), scanned)  # fmt: skip
+        self._update(job, message=_translation_summary(segments) + _missing_layout_note(doc))
+
+
+def _translation_summary(segments: Sequence[Segment]) -> str:
+    translated = sum(s.status in (SegmentStatus.DONE, SegmentStatus.EDITED) for s in segments)
+    return f"已翻译 {translated}/{len(segments)} 段"
+
+
+def _missing_layout_note(doc: Document) -> str:
+    pages = "、".join(str(p.index + 1) for p in doc.pages if p.missing_layout)
+    return f"。第 {pages} 页未返回版面解析结果，已保留原文" if pages else ""
 
 
 def segment_counts(store: JobStore, job_id: str) -> dict[str, int]:

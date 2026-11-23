@@ -50,7 +50,3 @@ def invisible_ratio(page: pymupdf.Page) -> float:
         total += n
         hidden += n if span.get("type") == 3 else 0
     return hidden / total if total else 0.0
-
-
-def classify_page(page: pymupdf.Page, chars: Sequence[Char]) -> PageKind:
-    return classify(chars, image_coverage(page), invisible_ratio(page))

@@ -89,6 +89,7 @@ class PageOut(BaseModel):
     width: float
     height: float
     kind: str
+    missing_layout: bool = False
     blocks: list[BlockOut]
 
 
@@ -179,7 +180,7 @@ class DocumentOut(BaseModel):
     ) -> "DocumentOut":
         pages = [
             PageOut(
-                index=p.index, width=p.width, height=p.height, kind=p.kind.value,
+                index=p.index, width=p.width, height=p.height, kind=p.kind.value, missing_layout=p.missing_layout,
                 blocks=[
                     BlockOut(id=b.id, page=b.page, type=b.type.value, level=b.level,
                              bbox=RectOut(**b.bbox.model_dump()),

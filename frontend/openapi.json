@@ -2834,6 +2834,11 @@
       "type": "string",
       "title": "Kind"
      },
+     "missing_layout": {
+      "type": "boolean",
+      "title": "Missing Layout",
+      "default": false
+     },
      "blocks": {
       "items": {
        "$ref": "#/components/schemas/BlockOut"

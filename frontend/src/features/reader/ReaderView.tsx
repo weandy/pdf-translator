@@ -589,6 +589,8 @@ export function ReaderView({
     setZoom(nextZoom);
   };
 
+  const missingPages = doc.pages.filter((page) => page.missing_layout).map((page) => page.index + 1);
+
   return (
     <div className="reader">
       <div className="toolbar">
@@ -749,6 +751,11 @@ export function ReaderView({
             </ol>
           )}
         </div>
+      )}
+      {missingPages.length > 0 && (
+        <p className="notice" role="status">
+          第 {missingPages.join("、")} 页未返回版面解析结果，已保留原文。
+        </p>
       )}
       <div className="reader-body">
         {showOutline && (

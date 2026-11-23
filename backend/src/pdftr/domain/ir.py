@@ -95,6 +95,7 @@ class Page(BaseModel):
     height: float
     rotation: int = 0
     kind: PageKind = PageKind.NATIVE
+    missing_layout: bool = False  # 任务选页中，有内容但没有版面解析结果
     blocks: list[Block] = Field(default_factory=list)
 
 

@@ -24,4 +24,5 @@ class CharPage(BaseModel):
     height: float
     rotation: int = 0
     kind: PageKind = PageKind.NATIVE
+    has_images: bool = False
     chars: list[Char] = Field(default_factory=list)
