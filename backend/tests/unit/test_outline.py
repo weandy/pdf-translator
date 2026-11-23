@@ -76,3 +76,12 @@ def test_parser_heading_level_is_kept_when_numbering_is_absent(tmp_path: Path):
     )
     items = build_outline(_pdf(tmp_path), doc, segs)
     assert [(item.title, item.level) for item in items] == [("Background", 2), ("Details", 3)]
+
+
+def test_outline_uses_roman_chapters_to_infer_lettered_sections(tmp_path: Path):
+    doc, segs = _doc(
+        [(0, "A. Standalone"), (1, "I. Setup"), (1, "A. Samples"), (1, "B. Cases"), (1, "C. Notes"),
+         (2, "II. Checks"), (2, "C. Direct C"), (2, "D. Summary"), (2, "A. Details")],
+        levels={"A. Details": 3},
+    )  # fmt: skip
+    assert [item.level for item in build_outline(_pdf(tmp_path), doc, segs)] == [1, 1, 2, 2, 2, 1, 2, 2, 3]

@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from pdftr.domain.document_name import paper_title_blocks
 from pdftr.domain.ids import segment_id
 from pdftr.domain.ir import Block, BlockType, Document, FormulaRef, Segment, SegmentPart, SegmentStatus, Span
-from pdftr.domain.text import INLINE_ABSTRACT, RICH_TAG, SECTION_NUMBER, visible_length
+from pdftr.domain.text import INLINE_ABSTRACT, PUBLICATION_DATE, RICH_TAG, SECTION_NUMBER, visible_length
 
 # MinerU 会把序数词的上标（如 1^{st}、2^{nd}）识别成公式；模型会正确地把它译成“一阶”“二阶”，
 # 占位符随之“消失”导致校验失败（M3 实测）。这类公式还原成普通文字再翻译。
@@ -221,7 +221,13 @@ def front_matter_ids(doc: Document) -> set[str]:
     heading = min((b for b in blocks if b.order > title.order and is_heading(b)), key=lambda b: b.order, default=None)
     if heading is None:
         return set()
-    return {b.id for b in blocks if b.type is BlockType.TEXT and title.order < b.order < heading.order}
+    return {
+        b.id
+        for b in blocks
+        if b.type is BlockType.TEXT
+        and title.order < b.order < heading.order
+        and not (b.list_item and PUBLICATION_DATE.match(_FORMAT.sub("", block_source(b, {}))))
+    }
 
 
 def bad_source(segments: Iterable[Segment]) -> bool:

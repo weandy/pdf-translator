@@ -111,7 +111,7 @@ def test_native_pua_uses_exact_original_crop_and_ambiguous_pua_keeps_the_block(t
     assert seg.source == "Read <m1/> and continue."
     assert seg.formula_refs["m1"].bbox == glyph.bbox and seg.formulas == {"m1": ""}
     assert expand_formulas(seg.source, seg.formulas) == "Read <m1>[symbol]</m1> and continue."
-    assert expand_formulas("<m9/>", {}) == "<m9></m9>" and PROMPT_VERSION == "v3"
+    assert expand_formulas("<m9/>", {}) == "<m9></m9>" and PROMPT_VERSION == "v4"
     with pymupdf.open(path) as pdf:
         assert pymupdf.Pixmap(_formula_images(pdf, seg)["m1"][0]).alpha
     assert '"origin_y"' not in doc.model_dump_json()

@@ -6,7 +6,7 @@ import pytest
 from pdftr.config import Settings
 from pdftr.domain.llm import ChatOptions, ChatResult
 from pdftr.glossary import sources
-from pdftr.glossary.extract import Extraction, extract_terms, parse
+from pdftr.glossary.extract import Extraction, extract_terms, frequent_candidates, parse
 from pdftr.glossary.gist import parse as parse_gist
 from pdftr.glossary.matcher import TermMatcher
 from pdftr.glossary.normalize import normalize_terms
@@ -113,20 +113,58 @@ def test_merge_priority_and_load_all(tmp_path: Path):
     assert loaded == order and terms  # GIST 下载失败只跳过它，已缓存的来源照常使用
 
 
-def test_extract_terms_with_fake_model():
+@pytest.mark.parametrize("candidates", [(), ("silver chamber", "carrier")])
+def test_extract_terms_with_fake_model(candidates):
     class Chat:
         model = "fake"
 
         async def complete(self, system: str, user: str, opts: ChatOptions) -> ChatResult:
-            assert "标题：Adam" in user and opts.thinking == "off"
-            assert "第二行" in user and "Transformer、BERT、ResNet" in user and "job、instance" in user
-            return ChatResult(text="领域：优化\nAI公共词库：停用\nAdam=Adam")
+            assert "标题：Synthetic study" in user and opts.thinking == "off"
+            assert "第二行" in user and "最多 45 个" in user and "Transformer、BERT、ResNet" in user
+            assert ("正文高频候选词" in user) is bool(candidates)
+            if candidates:
+                assert user.endswith("：silver chamber、carrier")
+            return ChatResult(text="领域：测量\nAI公共词库：停用\ncarrier=载体")
 
         async def list_models(self) -> list[str]:
             return []
 
-    got = asyncio.run(extract_terms(Chat(), title="Adam", abstract="abs", intro="intro", headings=["1 Intro"]))
-    assert got.domain == "优化" and not got.use_library and got.terms == {"Adam": "Adam"}
+    got = asyncio.run(
+        extract_terms(Chat(), title="Synthetic study", abstract="", intro="", headings=[], candidates=candidates)
+    )
+    assert got.domain == "测量" and not got.use_library and got.terms == {"carrier": "载体"}
+
+
+def test_frequent_candidates_clean_and_merge_without_bridging_boundaries():
+    repeated = (
+        "<b>Silver</b> <i>chamber</i>. Chambers. Box. Boxes. Colony. Colonies. Tile. Tiles. "
+        "Paper study section figure table method result results proposed based using shown used however therefore thus "
+        "be been being respectively moreover furthermore additionally "
+        "et al. The and A 48 q4. frost, ring; frost <m1/> ring; frost 2 ring. Glass casing."
+    )
+    candidates = frequent_candidates([repeated] * 4 + ["silver chamber", "frost", "ring"])
+    assert set(candidates) == {
+        "silver",
+        "chamber",
+        "box",
+        "colony",
+        "tile",
+        "frost",
+        "ring",
+        "silver chamber",
+        "glass casing",
+    }
+    assert frequent_candidates(["glass casing"] * 2) == ()
+    assert frequent_candidates(["glass casing"] * 3) == ("glass casing",)
+    assert frequent_candidates(["glass"] * 5) == ("glass",)
+
+
+def test_frequent_candidates_cap_each_group_at_twenty_five():
+    words = [f"cell{chr(97 + i // 26)}{chr(97 + i % 26)}" for i in range(30)]
+    candidates = frequent_candidates([f"shell {word}" for i, word in enumerate(words) for _ in range(i + 5)])
+    assert len(candidates) == len(set(candidates)) == 50
+    assert "cellbd" in candidates and "shell cellbd" in candidates
+    assert "cellaa" not in candidates and "shell cellaa" not in candidates
 
 
 def test_default_sources_filter_single_words_and_known_conflicts(tmp_path):

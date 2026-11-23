@@ -27,11 +27,12 @@ from pdftr.domain.ir import (
     Span,
 )
 from pdftr.domain.layout import LayoutBlock, LayoutResult
-from pdftr.domain.text import INLINE_ABSTRACT, RICH_TAG, SECTION_NUMBER, is_pua
+from pdftr.domain.text import INLINE_ABSTRACT, PUBLICATION_DATE, RICH_TAG, SECTION_NUMBER, is_pua
 from pdftr.fusion.align import align
 from pdftr.fusion.emphasis import bold_ranges, italic_ranges
 from pdftr.fusion.formula_align import MATH_FONT, MATH_WORDS, clean_formula_lines, refine_block, visual_lines
 from pdftr.fusion.relocate import relocate
+from pdftr.fusion.structure import margin_marks, split_layout
 from pdftr.fusion.style import block_style
 from pdftr.fusion.text_fix import (
     chars_in,
@@ -109,9 +110,9 @@ def fuse(
     report = FusionReport()
     relocated, rel = relocate(layout)
     report.moved_lines, report.unmatched_lines = rel.moved_lines, rel.unmatched_lines
-    report.continuations = len(rel.links)
 
     pages: list[Page] = []
+    endpoints: dict[tuple[int, int], tuple[Block, Block]] = {}
     selected = set(pages_to_translate) if pages_to_translate is not None else pdf_indexes
     by_index = {page.index: page for page in relocated.pages}
     native_captions: set[str] = set()
@@ -133,16 +134,32 @@ def fuse(
         report.chars_assigned += len(visible) - sum(1 for c in orphans if not c.c.isspace())
 
         blocks: list[Block] = []
-        for lb, chars in zip(lp.blocks, per_block, strict=True):
+        marks = margin_marks(orphans) if cp.kind is PageKind.NATIVE else []
+        kept_on_background: set[int] = set()
+        inserted = 0
+        for lb, chars in sorted(zip(lp.blocks, per_block, strict=True), key=lambda pair: pair[0].order):
             if lb.content is not None and not lb.lines:  # 块级解析结果：先拆行、推算行内公式位置
                 lb, total, found = refine_block(lb, chars)
                 report.formulas_unlocated += total - found
             elif any(s.kind == "inline_formula" for line in lb.lines for s in line.spans):
                 lb = clean_formula_lines(lb, chars)
-            block = _block(cp, lb, chars, rel.links, report)
-            blocks.append(block)
-            if block.type is BlockType.CAPTION and any(not c.c.isspace() for c in chars):
-                native_captions.add(block.id)
+            first = len(blocks)
+            pieces, matched = split_layout(lb, chars, marks, cp.width)
+            if matched:
+                kept_on_background.update(matched)
+                marks = [mark for mark in marks if id(mark.chars[0]) not in matched]
+            for i, (piece, glyphs, list_item) in enumerate(pieces):
+                order = lb.order + inserted + i
+                if piece.order != order:
+                    piece = piece.model_copy(update={"order": order})
+                block = _block(cp, piece, glyphs, report, list_item=list_item)
+                blocks.append(block)
+                if block.type is BlockType.CAPTION and any(not c.c.isspace() for c in glyphs):
+                    native_captions.add(block.id)
+            endpoints[cp.index, lb.order] = (blocks[first], blocks[-1])
+            inserted += len(pieces) - 1
+        if kept_on_background:
+            orphans = [c for c in orphans if id(c) not in kept_on_background]
         protected_captions = _protect_layout_scope(blocks)
         start = max((b.order for b in blocks), default=-1) + 1
         if cp.kind is PageKind.NATIVE:
@@ -160,6 +177,11 @@ def fuse(
             Page(index=cp.index, width=cp.width, height=cp.height, rotation=cp.rotation, kind=cp.kind, blocks=blocks)
         )
 
+    for target, source in rel.links.items():
+        nxt, prev = endpoints[target][0], endpoints[source][1]
+        if not nxt.list_item:
+            nxt.continues_from = prev.id
+            report.continuations += 1
     report.continuations += _supplement_continuations(pages)
     _even_scan_sizes(pages)
     _even_caption_sizes(pages, native_captions)
@@ -212,6 +234,7 @@ def _supplement_continuations(pages: list[Page]) -> int:
         return (
             prev.id not in used
             and bool(text[prev.id])
+            and not (prev.list_item and PUBLICATION_DATE.match(RICH_TAG.sub("", text[prev.id])))
             and not _SENTENCE_END.search(text[prev.id])
             and abs(prev.style.font_size - nxt.style.font_size) <= _MAX_SIZE_GAP
             and not (across and (prev_barrier or next_barrier))
@@ -241,7 +264,10 @@ def _supplement_continuations(pages: list[Page]) -> int:
         first_peers = left if first is not None and _column(first, page) == 0 else first_column
         right_top = min(right, key=lambda b: b.bbox.y0, default=None) if left else None
         for nxt, peers in ((first, first_peers), (right_top, right)):
-            if nxt is None or nxt.continues_from or nxt.bbox.y0 > _TOP_FRACTION * page.height or _indented(nxt, peers):
+            if (
+                nxt is None or nxt.list_item or nxt.continues_from
+                or nxt.bbox.y0 > _TOP_FRACTION * page.height or _indented(nxt, peers)
+            ):  # fmt: skip
                 continue
             if nxt is first:
                 prev = previous if previous is not None and previous.page + 1 == page.index else None
@@ -402,7 +428,7 @@ def _pua_fragments(text: str, chars: list[Char]) -> list[tuple[str, list[Char], 
     return fragments
 
 
-def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], links: dict, report: FusionReport) -> Block:
+def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], report: FusionReport, *, list_item: bool) -> Block:
     scanned = cp.kind is PageKind.SCANNED
     style = block_style(
         chars,
@@ -469,7 +495,6 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], links: dict, report
                     )
                 )
     report.formulas += len(formulas)
-    prev = links.get((cp.index, lb.order))
     return Block(
         id=block_id(cp.index, lb.order),
         page=cp.index,
@@ -480,7 +505,7 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], links: dict, report
         spans=spans,
         formulas=formulas,
         latex=lb.latex,
-        continues_from=block_id(*prev) if prev else None,
+        list_item=list_item,
         style=style,
         translatable=(
             lb.type in TRANSLATABLE_TYPES and not lb.discarded and not unresolved and any(s.text.strip() for s in spans)

@@ -61,6 +61,22 @@ def test_page_filter_keeps_other_page_untouched(tmp_path: Path, columns: tuple[P
         assert pdf[1 - selected].get_text() == before[1 - selected].get_text()
 
 
+def test_export_balances_only_heading_lines(tmp_path: Path):
+    original = tmp_path / "synthetic.pdf"
+    heading = _block(0, 0, [20, 20, 70, 60], "Sample heading").model_copy(update={"type": BlockType.TITLE})
+    caption = _block(0, 1, [20, 70, 70, 110], "Figure 1: Sample.").model_copy(update={"type": BlockType.CAPTION})
+    doc = Document(job_id="synthetic", pages=[Page(index=0, width=150, height=150, blocks=[heading, caption])])
+    with pymupdf.open() as pdf:
+        pdf.new_page(width=150, height=150)
+        pdf.save(original)
+    segments = segment(doc)
+    for seg in segments:
+        seg.target = "甲乙丙丁戊己"
+    output = export_pdf(original, original, doc, segments, "mono")
+    with pymupdf.open(stream=output, filetype="pdf") as pdf:
+        assert str(pdf[0].get_text()).splitlines() == ["甲乙丙", "丁戊己", "甲乙丙丁戊", "己"]
+
+
 @pytest.mark.parametrize(("mode", "side"), [("mono", "right"), ("dual", "right"), ("dual", "left")])
 def test_cross_page_link_uses_relocated_block_page(
     tmp_path: Path, columns: tuple[Path, Document], mode: ExportMode, side: Side

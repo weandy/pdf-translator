@@ -5,7 +5,7 @@ import type { DocumentData, SegmentData } from "@/shared/api/client";
 
 const block = (id: string, page: number) => ({
   id, page, type: "text", bbox: { x0: 0, y0: 0, x1: 100, y1: 20 }, font_size: 10, bold: false, italic: false,
-  serif: true, color: 0, translatable: true,
+  serif: true, color: 0, translatable: true, list_item: false,
 }); // prettier-ignore
 
 const seg = (over: Partial<SegmentData>): SegmentData => ({

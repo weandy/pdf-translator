@@ -51,7 +51,7 @@ export function spaceCjkLatin(text: string): string {
 }
 
 export function wantsIndent(block: BlockData, segment: SegmentData, first: boolean): boolean {
-  if (block.type !== "text" || !first) return false;
+  if (block.list_item || block.type !== "text" || !first) return false;
   const source = segment.source.trimStart();
   return !LIST_ITEM.test(source);
 }

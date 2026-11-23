@@ -26,3 +26,12 @@ def test_indent_rules():
     assert not wants_indent(_block(), _seg("• First item"), first=True)
     assert not wants_indent(_block(), _seg("(1) First item"), first=True)
     assert not wants_indent(_block(BlockType.CAPTION), _seg("Figure 1: A caption."), first=True)
+
+
+def test_explicit_list_item_disables_indent_and_old_ir_still_indents():
+    payload = _block().model_dump(exclude={"list_item"})
+    old = Block.model_validate(payload)
+    seg = _seg("first sample")
+    assert old.list_item is False
+    assert wants_indent(old, seg, first=True)
+    assert not wants_indent(old.model_copy(update={"list_item": True}), seg, first=True)

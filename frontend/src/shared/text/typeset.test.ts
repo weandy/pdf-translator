@@ -24,6 +24,10 @@ describe("wantsIndent", () => {
     expect(wantsIndent(block(), seg("(1) First item"), true)).toBe(false);
     expect(wantsIndent(block("caption"), seg("Figure 1: A caption."), true)).toBe(false);
   });
+  it("悬挂标记在块外时也按照列表项排版", () => {
+    expect(wantsIndent({ ...block(), list_item: true }, seg("first sample"), true)).toBe(false);
+    expect(wantsIndent({ ...block(), list_item: false }, seg("first sample"), true)).toBe(true);
+  });
 });
 
 // 与后端 test_typesetter.py 使用相同用例。

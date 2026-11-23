@@ -1,6 +1,7 @@
 """导出 PDF 的中文排版器（clreq）：两端对齐、中西文间距、行首行尾禁则、长词断行。用内置字体，不依赖字体文件。"""
 
 import pymupdf
+import pytest
 
 from pdftr.rendering.typeset import drop_fake_scripts
 from pdftr.rendering.typesetter import MAX_JUSTIFY_EXTRA, FontSet, Style, Typesetter
@@ -17,6 +18,37 @@ def _lines(text: str, width: float, indent: bool = False):
 
 def _text(line) -> str:
     return "".join(r.text for t in line.tokens for r in t.runs)
+
+
+@pytest.mark.parametrize("text", ["甲乙丙丁戊己", "甲乙丙丁戊己庚"])
+def test_heading_rebalances_one_or_two_han_without_resizing(text):
+    tokens = TS.tokenize(text, "heading", SIZE, lambda _: None)
+    lines, bases, height = TS.layout(tokens, 5 * SIZE, SIZE, 1.5, False, balance_heading=True)
+    original, old_bases, old_height = TS.layout(tokens, 5 * SIZE, SIZE, 1.5, False)
+    assert len(original) == len(lines) == 2 and len(_text(original[-1])) in (1, 2)
+    assert len(_text(lines[-1])) == 3 and "".join(map(_text, lines)) == text
+    assert (bases, height) == (old_bases, old_height)
+    assert all(r.size == SIZE for line in lines for tok in line.tokens for r in tok.runs)
+
+
+@pytest.mark.parametrize(
+    ("role", "text", "width", "formula"),
+    [
+        ("body", "甲乙丙丁戊己", 5 * SIZE, None),
+        ("caption", "甲乙丙丁戊己", 5 * SIZE, None),
+        ("heading", "甲乙丙丁戊己庚辛", 5 * SIZE, None),
+        ("heading", "甲乙丙丁（戊己", 6 * SIZE, None),
+        ("heading", "甲乙丙丁戊，己", 5 * SIZE, None),
+        ("heading", "甲乙丙丁戊<m1/>己", 5 * SIZE, (38.0, 9.0)),
+        ("heading", "甲乙丙丁戊longsample己", 5 * SIZE, None),
+        ("heading", "甲乙丙丁戊己。", 3 * SIZE, None),
+    ],
+)
+def test_heading_rebalance_respects_role_content_and_line_break_rules(role, text, width, formula):
+    tokens = TS.tokenize(text, role, SIZE, lambda _: formula)
+    initial = TS.break_lines(tokens, width, SIZE, 0)
+    lines, _, _ = TS.layout(tokens, width, SIZE, 1.5, False, balance_heading=role == "heading")
+    assert lines == initial
 
 
 def test_glue_between_han_and_latin_is_quarter_em():

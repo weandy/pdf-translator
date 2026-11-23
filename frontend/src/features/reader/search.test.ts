@@ -23,6 +23,7 @@ const doc = {
           serif: true,
           color: 0,
           translatable: true,
+          list_item: false,
         },
         {
           id: "b2",
@@ -35,6 +36,7 @@ const doc = {
           serif: true,
           color: 0,
           translatable: true,
+          list_item: false,
         },
       ],
     },

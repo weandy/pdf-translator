@@ -11,6 +11,7 @@
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from itertools import pairwise
 from pathlib import Path
 
 import pymupdf
@@ -305,12 +306,66 @@ class Typesetter:
             lines[-1].last = True
         return lines
 
+    def _balance_heading(self, lines: list[Line], width: float, size: float, indent: float) -> None:
+        if len(lines) < 2:
+            return
+        previous, last = lines[-2:]
+        han = sum(bool(_HAN.fullmatch(token.char)) for token in last.tokens)
+        if not 1 <= han <= 2 or any(
+            token.kind == "image" or not token.track_links or (token.kind == "word" and token.width > 2 * size)
+            for token in last.tokens
+        ):
+            return
+
+        def bounds(tokens: list[Token]) -> tuple[str, str]:
+            start, end = tokens[0], tokens[-1]
+            return (
+                start.runs[0].text[:1] if start.runs else start.char,
+                end.runs[-1].text[-1:] if end.runs else end.char,
+            )
+
+        for count in (1, 2):
+            if len(previous.tokens) - count < 3:
+                continue
+            moved = previous.tokens[-count:]
+            if not all(token.kind == "cjk" and token.track_links for token in moved):
+                continue
+            if han + sum(bool(_HAN.fullmatch(token.char)) for token in moved) < 3:
+                continue
+            left, right = previous.tokens[:-count], moved + last.tokens
+            left_start, left_end = bounds(left)
+            right_start, right_end = bounds(right)
+            if (
+                left[-1].kind == "space"
+                or left_start in _NO_START
+                or right_start in _NO_START
+                or left_end in _NO_END
+                or right_end in _NO_END
+            ):
+                continue
+            glue = [0.0, *(self._glue_before(a, b, size) for a, b in pairwise(right))]
+            previous_glue = previous.glue[:-count]
+            left_width = sum(t.width for t in left) + sum(previous_glue) + (indent if len(lines) == 2 else 0.0)
+            right_width = sum(t.width for t in right) + sum(glue)
+            if max(left_width, right_width) <= width + 0.01:
+                lines[-2:] = [Line(left, previous_glue), Line(right, glue, last=True)]
+                return
+
     # ---- 排版与绘制 ----
     def layout(
-        self, tokens: list[Token], width: float, size: float, line_height: float, indent: bool
+        self,
+        tokens: list[Token],
+        width: float,
+        size: float,
+        line_height: float,
+        indent: bool,
+        *,
+        balance_heading: bool = False,
     ) -> tuple[list[Line], list[float], float]:
         """返回（行，各行基线位置，总高度）。行高取 line_height 倍字号与本行最高的公式图中较大者。"""
         lines = self.break_lines(tokens, width, size, 2 * size if indent else 0.0)
+        if balance_heading:
+            self._balance_heading(lines, width, size, 2 * size if indent else 0.0)
         baselines: list[float] = []
         y = 0.0
         for line in lines:

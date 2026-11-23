@@ -62,6 +62,7 @@ function makeDoc(pageCount = 3, customIndices?: number[]): DocumentData {
               italic: false,
               serif: true,
               translatable: true,
+              list_item: false,
             },
           ]
         : [],

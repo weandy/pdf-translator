@@ -87,6 +87,7 @@ class Block(BaseModel):
     style: BlockStyle
     translatable: bool
     orphan: bool = False  # 解析器漏掉、由未归属字符补出来的块
+    list_item: bool = False  # 块本身是独立项，即使原编号在块框外也关闭缩进和向前续接
 
 
 class Page(BaseModel):

@@ -179,7 +179,14 @@ def _place(
     box_limit = box.height + 0.5
 
     def layout(scale: float, pitch: float) -> tuple[list[Line], list[float], float]:
-        lines, bases, height = ts.layout(tokens, box.width / scale, size, pitch, indent)
+        lines, bases, height = ts.layout(
+            tokens,
+            box.width / scale,
+            size,
+            pitch,
+            indent,
+            balance_heading=r == "heading" and block.type is BlockType.TITLE,
+        )
         return lines, bases, height * scale
 
     def safe_height(lines: list[Line], scale: float) -> float:

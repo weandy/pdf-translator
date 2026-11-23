@@ -82,6 +82,7 @@ class BlockOut(BaseModel):
     serif: bool
     color: int
     translatable: bool
+    list_item: bool = False
 
 
 class PageOut(BaseModel):
@@ -185,7 +186,8 @@ class DocumentOut(BaseModel):
                     BlockOut(id=b.id, page=b.page, type=b.type.value, level=b.level,
                              bbox=RectOut(**b.bbox.model_dump()),
                              font_size=b.style.font_size, bold=b.style.bold, italic=b.style.italic,
-                             serif=b.style.serif, color=b.style.color, translatable=b.translatable)
+                             serif=b.style.serif, color=b.style.color, translatable=b.translatable,
+                             list_item=b.list_item)
                     for b in p.blocks
                 ],
             )

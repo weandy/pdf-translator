@@ -36,6 +36,7 @@ from pdftr.domain.ir import (
 from pdftr.domain.job import STAGES, Job, JobOptions, JobStatus
 from pdftr.domain.llm import ChatError, ChatOptions
 from pdftr.domain.submissions import SubmissionContext
+from pdftr.domain.text import LETTER_HEADING, NUMBERED_HEADING, RICH_TAG, ROMAN_HEADING
 from pdftr.extraction.chars import page_count
 from pdftr.extraction.outline import pdf_outline
 from pdftr.glossary.user_import import ParsedGlossary, parse_upload
@@ -317,7 +318,7 @@ def purge_expired(pipeline: Pipeline, retention_hours: int, now: datetime | None
 
 
 # 导出 PDF 的生成方式（排版、字体、链接等）变了就加一，让已缓存的导出文件失效
-EXPORT_CACHE_VERSION = 8  # 跨块切分禁则与逐行字距上限
+EXPORT_CACHE_VERSION = 9  # 标题末行均衡
 
 
 @dataclass(frozen=True)
@@ -451,7 +452,6 @@ class DocumentView(BaseModel):
     outline: list[OutlineItem] = []
 
 
-_NUMBERED = re.compile(r"^\s*([A-Z]|\d+)((?:\.\d+)*)\.?\s+\S")  # “3.1 Encoder”“A.2 Proofs”
 _LETTERS = re.compile(r"[^0-9a-z]+")
 
 
@@ -493,9 +493,26 @@ def build_outline(pdf: Path, doc: Document, segments: list[Segment]) -> list[Out
                 item.translated, item.segment_id = translated(match[1]), match[1].id if match[1] else None
         return items
     out = []
+    roman_chapter = False
+    previous_letter = ""
     for block, seg, text in heads:
-        m = _NUMBERED.match(text)
-        level = block.level if block.level is not None else (1 + m.group(2).count(".") if m else 1)
+        plain = RICH_TAG.sub("", text).lstrip()
+        numbered = NUMBERED_HEADING.match(plain)
+        letter = LETTER_HEADING.match(plain)
+        sequential_letter = bool(previous_letter and letter and ord(plain[0]) == ord(previous_letter) + 1)
+        if ROMAN_HEADING.match(plain) and not (roman_chapter and letter and (sequential_letter or block.level == 2)):
+            roman_chapter = True
+            previous_letter = ""
+            inferred = 1
+        elif roman_chapter and letter:
+            previous_letter = plain[0]
+            inferred = 2
+        else:
+            inferred = 1 + numbered[2].count(".") if numbered else 1
+            if inferred == 1:
+                roman_chapter = False
+                previous_letter = ""
+        level = block.level if block.level is not None else inferred
         out.append(OutlineItem(title=text, level=max(1, min(int(level), 4)), page=block.page, top=block.bbox.y0,
                                translated=translated(seg), segment_id=seg.id if seg else None))  # fmt: skip
     return out

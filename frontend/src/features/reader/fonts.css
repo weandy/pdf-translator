@@ -67,6 +67,7 @@
 }
 .tblock.role-heading {
   font-weight: 700;
+  text-wrap: balance;
 }
 .tblock.role-heading .zh,
 .tblock .no .zh {

@@ -2110,6 +2110,11 @@
      "translatable": {
       "type": "boolean",
       "title": "Translatable"
+     },
+     "list_item": {
+      "type": "boolean",
+      "title": "List Item",
+      "default": false
      }
     },
     "type": "object",

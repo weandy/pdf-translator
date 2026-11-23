@@ -18,7 +18,7 @@ from pdftr.domain.ir import BlockType
 from pdftr.extraction.chars import extract
 from pdftr.fusion.build import fuse
 from pdftr.glossary import sources as glossary_sources
-from pdftr.glossary.extract import extract_terms
+from pdftr.glossary.extract import extract_terms, frequent_candidates
 from pdftr.glossary.matcher import TermMatcher, TermSelection
 from pdftr.glossary.normalize import normalize_terms
 from pdftr.parsing.mineru_cloud import MinerUCloudParser
@@ -66,9 +66,15 @@ async def _translate_async(args: argparse.Namespace) -> None:
     chat = OpenAICompatChat(base_url=settings.llm_base_url, api_key=settings.llm_api_key, model=settings.llm_model)
 
     headings = [s.source for s in segments if doc.block(s.block_ids[0]).type is BlockType.TITLE]  # type: ignore[union-attr]
+    candidate_sources = [
+        s.source for s in segments if not ((b := doc.block(s.block_ids[0])) and b.type is BlockType.REFERENCE)
+    ]
     body = " ".join(s.source for s in segments)
     intro = next((s.source for s in segments if len(s.source.split()) >= 30 and s.source != doc.meta.abstract), "")
-    found = await extract_terms(chat, title=doc.meta.title, abstract=doc.meta.abstract, intro=intro, headings=headings)
+    found = await extract_terms(
+        chat, title=doc.meta.title, abstract=doc.meta.abstract, intro=intro, headings=headings,
+        candidates=frequent_candidates(candidate_sources),
+    )  # fmt: skip
     found.terms = normalize_terms(found.terms, body, headings)
 
     def load_library() -> TermMatcher:

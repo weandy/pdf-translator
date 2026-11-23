@@ -555,6 +555,11 @@ export interface components {
             color: number;
             /** Translatable */
             translatable: boolean;
+            /**
+             * List Item
+             * @default false
+             */
+            list_item: boolean;
         };
         /** Body_create_job_api_jobs_post */
         Body_create_job_api_jobs_post: {
