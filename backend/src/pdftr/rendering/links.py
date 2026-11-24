@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import Document
 
-VERSION = 3  # 提取规则变了就加一，让缓存的原文链接（links.v{VERSION}.json）重新提取
+VERSION = 4  # 提取规则变了就加一，让缓存的原文链接（links.v{VERSION}.json）重新提取
 _PLACEHOLDER = re.compile(r"<m\d+/>|</?(?:sup|sub|b|i)>")
 _COMPACT_TOKEN = re.compile(r"<m\d+/>|<(/?)(sup)>|</?(?:sub|b|i)>|\s+|[\s\S]")
 _SPACE = re.compile(r"\s+")
@@ -26,6 +26,12 @@ _NUMBER = re.compile(r"\d+(?:[.\-–]\d+)*[a-z]?")
 _LABELS = "图表节式算法附录定理引理推论定义章例"  # 中文译文里图表、章节编号前面的字
 SKIP_DESTS = ("Hfootnote", "footnote", "page")  # 脚注、页码跳转：编号很短，译文里容易配错，不加
 _CITE_DEST = re.compile(r"^(?:cite|cit|bib|ref)", re.I)  # LaTeX 的 cite.xxx，出版社排版的 CIT0032、bib12 等
+_CITE_PREFIX = re.compile(
+    r"(?:参考文献|文献(?:第)?|(?<![A-Za-z])refs?\.?)"
+    r"[\s:：#]*"
+    r"(?:\d+[a-z]?(?:[\s,，、;；\-–—~]|和|与|及|至|and)+)*$",
+    re.I,
+)
 WHOLE_BLOCK = 0.6  # 链接框占块面积超过这个比例，视为整块都是链接（封面上的按钮、标题链接）
 
 
@@ -270,6 +276,11 @@ def _in_sup(sup_ranges: Sequence[tuple[int, int]], pos: int, length: int) -> boo
     return any(lo <= pos and end <= hi for lo, hi in sup_ranges)
 
 
+def _has_cite_prefix(text: str, pos: int) -> bool:
+    """pos 前是否紧邻显式引文前缀（如 文献39、参考文献39、文献第39、Ref.39、Refs.39）。"""
+    return pos > 0 and _CITE_PREFIX.search(text, max(pos - 48, 0), pos) is not None
+
+
 def _candidates(link: PdfLink, text: str, sup_ranges: Sequence[tuple[int, int]] = ()) -> tuple[str, list[int]]:
     """（要加链接的文字, 它在 text 里可能的位置）。"""
     if link.uri:  # 先找完整网址（链接文字可能被换行截断、带着脚注编号或句末标点），再找去掉协议的网址、链接文字
@@ -284,8 +295,12 @@ def _candidates(link: PdfLink, text: str, sup_ranges: Sequence[tuple[int, int]] 
         core = core[:-1]
     if _NUMBER.fullmatch(core):
         spots = _numbers(text, core)
-        if link.kind == "cite":  # 引用编号、年份只在括号或上标里找，不配到正文里的数字
-            return core, [p for p in spots if _in_brackets(text, p) or _in_sup(sup_ranges, p, len(core))]
+        if link.kind == "cite":  # 引用编号、年份只在括号、上标或显式引文前缀后找，不配到正文里的数字
+            return core, [
+                p
+                for p in spots
+                if _in_brackets(text, p) or _in_sup(sup_ranges, p, len(core)) or _has_cite_prefix(text, p)
+            ]
         labelled = [p for p in spots if any(c in _LABELS for c in text[max(p - 3, 0) : p])]
         return core, labelled or spots
     if link.kind == "cite" and (sup_tail := re.fullmatch(r"[A-Za-z](\d{1,3})", core)):

@@ -50,12 +50,16 @@ from pdftr.fusion.text_fix import (
 ORPHAN_MIN_LETTERS = 6
 LABEL_GAP = 1.5  # 同一行里相距超过 1.5 个字高的文字（如横排的图例）拆成不同标签
 _LABEL_WORD = re.compile(r"[A-Za-z]{3,}")  # 至少有一个 3 个字母以上的词才翻译；纯数字、L1 这类编号保留原样
-_CHAIN_BARRIERS = {BlockType.TITLE, BlockType.FOOTNOTE, BlockType.REFERENCE}
+_CHAIN_BARRIERS = {BlockType.TITLE, BlockType.REFERENCE}
 _COLUMN_TOP_BLOCKERS = {BlockType.TEXT, BlockType.TITLE, BlockType.FOOTNOTE, BlockType.REFERENCE}
 _SENTENCE_END = re.compile(r"""[.?!:;。？！：；](?:\s*['"’”»）)\]}])*$""")
 _CONTINUATION_START = re.compile(r"^[a-z,;:)\]，、；：）]")
 _UNFINISHED = re.compile(
     r"\b(?:a|an|the|to|of|for|in|on|at|by|with|without|from|under|into|via|between|than|and|or|as|that|which|whose|its|their|our)$",
+    re.I,
+)
+_UNFINISHED_MODIFIER = re.compile(
+    r"\b(?:a|an|the|this|that|these|those|our|its|their)\s+[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+$",
     re.I,
 )
 _STANDALONE_HEAD = re.compile(
@@ -122,7 +126,7 @@ def fuse(
             raise InvalidLayoutPages(f"解析返回重复页号 {page.index}")
         seen.add(page.index)
     report = FusionReport()
-    relocated, rel = relocate(layout)
+    relocated, rel = relocate(layout, char_pages=char_pages)
     report.moved_lines, report.unmatched_lines = rel.moved_lines, rel.unmatched_lines
 
     pages: list[Page] = []
@@ -286,6 +290,7 @@ def _is_column_top(nxt: Block, page: Page) -> bool:
 def _strong_unfinished(tail_plain: str) -> bool:
     return bool(
         _UNFINISHED.search(tail_plain)
+        or _UNFINISHED_MODIFIER.search(tail_plain)
         or tail_plain.endswith(("-", "\u00ad", "_", "–", "—", ","))
         or tail_plain.count("(") > tail_plain.count(")")
         or tail_plain.count("[") > tail_plain.count("]")
@@ -306,7 +311,7 @@ def _has_same_column_barrier(page: Page, prev: Block, nxt: Block) -> bool:
 
 
 def _supplement_continuations(pages: list[Page]) -> int:
-    """补上缺少占位块的续接（跨页、跨栏、绕图与同栏相邻块），每个块最多一个后继，标题和脚注截断搜索。"""
+    """补上缺少占位块的续接（跨页、跨栏、绕图与同栏相邻块），每个块最多一个后继，标题和参考文献截断搜索。"""
     blocks = {b.id: b for p in pages for b in p.blocks}
     used = {b.continues_from for b in blocks.values() if b.continues_from is not None}
     text = {
@@ -582,9 +587,12 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], report: FusionRepor
     spans: list[Span] = []
     formulas: list[InlineFormula] = []
     unresolved = False
+    line_centers = [line.bbox.center[1] for line in lb.lines]
+    block_x1 = lb.bbox.x1
     for li, line in enumerate(lb.lines):
         formula_boxes = [s.bbox for s in line.spans if s.kind == "inline_formula" and s.located]
         text_candidates = [s.bbox for s in line.spans if s.kind == "text"]
+        rightmost_span = max(line.spans, key=lambda sp: sp.bbox.x1, default=None)
         for s in line.spans:
             if s.kind == "inline_formula":
                 key = f"m{len(formulas) + 1}"
@@ -592,7 +600,26 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], report: FusionRepor
                 spans.append(Span(kind="formula", formula=key, line=li, bbox=s.bbox, size=style.font_size))
                 continue
             report.text_spans += 1
-            span_chars = chars_in(chars, s.bbox, exclude=formula_boxes) if cp.kind is PageKind.NATIVE else []
+            search_box = s.bbox
+            if cp.kind is PageKind.NATIVE and chars and s is rightmost_span:
+                overflow_x1 = max(
+                    (
+                        ch.bbox.x1
+                        for ch in chars
+                        if not ch.c.isspace()
+                        and ch.bbox.x1 > s.bbox.x1
+                        and ch.bbox.center[0] >= s.bbox.x1 - 1.0
+                        and s.bbox.y0 - 1.0 <= ch.bbox.center[1] <= s.bbox.y1 + 1.0
+                        and not any(e.contains_point(*ch.bbox.center, 0.5) for e in formula_boxes)
+                        and min(range(len(line_centers)), key=lambda idx: abs(ch.bbox.center[1] - line_centers[idx]))
+                        == li
+                    ),
+                    default=s.bbox.x1,
+                )
+                if overflow_x1 > s.bbox.x1:
+                    search_box = s.bbox.model_copy(update={"x1": overflow_x1})
+                    block_x1 = max(block_x1, overflow_x1 + 0.6)
+            span_chars = chars_in(chars, search_box, exclude=formula_boxes) if cp.kind is PageKind.NATIVE else []
             pdf_text = text_of(span_chars)
             stripped = strip_fake_scripts(s.content, span_chars)
             recovered = recover_dropped_chars(stripped, pdf_text)
@@ -607,7 +634,7 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], report: FusionRepor
             if _PUA_RUN.search(text):
                 cropped = _pua_fragments(text, span_chars)
                 if cropped is not None and any(
-                    not s.bbox.contains_point(*c.bbox.center)
+                    not search_box.contains_point(*c.bbox.center)
                     or sum(box.contains_point(*c.bbox.center) for box in text_candidates) != 1
                     for _, glyphs, crop in cropped if crop for c in glyphs
                 ):  # fmt: skip
@@ -617,7 +644,7 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], report: FusionRepor
                 else:
                     fragments = cropped
             for piece, piece_chars, crop in fragments:
-                box = _glyph_box(piece_chars) if len(fragments) > 1 and piece_chars else s.bbox
+                box = _glyph_box(piece_chars) if len(fragments) > 1 and piece_chars else search_box
                 if crop:
                     key = f"m{len(formulas) + 1}"
                     formulas.append(InlineFormula(key=key, latex="", bbox=box, located=True))
@@ -646,12 +673,13 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], report: FusionRepor
                     )
                 )
     report.formulas += len(formulas)
+    block_bbox = lb.bbox.model_copy(update={"x1": block_x1}) if block_x1 > lb.bbox.x1 else lb.bbox
     return Block(
         id=block_id(cp.index, lb.order),
         page=cp.index,
         type=lb.type,
         level=lb.level,
-        bbox=lb.bbox,
+        bbox=block_bbox,
         order=lb.order,
         spans=spans,
         formulas=formulas,

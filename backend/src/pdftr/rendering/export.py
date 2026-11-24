@@ -171,12 +171,36 @@ def _split_atoms(text: str) -> tuple[list[_Atom], list[int]]:
     return atoms, prefix
 
 
-def _cut_near(atoms: list[_Atom], start: int, target: int, limit: int) -> int:
-    for d in range(_SEARCH + 1):
+def _is_ascii_word_atom(atom: _Atom) -> bool:
+    return len(atom.char) == 1 and (atom.char.isascii() and (atom.char.isalnum() or atom.char == "_"))
+
+
+def _avoid_mid_word(atoms: list[_Atom], start: int, target: int, limit: int) -> int:
+    """回退切点若落在短 ASCII 英文词/标识符中间（如 fun|ction），贴齐到较近的合法词界，不破坏长纯数字串。"""
+    if not (start < target < len(atoms)):
+        return target
+    if not (_is_ascii_word_atom(atoms[target - 1]) and _is_ascii_word_atom(atoms[target])):
+        return target
+    left = target - 1
+    while left > start and _is_ascii_word_atom(atoms[left - 1]) and target - left < 32:
+        left -= 1
+    right = target + 1
+    while right < len(atoms) and _is_ascii_word_atom(atoms[right]) and right - left <= 32:
+        right += 1
+    if right - left > 32 or not any(atoms[k].char.isalpha() for k in range(left, right)):
+        return target
+    candidates = [pos for pos in (left, right) if start < pos <= limit]
+    if not candidates:
+        return target
+    return min(candidates, key=lambda pos: (abs(pos - target), pos))
+
+
+def _cut_near(atoms: list[_Atom], start: int, target: int, limit: int, radius: int = _SEARCH) -> int:
+    for d in range(radius + 1):
         for pos in (target - d, target + d):
             if start < pos <= limit and atoms[pos - 1].char in _BREAK_AFTER:
                 return pos
-    return target
+    return _avoid_mid_word(atoms, start, target, limit)
 
 
 def split_by_parts(text: str, part_chars: list[int]) -> list[str]:
@@ -185,21 +209,35 @@ def split_by_parts(text: str, part_chars: list[int]) -> list[str]:
         return [text]
     atoms, prefix = _split_atoms(text)
     total = sum(part_chars) or 1
-    pieces: list[str] = []
-    start = offset = cumulative = nearest = 0
-    for i, chars in enumerate(part_chars[:-1]):
+    visible = prefix[-1]
+    targets: list[int] = []
+    cumulative = 0
+    for chars in part_chars[:-1]:
         cumulative += chars
+        targets.append((2 * visible * cumulative + total) // (2 * total))
+    pieces: list[str] = []
+    start = offset = nearest = 0
+    for i, target in enumerate(targets):
         if start >= len(atoms):
             pieces.append(text[offset:])
             offset = len(text)
             continue
         # 目标与合法索引区间单调前移。同距保留左边界，给剩余块预留位置。
-        target = (2 * prefix[-1] * cumulative + total) // (2 * total)
         limit = max(start + 1, len(atoms) - (len(part_chars) - i - 1))
         nearest = max(nearest, start + 1)
         while nearest < limit and prefix[nearest] + prefix[nearest + 1] < 2 * target:
             nearest += 1
-        cut = _cut_near(atoms, start, nearest, limit)
+        cur_span = nearest - start
+        if i + 1 < len(targets):
+            next_limit = min(len(atoms), max(nearest + 1, len(atoms) - (len(part_chars) - i - 2)))
+            next_nearest = min(next_limit, nearest + 1)
+            while next_nearest < next_limit and prefix[next_nearest] + prefix[next_nearest + 1] < 2 * targets[i + 1]:
+                next_nearest += 1
+            next_span = max(0, next_nearest - nearest)
+        else:
+            next_span = len(atoms) - nearest
+        radius = min(_SEARCH, max(4, min(cur_span, next_span) // 2))
+        cut = _cut_near(atoms, start, nearest, limit, radius)
         end = atoms[cut - 1].end
         while True:
             if closing := _CLOSING_TAGS.match(text, end):

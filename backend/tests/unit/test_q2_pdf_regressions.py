@@ -70,8 +70,8 @@ def test_elsevier_first_page_labels_and_caption_codes(tmp_path):
         (BlockType.CODE, True),
         (BlockType.HEADER, True),
         (BlockType.FOOTER, True),
+        (BlockType.FOOTNOTE, True),
         (BlockType.TITLE, False),
-        (BlockType.FOOTNOTE, False),
     ],
 )
 def test_cross_column_join_respects_structural_barriers(tmp_path, between, linked):
@@ -168,7 +168,7 @@ def test_reverse_join_requires_uniqueness_and_rejects_cycles(tmp_path):
 
 @pytest.mark.parametrize(
     ("barrier", "y", "linked"),
-    [(TITLE, 300, True), (TITLE, 710, False), (BlockType.FOOTNOTE, 710, False), (BlockType.REFERENCE, 710, False)],
+    [(TITLE, 300, True), (TITLE, 710, False), (BlockType.FOOTNOTE, 710, True), (BlockType.REFERENCE, 710, False)],
 )
 def test_reverse_join_respects_left_column_barriers_by_position(tmp_path, barrier, y, linked):
     original = tmp_path / "reverse-barrier.pdf"

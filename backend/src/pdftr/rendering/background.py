@@ -82,34 +82,95 @@ def make_background(pdf: Path, blocks: Iterable[Block], out: Path, scanned: set[
 
 
 def _trim_formula_edges(pix: pymupdf.Pixmap, zoom: float) -> pymupdf.Pixmap:
-    """清除贴边且与主体隔开一段空白的残影，保留公式底边的基线参照。"""
-    data, stride = pix.samples, pix.stride
+    """按垂直墨迹连通带清除贴边且与主体隔开一段空白的邻行残影，保留公式底边的基线参照。"""
+    data, stride, height = pix.samples, pix.stride, pix.height
+    if height <= 2:
+        return pix
 
-    def ink(y: int) -> bool:
+    def row_ink(y: int) -> int:
         row = data[y * stride : (y + 1) * stride]
         # RGBA 为预乘透明度的颜色，透明与接近白色的像素不算墨迹。
-        return any(a >= 32 and a - min(r, g, b) >= 24 for r, g, b, a in zip(
-            row[0::4], row[1::4], row[2::4], row[3::4], strict=True
-        ))  # fmt: skip
+        return sum(
+            1
+            for r, g, b, a in zip(row[0::4], row[1::4], row[2::4], row[3::4], strict=True)
+            if a >= 32 and a - min(r, g, b) >= 24
+        )
 
-    rows = [ink(y) for y in range(pix.height)]
-    band = min(int(2.0 * zoom), pix.height // 4)
-    gap = max(2, round(0.5 * zoom))
+    counts = [row_ink(y) for y in range(height)]
+    merge_gap = max(2, round(0.5 * zoom))
+    runs: list[tuple[int, int, int]] = []  # (y0, y1_exclusive, ink_pixels)
+    y = 0
+    while y < height:
+        if not counts[y]:
+            y += 1
+            continue
+        start = y
+        ink_sum = 0
+        while y < height and counts[y]:
+            ink_sum += counts[y]
+            y += 1
+        if runs and start - runs[-1][1] < merge_gap:
+            prev_y0, _, prev_ink = runs[-1]
+            runs[-1] = (prev_y0, y, prev_ink + ink_sum)
+        else:
+            runs.append((start, y, ink_sum))
 
-    def trim(edge: list[bool]) -> int:
-        if not band or not edge[0]:
-            return 0
-        blank = next((i for i in range(1, band + 1) if not edge[i]), 0)
-        if blank and not any(edge[blank : blank + gap]) and any(edge[blank + gap :]):
-            return blank
-        return 0
+    if len(runs) < 2:
+        return pix
 
-    top, bottom = trim(rows), trim(rows[::-1])
-    if not (top or bottom) or not any(rows[top : pix.height - bottom]):
+    main_idx = max(range(len(runs)), key=lambda i: (runs[i][1] - runs[i][0], runs[i][2]))
+    main_h = runs[main_idx][1] - runs[main_idx][0]
+    min_gap = max(3, round(1.0 * zoom))
+    strong_gap = max(4, round(1.5 * zoom))
+    narrow_band = min(int(2.0 * zoom), height // 4)
+    thin_bar_h = max(3, round(1.0 * zoom))
+
+    def is_fraction_like(edge_idx: int, neighbor_idx: int) -> bool:
+        if len(runs) < 3:
+            return False
+        nb_y0, nb_y1, _ = runs[neighbor_idx]
+        if nb_y1 - nb_y0 > thin_bar_h:
+            return False
+        other_idx = neighbor_idx + (1 if neighbor_idx > edge_idx else -1)
+        if not 0 <= other_idx < len(runs):
+            return False
+        edge_h = runs[edge_idx][1] - runs[edge_idx][0]
+        other_h = runs[other_idx][1] - runs[other_idx][0]
+        return min(edge_h, other_h) >= 0.4 * max(edge_h, other_h)
+
+    def should_trim_edge(edge_idx: int, *, is_top: bool) -> bool:
+        y0, y1, _ = runs[edge_idx]
+        edge_h = y1 - y0
+        if is_top:
+            if y0 > 1 or main_idx == 0:
+                return False
+            sep = runs[1][0] - y1
+            touches_border = y0 == 0
+            if is_fraction_like(0, 1):
+                return False
+        else:
+            if y1 < height - 1 or main_idx == len(runs) - 1:
+                return False
+            sep = y0 - runs[-2][1]
+            touches_border = y1 == height
+            if is_fraction_like(len(runs) - 1, len(runs) - 2):
+                return False
+        if narrow_band and edge_h <= narrow_band and sep >= merge_gap and touches_border:
+            return True
+        return (
+            sep >= min_gap
+            and edge_h < 0.7 * main_h
+            and edge_h <= int(0.42 * height)
+            and (touches_border or sep >= strong_gap)
+        )
+
+    top = runs[0][1] if should_trim_edge(0, is_top=True) else 0
+    bottom = height - runs[-1][0] if should_trim_edge(len(runs) - 1, is_top=False) else 0
+    if not (top or bottom) or top + bottom >= height or not any(counts[top : height - bottom]):
         return pix
     # 排版以图片底边对齐基线，底部残影行只清透明度并保留高度。
-    kept = data[top * stride : (pix.height - bottom) * stride]
-    return pymupdf.Pixmap(pymupdf.csRGB, pix.width, pix.height - top, kept + bytes(bottom * stride), True)
+    kept = data[top * stride : (height - bottom) * stride]
+    return pymupdf.Pixmap(pymupdf.csRGB, pix.width, height - top, kept + bytes(bottom * stride), True)
 
 
 def crop_formula(page: pymupdf.Page, bbox: Rect, zoom: float = 4.0) -> tuple[bytes, float, float] | None:

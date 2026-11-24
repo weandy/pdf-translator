@@ -444,9 +444,15 @@ class Pipeline:
         body_sources, headings = glossary_texts(doc, segs)
         intro = next((s.source for s in segs if len(s.source.split()) >= 30 and s.source != doc.meta.abstract), "")
         async with chat_session(self.deps.chat_factory(secrets)) as chat:
-            found = await extract_terms(chat, title=doc.meta.title, abstract=doc.meta.abstract,
-                                        intro=intro, headings=headings,
-                                        candidates=frequent_candidates(body_sources))  # fmt: skip
+            found = await extract_terms(
+                chat,
+                title=doc.meta.title,
+                abstract=doc.meta.abstract,
+                intro=intro,
+                headings=headings,
+                candidates=frequent_candidates(body_sources),
+                user_terms=job.options.user_terms,
+            )
             cost = add_cost(None, chat.model, found.usage)
         terms = normalize_terms(found.terms, body_sources, headings)
         if cost is not None:

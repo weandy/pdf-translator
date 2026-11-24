@@ -19,7 +19,7 @@ from pdftr.domain.chars import Char
 from pdftr.domain.geometry import Rect
 from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutSpan
 from pdftr.domain.text import RICH_TAG
-from pdftr.fusion.text_fix import chars_in, main_metrics, text_of
+from pdftr.fusion.text_fix import chars_in, main_metrics, script_glyph, text_of
 
 _FORMULA = re.compile(r"\$\$?([^$]+?)\$\$?")
 _MAX_HEIGHT = 3.2  # 行内公式的高度最多约 3 个字号（跨一次行，或带上下标、分式）
@@ -233,7 +233,7 @@ def _strip_trailing_relation(latex: str, after: str) -> tuple[str, str]:
     return body, new_after
 
 
-def _content_parts(content: str, unchanged: dict[int, int] | None = None) -> list[str]:
+def _content_parts(content: str, unchanged: dict[int, int] | None = None, *, trailing_after: str = "") -> list[str]:
     """先还原被公式边界吞掉的正文，供字符对齐和扫描页共用。"""
     raw = _FORMULA.split(content)
     parts = [raw[0]]
@@ -262,7 +262,15 @@ def _content_parts(content: str, unchanged: dict[int, int] | None = None) -> lis
         if latex:
             prefix, items, suffix = _boundary_parts(latex)
             if not suffix:
-                items[-1], after = _strip_trailing_relation(items[-1], after)
+                if after.strip() or not trailing_after or i + 2 < len(raw):
+                    items[-1], after = _strip_trailing_relation(items[-1], after)
+                else:
+                    stripped_item, synthetic = _strip_trailing_relation(items[-1], trailing_after)
+                    if stripped_item != items[-1]:
+                        items[-1] = stripped_item
+                        op_text = synthetic[: len(synthetic) - len(trailing_after)].strip()
+                        if op_text:
+                            after = f" {op_text}"
             parts[-1] += prefix
             if unchanged is not None and items == [original]:
                 unchanged[len(parts) // 2] = i // 2
@@ -288,13 +296,19 @@ def _words(text: str) -> list[str]:
     return [w.lower() for w in re.findall(r"[^\W_]+", RICH_TAG.sub("", text))]
 
 
-def locate_formulas(content: str, chars: Sequence[Char], rows: Sequence[int] | None = None) -> list[Located]:
+def locate_formulas(
+    content: str,
+    chars: Sequence[Char],
+    rows: Sequence[int] | None = None,
+    *,
+    trailing_after: str = "",
+) -> list[Located]:
     """按内容里出现的顺序返回每个行内公式及其占用的 PDF 字符。rows 为各字符所在的视觉行（默认用 PyMuPDF 行号）。
 
     按词对齐：连续几个词组成的短语在段落里基本唯一，对齐算法会先锁定它们；按字符对齐时最长匹配只有一个词，
     重复出现的词（如两处“layers”）容易配错位置，后面整段错位。
     """
-    pieces = _content_parts(content)  # 偶数下标是文字，奇数下标是公式
+    pieces = _content_parts(content, trailing_after=trailing_after)  # 偶数下标是文字，奇数下标是公式
     seq: list[str] = []
     owner: list[int] = []  # 每个词属于哪个文字片段
     for i in range(0, len(pieces), 2):
@@ -581,6 +595,283 @@ def merge_torn_formulas(line: LayoutLine, chars: Sequence[Char]) -> LayoutLine:
     return line.model_copy(update={"spans": spans})
 
 
+_NATIVE_FONT_CMD = re.compile(r"\\(?:mathrm|text|textrm|operatorname|mathsf|mathbf|mathit|rm|sf)\s*\{([^{}\\]*)\}")
+_NATIVE_FONT_GROUP = re.compile(r"\{\s*\\(?:sf|rm|it|bf)\s+([^{}\\]*)\}")
+_NATIVE_COLON_UNIT = re.compile(r"\\colon(?![A-Za-z])|\{\s*:\s*\}|:")
+_ITALIC_MATH_FONT = re.compile(r"CMMI", re.I)
+
+
+def _nearest_center(centers: Sequence[float], y: float) -> int:
+    return min(range(len(centers)), key=lambda i: abs(centers[i] - y))
+
+
+def _scan_latex_surface_units(latex: str) -> list[tuple[str, int, int, str]]:
+    """提取 LaTeX 外层单元：(去空白文本, start, end, kind)，kind ∈ {'word', 'colon', 'other'}。"""
+    units: list[tuple[str, int, int, str]] = []
+    n = len(latex)
+    i = 0
+    depth = 0
+    env_depth = 0
+    while i < n:
+        if latex[i].isspace():
+            i += 1
+            continue
+        if latex.startswith(r"\begin{", i):
+            close = latex.find("}", i + 7)
+            if close < 0:
+                break
+            env_depth += 1
+            i = close + 1
+            continue
+        if latex.startswith(r"\end{", i):
+            close = latex.find("}", i + 5)
+            if close < 0:
+                break
+            if env_depth > 0:
+                env_depth -= 1
+            i = close + 1
+            continue
+        if env_depth > 0:
+            i += 1
+            continue
+        ch = latex[i]
+        if ch in "([":
+            depth += 1
+            units.append((ch, i, i + 1, "other"))
+            i += 1
+            continue
+        if ch in ")]":
+            if depth > 0:
+                depth -= 1
+            units.append((ch, i, i + 1, "other"))
+            i += 1
+            continue
+        if depth > 0:
+            i += 1
+            continue
+        if ch in "_^":
+            start = i
+            i += 1
+            while i < n and latex[i].isspace():
+                i += 1
+            if i < n and latex[i] == "{":
+                brace = 1
+                i += 1
+                while i < n and brace > 0:
+                    if latex[i] == "\\" and i + 1 < n:
+                        i += 2
+                        continue
+                    if latex[i] == "{":
+                        brace += 1
+                    elif latex[i] == "}":
+                        brace -= 1
+                    i += 1
+            elif i < n and latex[i] == "\\":
+                m_cmd = re.match(r"\\(?:[A-Za-z]+|.)", latex[i:])
+                i += len(m_cmd[0]) if m_cmd else 1
+            elif i < n:
+                i += 1
+            if units:
+                prev_text, prev_s, _, _ = units[-1]
+                units[-1] = (prev_text, prev_s, i, "other")
+            else:
+                units.append((latex[start:i], start, i, "other"))
+            continue
+        if m := _NATIVE_FONT_CMD.match(latex, i):
+            inner = "".join(m[1].split())
+            kind = "colon" if inner == ":" else "word" if re.fullmatch(r"[A-Za-z]+:?", inner) else "other"
+            units.append((inner, i, m.end(), kind))
+            i = m.end()
+            continue
+        if m := _NATIVE_FONT_GROUP.match(latex, i):
+            inner = "".join(m[1].split())
+            kind = "colon" if inner == ":" else "word" if re.fullmatch(r"[A-Za-z]+:?", inner) else "other"
+            units.append((inner, i, m.end(), kind))
+            i = m.end()
+            continue
+        if m := _NATIVE_COLON_UNIT.match(latex, i):
+            units.append((":", i, m.end(), "colon"))
+            i = m.end()
+            continue
+        if ch == "\\":
+            m_cmd = re.match(r"\\(?:[A-Za-z]+|.)", latex[i:])
+            end = i + (len(m_cmd[0]) if m_cmd else 1)
+            units.append((latex[i:end], i, end, "other"))
+            i = end
+            continue
+        if ch.isalpha():
+            units.append((ch, i, i + 1, "word"))
+            i += 1
+            continue
+        units.append((ch, i, i + 1, "other"))
+        i += 1
+    return units
+
+
+def _split_latex_at_if(latex: str, *, has_colon: bool, has_left: bool) -> tuple[str, str] | None:
+    """按外层词法单元将公式 LaTeX 在条件词 if:/it:/i: 或 if/it/i 处切分为左右两段。"""
+    units = _scan_latex_surface_units(latex)
+    if not units:
+        return None
+    targets = ("if:", "it:", "i:") if has_colon else ("if", "it", "i")
+    ranked: list[tuple[int, str, str]] = []
+    for a in range(len(units)):
+        if units[a][3] != "word":
+            continue
+        for b in range(a + 1, min(len(units), a + 3) + 1):
+            window = units[a:b]
+            if any(u[3] not in {"word", "colon"} for u in window):
+                break
+            raw_joined = "".join(u[0] for u in window)
+            joined = raw_joined.lower()
+            if joined not in targets:
+                continue
+            word_part = raw_joined.rstrip(":")
+            # 防止把小写 'i' 与紧随的大写数学变量 'F'/'T'（如 "i F \geq"）误合并成 "if"/"it"。
+            if len(word_part) == 2 and word_part[1].isupper() and not (word_part[0].isupper() and len(window) == 1):
+                continue
+            cut_start, cut_end = window[0][1], window[-1][2]
+            if a > 0 and units[a - 1][3] == "word" and units[a - 1][2] == cut_start:
+                continue
+            if not has_colon and b < len(units) and units[b][3] == "word" and cut_end == units[b][1]:
+                continue
+            left = latex[:cut_start].strip()
+            right = latex[cut_end:].strip()
+            if not right or not _HAS_MATH_ATOM.search(right) or _delimiters(right)[1]:
+                continue
+            if has_left:
+                if not left or left.endswith(("_", "^", "{", "\\")) or not _HAS_MATH_ATOM.search(left):
+                    continue
+                if _delimiters(left)[1]:
+                    continue
+            elif left:
+                continue
+            ranked.append((targets.index(joined), left, right))
+    if not ranked:
+        return None
+    best_rank = min(item[0] for item in ranked)
+    best = [item for item in ranked if item[0] == best_rank]
+    # 误识为单字母 i 时若出现多处歧义，保守放弃。
+    if targets[best_rank] in {"i", "i:"} and len(best) != 1:
+        return None
+    return best[0][1], best[0][2]
+
+
+def _tokenize_native_chars(chars: Sequence[Char]) -> list[tuple[str, list[Char]]]:
+    ordered = sorted((c for c in chars if not c.c.isspace()), key=lambda c: c.bbox.x0)
+    if not ordered:
+        return []
+    groups: list[list[Char]] = [[ordered[0]]]
+    for prev, curr in pairwise(ordered):
+        if curr.bbox.x0 - prev.bbox.x1 > 0.18 * max(prev.size, curr.size):
+            groups.append([curr])
+        else:
+            groups[-1].append(curr)
+    tokens: list[tuple[str, list[Char]]] = []
+    for group in groups:
+        word = unicodedata.normalize("NFKC", "".join(c.c for c in group))
+        if (
+            word == ":"
+            and tokens
+            and tokens[-1][0].lower() == "if"
+            and group[0].bbox.x0 - tokens[-1][1][-1].bbox.x1 <= 0.35 * max(group[0].size, tokens[-1][1][-1].size)
+        ):
+            tokens[-1] = (tokens[-1][0] + ":", [*tokens[-1][1], *group])
+        else:
+            tokens.append((word, group))
+    return tokens
+
+
+def _split_native_if_formulas(line: LayoutLine, chars: Sequence[Char], block_centers: Sequence[float]) -> LayoutLine:
+    """原生页公式内若 PDF 字符明确包含独立词 if:/if（即便 MinerU 错识成 it: 或吞掉 f），按字符坐标拆开。"""
+    if not chars or not any(s.kind == "inline_formula" and s.located for s in line.spans):
+        return line
+    line_chars = [c for c in chars_in(chars, line.bbox, tol=1.0) if not c.c.isspace()]
+    if not line_chars:
+        return line
+    line_size, line_baseline = main_metrics(line_chars)
+    changed = False
+    out: list[LayoutSpan] = []
+    for span in line.spans:
+        if span.kind != "inline_formula" or not span.located or not span.content.strip():
+            out.append(span)
+            continue
+        f_chars = [c for c in chars_in(chars, span.bbox, tol=0.5) if not c.c.isspace()]
+        if len(f_chars) < 3 or len(visual_lines(f_chars)) != 1:
+            out.append(span)
+            continue
+        tokens = _tokenize_native_chars(f_chars)
+        matches = [
+            idx
+            for idx, (word, word_chars) in enumerate(tokens)
+            if word.lower() in {"if:", "if"} and all(not script_glyph(c, line_size, line_baseline) for c in word_chars)
+        ]
+        if len(matches) != 1:
+            out.append(span)
+            continue
+        mid_idx = matches[0]
+        cond_word, cond_chars = tokens[mid_idx]
+        has_colon = cond_word.endswith(":")
+        left_chars = [c for _, grp in tokens[:mid_idx] for c in grp]
+        right_chars = [c for _, grp in tokens[mid_idx + 1 :] for c in grp]
+        if not right_chars:
+            out.append(span)
+            continue
+        if not has_colon:
+            if any(c.italic or _ITALIC_MATH_FONT.search(c.font) for c in cond_chars):
+                out.append(span)
+                continue
+            if right_chars[0].bbox.x0 - cond_chars[-1].bbox.x1 <= 0.15 * cond_chars[-1].size:
+                out.append(span)
+                continue
+        split_latex = _split_latex_at_if(span.content.strip(), has_colon=has_colon, has_left=bool(left_chars))
+        if split_latex is None:
+            out.append(span)
+            continue
+        left_latex, right_latex = split_latex
+        row_y = statistics.median(c.bbox.center[1] for c in f_chars)
+        row_idx = _nearest_center(block_centers, row_y) if block_centers else None
+        if left_chars:
+            left_box = (
+                _formula_box(left_chars, block_centers, row_idx, row_idx) if row_idx is not None else _box(left_chars)
+            )
+            out.append(LayoutSpan(kind="inline_formula", content=left_latex, bbox=left_box, located=True))
+        out.append(LayoutSpan(kind="text", content=cond_word, bbox=_box(cond_chars)))
+        right_box = (
+            _formula_box(right_chars, block_centers, row_idx, row_idx) if row_idx is not None else _box(right_chars)
+        )
+        out.append(LayoutSpan(kind="inline_formula", content=right_latex, bbox=right_box, located=True))
+        changed = True
+    return line.model_copy(update={"spans": out}) if changed else line
+
+
+def _clamp_line_formulas(line: LayoutLine, chars: Sequence[Char], block_centers: Sequence[float]) -> LayoutLine:
+    """用整块视觉行中线约束单行行内公式的上下边界，防止高数学字框扎入上下邻行。"""
+    if len(block_centers) < 2 or not any(s.kind == "inline_formula" and s.located for s in line.spans):
+        return line
+    text_chars = [
+        c for s in line.spans if s.kind == "text" for c in chars_in(chars, s.bbox, tol=0.5) if not c.c.isspace()
+    ]
+    ref_y = statistics.median(c.bbox.center[1] for c in text_chars) if text_chars else line.bbox.center[1]
+    row_idx = _nearest_center(block_centers, ref_y)
+    lo = (block_centers[row_idx - 1] + block_centers[row_idx]) / 2 if row_idx > 0 else float("-inf")
+    hi = (block_centers[row_idx] + block_centers[row_idx + 1]) / 2 if row_idx + 1 < len(block_centers) else float("inf")
+    changed = False
+    out: list[LayoutSpan] = []
+    for span in line.spans:
+        if span.kind != "inline_formula" or not span.located:
+            out.append(span)
+            continue
+        top = max(span.bbox.y0, lo)
+        bottom = min(span.bbox.y1, hi)
+        if top < bottom and (top > span.bbox.y0 or bottom < span.bbox.y1):
+            out.append(span.model_copy(update={"bbox": Rect(x0=span.bbox.x0, y0=top, x1=span.bbox.x1, y1=bottom)}))
+            changed = True
+        else:
+            out.append(span)
+    return line.model_copy(update={"spans": out}) if changed else line
+
+
 def _relation_counts(parts: Iterable[str]) -> dict[str, int]:
     joined = "".join(RICH_TAG.sub("", part) for part in parts)
     return {op: joined.count(op) for op in _RELATION_CHARS}
@@ -588,28 +879,38 @@ def _relation_counts(parts: Iterable[str]) -> dict[str, int]:
 
 def clean_formula_lines(block: LayoutBlock, chars: Sequence[Char]) -> LayoutBlock:
     """MinerU 已给行级公式时，只重新定位确实吞字的行，其余沿用原坐标。"""
+    block_centers = [statistics.median(c.bbox.center[1] for c in row) for row in visual_lines(chars)] if chars else []
     lines: list[LayoutLine] = []
-    for line in block.lines:
+    for li, line in enumerate(block.lines):
         if len(line.spans) >= 3 and chars:
             line = merge_torn_formulas(line, chars)
+        if chars:
+            line = _split_native_if_formulas(line, chars, block_centers)
         if not any(span.kind == "inline_formula" for span in line.spans) or any(
             span.kind == "text" and "$" in span.content for span in line.spans
         ):
-            lines.append(line)
+            lines.append(_clamp_line_formulas(line, chars, block_centers))
             continue
+        next_line = block.lines[li + 1] if li + 1 < len(block.lines) else None
+        next_text = (
+            next_line.spans[0].content if next_line and next_line.spans and next_line.spans[0].kind == "text" else ""
+        )
         content = " ".join(
             f"${span.content.strip()}$" if span.kind == "inline_formula" else span.content
             for span in line.spans
             if span.kind == "text" or span.content.strip()
         )
         unchanged: dict[int, int] = {}
-        cleaned = _content_parts(content, unchanged)
+        cleaned = _content_parts(content, unchanged, trailing_after=next_text)
         if cleaned == _FORMULA.split(content):
-            lines.append(line)
+            lines.append(_clamp_line_formulas(line, chars, block_centers))
             continue
         line_chars = chars_in(chars, line.bbox, tol=1.0)
         refined, total, found = refine_block(
-            block.model_copy(update={"bbox": line.bbox, "content": content}), line_chars
+            block.model_copy(update={"bbox": line.bbox, "content": content}),
+            line_chars,
+            block_centers=block_centers,
+            trailing_after=next_text,
         )
         # 原框仍比无锚点的猜测可靠，扫描页则保留新分出的文字和公式。
         scripts = _script_payloads(cleaned[::2])
@@ -621,7 +922,7 @@ def clean_formula_lines(block: LayoutBlock, chars: Sequence[Char]) -> LayoutBloc
             clean_rel[op] > orig_rel[op] and restored_rel[op] < clean_rel[op] for op in _RELATION_CHARS
         )
         if line_chars and (total != found or scripts != restored or relation_missed):
-            lines.append(line)
+            lines.append(_clamp_line_formulas(line, chars, block_centers))
             continue
         originals = [s for s in line.spans if s.kind == "inline_formula" and s.content.strip()]
         index = 0
@@ -631,7 +932,7 @@ def clean_formula_lines(block: LayoutBlock, chars: Sequence[Char]) -> LayoutBloc
                     if index in unchanged:
                         new_line.spans[j] = originals[unchanged[index]]
                     index += 1
-        lines.extend(refined.lines)
+        lines.extend(_clamp_line_formulas(row, chars, block_centers) for row in refined.lines)
     return block.model_copy(update={"lines": lines})
 
 
@@ -642,11 +943,18 @@ def _script_payloads(parts: Iterable[str]) -> list[tuple[str, str]]:
     return [(match[1], "".join(match[2].split())) for part in parts for match in _SCRIPTS.finditer(part)]
 
 
-def _tagged_chars(content: str, chars: list[Char], owner: dict[int, int], rows: dict[int, int]) -> dict[int, str]:
+def _tagged_chars(
+    content: str,
+    chars: list[Char],
+    owner: dict[int, int],
+    rows: dict[int, int],
+    *,
+    trailing_after: str = "",
+) -> dict[int, str]:
     """用清洗后的正文锚定上下标字形，再将标签写回重建的文字片段。"""
     plain = ""
     scripts: list[tuple[int, int, str]] = []
-    for part in _content_parts(content)[::2]:
+    for part in _content_parts(content, trailing_after=trailing_after)[::2]:
         text = re.sub(r"</?[bi]>", "", part)
         start = 0
         for match in _SCRIPTS.finditer(text):
@@ -679,12 +987,18 @@ def _tagged_chars(content: str, chars: list[Char], owner: dict[int, int], rows: 
     return tagged
 
 
-def refine_block(block: LayoutBlock, chars: Sequence[Char]) -> tuple[LayoutBlock, int, int]:
+def refine_block(
+    block: LayoutBlock,
+    chars: Sequence[Char],
+    *,
+    block_centers: Sequence[float] | None = None,
+    trailing_after: str = "",
+) -> tuple[LayoutBlock, int, int]:
     """块级结果 → 带行与片段的块。返回（新块, 公式总数, 找到位置的公式数）。"""
     content = block.content or ""
     visible = [c for c in chars if not c.c.isspace()]
     if not visible:  # 扫描页等没有可用于定位的字符，仍按顺序保留公式与正文。
-        parts = _content_parts(content)
+        parts = _content_parts(content, trailing_after=trailing_after)
         spans = [
             LayoutSpan(
                 kind="inline_formula" if i % 2 else "text",
@@ -705,9 +1019,14 @@ def refine_block(block: LayoutBlock, chars: Sequence[Char]) -> tuple[LayoutBlock
     centers = [statistics.median(c.bbox.center[1] for c in row) for row in rows]
     ordered = [c for row in rows for c in row]
     row_of = {id(c): n for n, row in enumerate(rows) for c in row}
-    located = locate_formulas(content, ordered, [row_of[id(c)] for c in ordered])
+    located = locate_formulas(content, ordered, [row_of[id(c)] for c in ordered], trailing_after=trailing_after)
     owner = {k: n for n, f in enumerate(located) for k in f.chars}  # PDF 字符下标 → 公式编号
-    tagged = _tagged_chars(content, ordered, owner, row_of) if _SCRIPTS.search(content) or ";" in content else {}
+    tagged = (
+        _tagged_chars(content, ordered, owner, row_of, trailing_after=trailing_after)
+        if _SCRIPTS.search(content) or ";" in content
+        else {}
+    )
+    use_block_centers = block_centers is not None and len(block_centers) >= 2
 
     lines: list[LayoutLine] = []
     emitted: set[int] = set()
@@ -725,7 +1044,13 @@ def refine_block(block: LayoutBlock, chars: Sequence[Char]) -> tuple[LayoutBlock
                 # 片段只放在首行，但裁剪框必须覆盖公式在后续视觉行中的字符，
                 # 否则分式、矩阵等上下延伸公式会在导出时被截掉。
                 part = [ordered[j] for j in located[n].chars]
-                bbox = _formula_box(part, centers, line_no, row_of[id(part[-1])])
+                last_row = row_of[id(part[-1])]
+                if use_block_centers and block_centers is not None:
+                    first_idx = _nearest_center(block_centers, centers[line_no])
+                    last_idx = _nearest_center(block_centers, centers[last_row])
+                    bbox = _formula_box(part, block_centers, min(first_idx, last_idx), max(first_idx, last_idx))
+                else:
+                    bbox = _formula_box(part, centers, line_no, last_row)
                 spans.append(LayoutSpan(kind="inline_formula", content=located[n].latex, bbox=bbox))
                 emitted.add(n)
         _flush_text(run, spans)

@@ -139,15 +139,40 @@ function splitAtoms(text: string): { atoms: Atom[]; prefix: number[] } {
   return { atoms, prefix };
 }
 
-function cutNear(atoms: Atom[], start: number, target: number, limit: number): number {
-  for (let d = 0; d <= SEARCH; d++) {
+function isAsciiWordAtom(atom: Atom): boolean {
+  return atom.char.length === 1 && /^[A-Za-z0-9_]$/.test(atom.char);
+}
+
+function avoidMidWord(atoms: Atom[], start: number, target: number, limit: number): number {
+  if (!(target > start && target < atoms.length)) return target;
+  if (!isAsciiWordAtom(atoms[target - 1]!) || !isAsciiWordAtom(atoms[target]!)) return target;
+  let left = target - 1;
+  while (left > start && isAsciiWordAtom(atoms[left - 1]!) && target - left < 32) left--;
+  let right = target + 1;
+  while (right < atoms.length && isAsciiWordAtom(atoms[right]!) && right - left <= 32) right++;
+  if (right - left > 32) return target;
+  let hasAlpha = false;
+  for (let k = left; k < right; k++) {
+    if (/^[A-Za-z]$/.test(atoms[k]!.char)) {
+      hasAlpha = true;
+      break;
+    }
+  }
+  if (!hasAlpha) return target;
+  const candidates = [left, right].filter((pos) => pos > start && pos <= limit);
+  if (candidates.length === 0) return target;
+  return candidates.sort((a, b) => Math.abs(a - target) - Math.abs(b - target) || a - b)[0]!;
+}
+
+function cutNear(atoms: Atom[], start: number, target: number, limit: number, radius: number = SEARCH): number {
+  for (let d = 0; d <= radius; d++) {
     for (const pos of [target - d, target + d]) {
       if (pos > start && pos <= limit && BREAK_AFTER.has(atoms[pos - 1]!.char)) {
         return pos;
       }
     }
   }
-  return target;
+  return avoidMidWord(atoms, start, target, limit);
 }
 
 export function splitByParts(text: string, partChars: number[]): string[] {
@@ -160,31 +185,47 @@ export function splitByParts(text: string, partChars: number[]): string[] {
     ? partChars.map((weight) => BigInt(weight))
     : null;
   const exactTotal = exactWeights?.reduce((a, b) => a + b, 0n) || 1n;
+  const targets: number[] = [];
+  let cumulative = 0;
+  let exactCumulative = 0n;
+  for (let i = 0; i < partChars.length - 1; i++) {
+    if (exactWeights) {
+      exactCumulative += exactWeights[i]!;
+      targets.push(Number((2n * BigInt(visible) * exactCumulative + exactTotal) / (2n * exactTotal)));
+    } else {
+      cumulative += partChars[i] ?? 0;
+      targets.push(Math.floor((2 * visible * cumulative + total) / (2 * total)));
+    }
+  }
   const pieces: string[] = [];
   let start = 0;
   let offset = 0;
-  let cumulative = 0;
-  let exactCumulative = 0n;
   let nearest = 0;
-  for (let i = 0; i < partChars.length - 1; i++) {
-    cumulative += partChars[i] ?? 0;
+  for (let i = 0; i < targets.length; i++) {
+    const target = targets[i]!;
     if (start >= atoms.length) {
       pieces.push(text.slice(offset));
       offset = text.length;
       continue;
     }
-    let target: number;
-    if (exactWeights) {
-      exactCumulative += exactWeights[i]!;
-      target = Number((2n * BigInt(visible) * exactCumulative + exactTotal) / (2n * exactTotal));
-    } else {
-      target = Math.floor((2 * visible * cumulative + total) / (2 * total));
-    }
     // 目标与合法索引区间单调前移。同距保留左边界，给剩余块预留位置。
     const limit = Math.max(start + 1, atoms.length - (partChars.length - i - 1));
     nearest = Math.max(nearest, start + 1);
     while (nearest < limit && prefix[nearest]! + prefix[nearest + 1]! < 2 * target) nearest++;
-    let cut = cutNear(atoms, start, nearest, limit);
+    const curSpan = nearest - start;
+    let nextSpan: number;
+    if (i + 1 < targets.length) {
+      const nextLimit = Math.min(atoms.length, Math.max(nearest + 1, atoms.length - (partChars.length - i - 2)));
+      let nextNearest = Math.min(nextLimit, nearest + 1);
+      while (nextNearest < nextLimit && prefix[nextNearest]! + prefix[nextNearest + 1]! < 2 * targets[i + 1]!) {
+        nextNearest++;
+      }
+      nextSpan = Math.max(0, nextNearest - nearest);
+    } else {
+      nextSpan = atoms.length - nearest;
+    }
+    const radius = Math.min(SEARCH, Math.max(4, Math.floor(Math.min(curSpan, nextSpan) / 2)));
+    let cut = cutNear(atoms, start, nearest, limit, radius);
     let end = atoms[cut - 1]!.end;
     for (;;) {
       closingTags.lastIndex = end;

@@ -6,7 +6,7 @@
 import logging
 import re
 from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from pydantic import BaseModel, Field
 
@@ -49,8 +49,14 @@ _STOP_WORDS = frozenset({
 # 高频通用学术单词：不当作孤立单词候选（避免淹没配额），但仍允许参与构成多词专业术语（如 residual network）。
 _GENERIC_UNIGRAM_WORDS = frozenset({
     "model", "models", "network", "networks", "net", "nets", "layer", "layers", "deep", "deeper", "depth",
-    "training", "learning", "function", "functions", "problem", "problems", "error", "errors", "accuracy",
+    "training", "learning", "problem", "problems", "error", "errors", "accuracy",
     "complexity", "plain", "optimize", "optimization", "performance", "communication", "dataset", "datasets",
+})  # fmt: skip
+# 允许保持全小写以 s 结尾自映射的常见协议/系统/工具名。
+_PLURAL_SELF_MAP_ALLOWLIST = frozenset({
+    "atlas", "blas", "cgroups", "emacs", "https", "iptables", "keras", "kubernetes",
+    "linux", "macos", "nexus", "pandas", "postgres", "procfs", "prometheus", "redis",
+    "rootfs", "sysfs", "tmpfs",
 })  # fmt: skip
 
 PROMPT = """阅读下面的论文信息，按顺序输出：
@@ -64,8 +70,10 @@ PROMPT = """阅读下面的论文信息，按顺序输出：
      不收章节名和与本文领域无关的普通词汇。
    - 按术语在摘要或正文中的写法输出，避免沿用标题的大写格式。
    - 模型、架构（如 Transformer、BERT、ResNet）及应保留原文的方法和数据集名，输出「英文=英文」。
-   - Linux/系统领域中的 root、sudo、系统调用与命令行标识符在中文里保留英文原名
-     （如 root privileges=root 权限、root user=root 用户），不要直译为「根权限」「根用户」。
+   - 仅在操作系统/Linux 权限语境下保留 root、sudo、系统调用名与命令行标识符原文
+     （如 root privileges=root 权限、root user=root 用户）；树/图/数据结构中的 root node 仍译为「根节点」。
+   - 普通可译名词（如 sockets、layers、containers、nodes）必须译为规范中文，
+     严禁保留英文普通复数自映射（如禁止 sockets=sockets）。
    - 常规临床/医学名词（如 Blood Pressure、Uterine contractions）应译为规范中文而非保留英文。
    - 严禁输出不伦不类的半中半英目标译法（如 Text信息片段）。
    - 使用中文学界通行译法。
@@ -155,6 +163,25 @@ class Extraction(BaseModel):
     usage: ChatUsage = Field(default_factory=ChatUsage)
 
 
+def _skip_extracted_term(k: str, v: str) -> bool:
+    """过滤摘要冒出的通用孤立学术泛词与普通小写英文复数自映射。"""
+    if " " not in k and "-" not in k:
+        key = normalize_term_key(k)
+        if not key.startswith("acr:") and (
+            k.lower() in _GENERIC_UNIGRAM_WORDS or key.removeprefix("word:") in _GENERIC_UNIGRAM_WORDS
+        ):
+            return True
+    return (
+        k.casefold() == v.casefold()
+        and k.isascii()
+        and k.islower()
+        and k.isalpha()
+        and k.endswith("s")
+        and len(k) >= 5
+        and k not in _PLURAL_SELF_MAP_ALLOWLIST
+    )
+
+
 def parse(text: str, *, truncated: bool = False) -> Extraction:
     domain, terms = "", {}
     use_library = False
@@ -168,13 +195,26 @@ def parse(text: str, *, truncated: bool = False) -> Extraction:
             use_library = value is not None and value.group(1) == "启用"
         elif "=" in line:
             k, v = (p.strip() for p in line.split("=", 1))
-            if k and v and len(k) <= _MAX_TERM_LENGTH and (k in terms or len(terms) < _MAX_EXTRACTED_TERMS):
+            if (
+                k
+                and v
+                and len(k) <= _MAX_TERM_LENGTH
+                and not _skip_extracted_term(k, v)
+                and (k in terms or len(terms) < _MAX_EXTRACTED_TERMS)
+            ):
                 terms[k] = v
     return Extraction(domain=domain, terms=terms, use_library=use_library)
 
 
 async def extract_terms(
-    chat: ChatModel, *, title: str, abstract: str, intro: str, headings: list[str], candidates: Sequence[str] = ()
+    chat: ChatModel,
+    *,
+    title: str,
+    abstract: str,
+    intro: str,
+    headings: list[str],
+    candidates: Sequence[str] = (),
+    user_terms: Mapping[str, str] | None = None,
 ) -> Extraction:
     prompt = PROMPT.format(title=title, abstract=abstract, intro=intro[:1500], headings="; ".join(headings))
     if candidates:
@@ -182,6 +222,10 @@ async def extract_terms(
             "\n正文高频候选词（仅供参考，仅筛选需要全文统一译法的领域术语与高频核心对象词，忽略普通词汇）："
             + "、".join(candidates)
         )
+    if user_terms:
+        formatted = "；".join(f"{k}={v}" for k, v in user_terms.items() if k.strip() and v.strip())
+        if formatted:
+            prompt += "\n用户已指定术语（若抽取包含这些词的复合术语，译法须与之保持一致）：" + formatted
     result = await chat.complete("你是学术术语专家。", prompt, ChatOptions(max_tokens=1500))
     truncated = result.finish_reason in ("length", "max_tokens")
     found = (

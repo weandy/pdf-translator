@@ -30,6 +30,7 @@ from pdftr.translation.batching import (
     italic_problems,
     make_batches,
     normalize_cjk_spacing,
+    normalize_formula_placeholders,
     parse_numbered,
     placeholder_problems,
     prose_problems,
@@ -91,8 +92,12 @@ class TranslateReport(BaseModel):
 
 
 _PROTOCOL_TAG = re.compile(r"</?translations\b[^>]*>", re.I)
-_MALFORMED_FORMULA_TAG = re.compile(r"</m\d+\s*>|<m\d+(?:\s[^<>]*?)?(?<!/)>", re.I)
+_MALFORMED_FORMULA_TAG = re.compile(r"</m\d+\s*>|<m\d+(?:\s[^<>]*?)?(?<!/)>|<m\d+\s+[^<>/\s][^<>]*/>", re.I)
 _HIGH_FORMULA_THRESHOLD = 4
+_HIGH_FORMULA_MAX_SEGMENTS = 2
+_HIGH_FORMULA_MAX_FORMULAS = 12
+_THINKING_MIN_TIMEOUT_S = 60.0
+_THINKING_TIMEOUT_SCALE_THRESHOLD_S = 5.0
 
 
 def _protocol_tag_problems(source: str, target: str) -> list[str]:
@@ -239,16 +244,44 @@ def _is_high_formula(unit: _Unit) -> bool:
     return len(unit.formulas) >= _HIGH_FORMULA_THRESHOLD
 
 
+def _request_timeout(base_timeout_s: float, thinking: str) -> float:
+    """思考模式放宽单次请求上限至至少 60s；极小超时（如单测）按 2 倍放宽以不拖慢验证。"""
+    if thinking == "off":
+        return base_timeout_s
+    if base_timeout_s >= _THINKING_TIMEOUT_SCALE_THRESHOLD_S:
+        return max(base_timeout_s, _THINKING_MIN_TIMEOUT_S)
+    return base_timeout_s * 2
+
+
+def _chunk_high_formula(units: list[_Unit]) -> list[list[_Unit]]:
+    """对高公式密度段施加独立小批上限：每批最多 2 段且累计公式数 <= 12。"""
+    chunks: list[list[_Unit]] = []
+    cur: list[_Unit] = []
+    formulas = 0
+    for unit in units:
+        count = len(unit.formulas)
+        if cur and (len(cur) >= _HIGH_FORMULA_MAX_SEGMENTS or formulas + count > _HIGH_FORMULA_MAX_FORMULAS):
+            chunks.append(cur)
+            cur, formulas = [], 0
+        cur.append(unit)
+        formulas += count
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
 def _split_high_formula_batches(batches: list[list[_Unit]]) -> list[list[_Unit]]:
-    """将普通段与高公式密度段拆开，避免少量公式段拖累整批开启思考。"""
+    """将普通段与高公式密度段拆开，并对高公式批次施加段数与公式数上限。"""
     result: list[list[_Unit]] = []
     for batch in batches:
         high = [u for u in batch if _is_high_formula(u)]
-        if not high or len(high) == len(batch):
+        if not high:
             result.append(batch)
             continue
-        result.append([u for u in batch if not _is_high_formula(u)])
-        result.append(high)
+        plain = [u for u in batch if not _is_high_formula(u)]
+        if plain:
+            result.append(plain)
+        result.extend(_chunk_high_formula(high))
     return result
 
 
@@ -386,7 +419,13 @@ async def translate(
                 expired_deadlines.add(deadline)
             return fail(batch, exhausted)
         try:
-            remaining = deadline - loop.time() if deadline is not None else o.request_timeout_s
+            call_opts = (
+                opts_.model_copy(update={"thinking": "low"})
+                if opts_.thinking == "off" and any(_is_high_formula(u) for u in batch)
+                else opts_
+            )
+            req_timeout = _request_timeout(o.request_timeout_s, call_opts.thinking)
+            remaining = deadline - loop.time() if deadline is not None else req_timeout
             if remaining <= 0 or deadline in expired_deadlines:
                 return fail(batch, exhausted)
             for u in batch:
@@ -394,17 +433,10 @@ async def translate(
                     report.attempts[out[i].id] += 1
             report.requests += 1
             log.debug("翻译请求段数=%d，估算输入 token=%d", len(batch), system_tokens + estimate_tokens(user))
-            call_opts = (
-                opts_.model_copy(update={"thinking": "low"})
-                if opts_.thinking == "off" and any(_is_high_formula(u) for u in batch)
-                else opts_
-            )
             try:
-                result = await asyncio.wait_for(
-                    chat.complete(system, user, call_opts), min(o.request_timeout_s, remaining)
-                )
+                result = await asyncio.wait_for(chat.complete(system, user, call_opts), min(req_timeout, remaining))
             except TimeoutError:
-                if deadline is not None and remaining <= o.request_timeout_s:
+                if deadline is not None and remaining <= req_timeout:
                     # 事件循环的计时器可能略早于单调时钟触发，不再用几毫秒余量另起一轮。
                     expired_deadlines.add(deadline)
                     return fail(batch, exhausted)
@@ -433,7 +465,8 @@ async def translate(
             del got[next(reversed(got))]
         retry = []
         for n, u in enumerate(batch, start=1):
-            target = got.get(n, "")
+            raw_target = got.get(n, "")
+            target = normalize_formula_placeholders(raw_target) if raw_target else ""
             active_terms = ctx.terms | u.user_terms if u.user_terms else ctx.terms
             errors = _target_problems(u.source, target, translated_terms=active_terms) if target else []
             if target and not errors:
@@ -477,8 +510,7 @@ async def translate(
     batches = make_batches(
         pending, sizes, o.batch_tokens, sections=[u.section for u in pending], roles=[u.role for u in pending]
     )
-    if chat_opts.thinking == "off":
-        batches = _split_high_formula_batches(batches)
+    batches = _split_high_formula_batches(batches)
     failed = await run_all(batches, chat_opts)
     retry_deadline = loop.time() + o.retry_timeout_s
     for attempt in range(2, o.max_attempts + 1):

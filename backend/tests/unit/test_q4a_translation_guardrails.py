@@ -430,7 +430,7 @@ def test_cache_key_is_deterministic_and_covers_semantic_inputs():
     seg = _segment(1, "A paragraph.")
     version = cache_key(seg, "m", {"b": "乙", "a": "甲"}, "default", reference_terms={"y": "乙", "x": "甲"})
     assert version == cache_key(seg, "m", {"a": "甲", "b": "乙"}, "default", reference_terms={"x": "甲", "y": "乙"})
-    assert VALIDATION_VERSION == 3
+    assert VALIDATION_VERSION == 4
     default = cache_key(seg, "m", {}, "default")
     keys = [
         default,

@@ -4,7 +4,7 @@ import re
 
 RICH_TAG = re.compile(r"</?(?:b|i|sup|sub)>")
 RICH_ATOM = re.compile(r"</?(?:b|i|sup|sub)>|<m[0-9]+/>|[\s\S]")
-INLINE_ABSTRACT = re.compile(r"^(?:abstract|index\s+terms|keywords)\s*[—–\-:：]\s*", re.I)
+INLINE_ABSTRACT = re.compile(r"^(?:abstract|index\s+terms|key\s*words?)\s*[.:：—–\-]\s*", re.I)
 SECTION_NUMBER = re.compile(r"^(?:[IVXLCDM]+[.)]|\d+(?:\.\d+)*[.)])\s*", re.I)
 ROMAN_HEADING = re.compile(r"^(?:X{1,3}(?:IX|IV|V?I{0,3})|IX|IV|V?I{1,3}|V)\.\s+\S")
 NUMBERED_HEADING = re.compile(r"^([A-Z]|\d+)((?:\.\d+)*)\.?\s+\S")

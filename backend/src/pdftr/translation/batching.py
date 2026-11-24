@@ -12,9 +12,15 @@ from pdftr.domain.ir import BlockType
 from pdftr.domain.text import RICH_TAG
 
 BATCH_TOKENS = 1500
-VALIDATION_VERSION = 3
+VALIDATION_VERSION = 4
 _PLACEHOLDER = re.compile(r"<m\d+/>")
+_SPACED_FORMULA_PLACEHOLDER = re.compile(r"<(m\d+)\s+/>")
 _RICH_TAG = re.compile(r"<(/?)(b|i|sup|sub)>")
+
+
+def normalize_formula_placeholders(text: str) -> str:
+    """仅将无属性纯空格自闭合形式 <m1 /> 规范化为 <m1/>，不放行带属性或未闭合的非法标签。"""
+    return _SPACED_FORMULA_PLACEHOLDER.sub(r"<\1/>", text)
 
 
 _HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U000323af]")
@@ -263,6 +269,7 @@ def script_problems(source: str, target: str) -> list[str]:
 
 _FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
 _URL = r"(?i:https?://|www\.)\S+"
+_URL_RE = re.compile(_URL)
 _CITATION_BOUNDARY = re.compile(rf"{_URL}|{_PLACEHOLDER.pattern}")
 _SOURCE_BRACKETS = re.compile(r"\[([0-9０-９\s,;\-–—]{1,60})\]")
 _TARGET_BRACKETS = re.compile(r"\[([0-9０-９\s,;，、；\-–—]{1,60})\]|［([0-9０-９\s,;，、；\-–—]{1,60})］")
@@ -304,8 +311,9 @@ _SUP_CITATION_TAG = re.compile(r"<sup>([^<>]{1,60})</sup>")
 _SUP_SOURCE_CONTENT = re.compile(r"^[0-9０-９\s,;\-–—]+$")
 _SUP_TARGET_CONTENT = re.compile(r"^[0-9０-９\s,;，、；\-–—]+$")
 _SUP_LEADING_SIGN = re.compile(r"^\s*[+\-−–—－]")
-_SUP_PUNCT_BEFORE = set(".,;:?!)'\"”’。，；：？！）》」』")
+_SUP_PUNCT_BEFORE = set(".,;:?!)'\"”’。，、；：？！）》」』…—–")
 _SUP_OP_BEFORE = set("=+-*/([<>\x00")
+_SUP_OP_AFTER = set("=+-*/<>×·≤≥≈")
 
 type _Citation = int | tuple[int, int]
 
@@ -470,9 +478,11 @@ def _citation_anchors(
     return confirmed, excluded
 
 
-def _sup_citation_anchors(text: str, *, target: bool = False) -> Counter[_Citation]:
-    """提取紧贴标点或词尾的无括号上标数字引文（排除数字/单位/单字母幂次与电荷）。"""
-    view = _CITATION_BOUNDARY.sub("\x00", _SCRIPT_STYLES.sub("", text))
+def _sup_citation_anchors(
+    text: str, *, target: bool = False, expected: Mapping[_Citation, int] | None = None
+) -> Counter[_Citation]:
+    """提取紧贴标点、词尾或公式占位符的无括号上标数字引文（排除数字/单位/单字母幂次与电荷）。"""
+    view = _PLACEHOLDER.sub("\x01", _URL_RE.sub("\x00", _SCRIPT_STYLES.sub("", text)))
     content_re = _SUP_TARGET_CONTENT if target else _SUP_SOURCE_CONTENT
     anchors: Counter[_Citation] = Counter()
     for match in _SUP_CITATION_TAG.finditer(view):
@@ -493,6 +503,17 @@ def _sup_citation_anchors(text: str, *, target: bool = False) -> Counter[_Citati
         single_val = len(numbers) == 1 and numbers[0][1] is None
         if prev_ch in _SUP_PUNCT_BEFORE or _HAN.fullmatch(prev_ch):
             accepted = True
+        elif prev_ch == "\x01":
+            if not single_val:
+                accepted = True
+            elif target:
+                accepted = expected is not None and numbers[0][0] in expected
+            else:
+                right = match.end()
+                while right < len(view) and view[right] in (" ", "\t", "\u00a0"):
+                    right += 1
+                next_ch = view[right] if right < len(view) else ""
+                accepted = numbers[0][0] >= 10 and next_ch not in _SUP_OP_AFTER
         elif _ASCII_IDENTIFIER.fullmatch(prev_ch):
             word_start = left
             while word_start and _ASCII_IDENTIFIER.fullmatch(view[word_start - 1]):
@@ -538,7 +559,7 @@ def citation_problems(source: str, target: str) -> list[str]:
 
     sup_want = _sup_citation_anchors(source)
     if sup_want:
-        sup_got = _sup_citation_anchors(target, target=True)
+        sup_got = _sup_citation_anchors(target, target=True, expected=sup_want)
         quant_sups = {int(value) for tag, _base, value in _script_values(source) if tag == "sup" and value.isdigit()}
         for num in quant_sups - sup_want.keys():
             sup_got.pop(num, None)
