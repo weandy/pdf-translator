@@ -19,7 +19,7 @@ from pdftr.translation.service import TranslateReport
 
 
 def test_v5_preserves_formula_binding_when_order_changes():
-    assert PROMPT_VERSION == "v6"
+    assert PROMPT_VERSION == "v7"
     assert "跟随原本对应的概念或实体一起移动" in RULES
     assert "编号不必递增" in RULES
     assert "Self-attention requires <m1>O(1)</m1> sequential operations" in RULES

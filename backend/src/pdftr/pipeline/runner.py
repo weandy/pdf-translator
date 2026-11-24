@@ -21,7 +21,7 @@ from pdftr.domain.layout import LayoutResult
 from pdftr.domain.llm import ChatError, ChatModel
 from pdftr.extraction.chars import extract
 from pdftr.fusion.build import InvalidLayoutPages, fuse
-from pdftr.glossary.extract import Extraction, extract_terms, frequent_candidates
+from pdftr.glossary.extract import Extraction, extract_acronym_definitions, extract_terms, frequent_candidates
 from pdftr.glossary.matcher import TermMatcher, TermSelection
 from pdftr.glossary.normalize import normalize_terms
 from pdftr.parsing.port import LayoutParser, ParseError
@@ -442,6 +442,8 @@ class Pipeline:
         if bad_source(segs):
             raise StageError(BAD_SOURCE_MESSAGE)
         body_sources, headings = glossary_texts(doc, segs)
+        candidates = frequent_candidates(body_sources)
+        definitions = extract_acronym_definitions(body_sources, candidates)
         intro = next((s.source for s in segs if len(s.source.split()) >= 30 and s.source != doc.meta.abstract), "")
         async with chat_session(self.deps.chat_factory(secrets)) as chat:
             found = await extract_terms(
@@ -450,7 +452,8 @@ class Pipeline:
                 abstract=doc.meta.abstract,
                 intro=intro,
                 headings=headings,
-                candidates=frequent_candidates(body_sources),
+                candidates=candidates,
+                definitions=definitions,
                 user_terms=job.options.user_terms,
             )
             cost = add_cost(None, chat.model, found.usage)

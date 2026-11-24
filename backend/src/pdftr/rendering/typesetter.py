@@ -455,10 +455,12 @@ class Typesetter:
         image_bytes: Callable[[str], bytes | None],
         scale: float = 1.0,
         placed: list[Placed] | None = None,
+        placed_images: dict[str, list[pymupdf.Rect]] | None = None,
     ) -> None:
         """把排好的行写到页面上。scale < 1 时整体缩小（放不下时缩小字号）。
 
         placed 不为 None 时，按书写顺序记下每段文字画在页面上的位置（给译文里的链接定位用）。
+        placed_images 不为 None 时，记录每个公式占位符实际绘出的页面矩形（给公式内热点链接映射用）。
         """
         x0, y0 = origin
         for n, (line, base) in enumerate(zip(lines, baselines, strict=True)):
@@ -480,7 +482,10 @@ class Typesetter:
                     if data:
                         top = base + size * 0.15 - tok.height  # 底边略低于基线，与文字底部对齐
                         rect = pymupdf.Rect(x, top, x + tok.width, top + tok.height)
-                        page.insert_image(_scaled(rect, scale, x0, y0), stream=data)
+                        drawn = _scaled(rect, scale, x0, y0)
+                        page.insert_image(drawn, stream=data)
+                        if placed_images is not None and tok.image:
+                            placed_images.setdefault(tok.image, []).append(drawn)
                 else:
                     rx = x
                     for run in tok.runs:

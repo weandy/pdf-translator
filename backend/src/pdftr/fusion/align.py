@@ -15,15 +15,15 @@ _OVERFLOW_TAIL_PUNCT = frozenset(".,;:!?)]}’”")
 
 def _touches_other_box(ch: Char, owner_idx: int, owner_box: Rect, boxes: Sequence[Rect]) -> bool:
     for j, other in enumerate(boxes):
-        if j == owner_idx:
+        if j == owner_idx or other.x1 <= owner_box.x1 + TOL:
             continue
-        if not (other.y0 - TOL < ch.bbox.y1 and ch.bbox.y0 < other.y1 + TOL and other.x1 > owner_box.x1 + TOL):
-            continue
-        # 行尾纯标点（如紧贴右栏前的句号）仅在真正侵入相邻块内部时才算触碰，避免残留孤立黑点。
+        # 行尾纯标点（如紧贴右栏前的句号、闭合括号）仅在垂直中心落入邻块且真正侵入其内部时才算触碰，避免残留孤立符号。
         if ch.c in _OVERFLOW_TAIL_PUNCT:
-            if ch.bbox.center[0] >= other.x0 or ch.bbox.x1 > other.x0 + 0.5:
+            if other.y0 <= ch.bbox.center[1] <= other.y1 and (
+                ch.bbox.center[0] >= other.x0 or ch.bbox.x1 > other.x0 + 0.5
+            ):
                 return True
-        elif ch.bbox.x1 > other.x0 - TOL:
+        elif other.y0 - TOL < ch.bbox.y1 and ch.bbox.y0 < other.y1 + TOL and ch.bbox.x1 > other.x0 - TOL:
             return True
     return False
 

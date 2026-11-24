@@ -15,11 +15,12 @@ from typing import Literal
 
 import pymupdf
 
-from pdftr.domain.ir import Block, BlockType, Document, Segment
+from pdftr.domain.geometry import Rect
+from pdftr.domain.ir import Block, BlockType, Document, FormulaRef, Segment
 from pdftr.domain.text import RICH_ATOM, RICH_TAG
 from pdftr.rendering.artifacts import pdf_destination
 from pdftr.rendering.background import crop_formula
-from pdftr.rendering.links import PdfLink, extract_links, locate
+from pdftr.rendering.links import SKIP_DESTS, PdfLink, extract_links, locate
 from pdftr.rendering.typeset import LINE_HEIGHTS, drop_fake_scripts, normalize_cjk_spacing, wants_indent
 from pdftr.rendering.typesetter import _NO_START, FontSet, Line, Placed, Token, Typesetter
 
@@ -390,6 +391,7 @@ def _place(
     translated: bool = True,
     *,
     neighbors: Sequence[Block] = (),
+    placed_images: dict[str, list[pymupdf.Rect]] | None = None,
 ) -> bool:
     """先收紧行距再缩小字号。返回译文是否有行未写入 PDF。"""
     box = _clamp_column_right(block, _box(block) & page.rect, neighbors)
@@ -471,7 +473,7 @@ def _place(
     c = block.style.color
     writer = pymupdf.TextWriter(page.rect)
     ts.draw(page, writer, (box.x0, box.y0), box.width / scale, lines, bases, size, align, indent,
-            lambda key: images[key][0] if key in images else None, scale, placed)  # fmt: skip
+            lambda key: images[key][0] if key in images else None, scale, placed, placed_images)  # fmt: skip
     writer.write_text(page, color=((c >> 16 & 255) / 255, (c >> 8 & 255) / 255, (c & 255) / 255))
     return overflow
 
@@ -494,10 +496,16 @@ def block_pieces(
     return out
 
 
-def _typeset_all(src: pymupdf.Document, out: pymupdf.Document, doc: Document, segments: list[Segment],
-                 font_dir: Path | None) -> tuple[dict[str, list[Placed]], list[int]]:  # fmt: skip
-    """把译文和回退原文排进去字背景页，返回落位文字和截断译文的原页码。"""
+def _typeset_all(
+    src: pymupdf.Document,
+    out: pymupdf.Document,
+    doc: Document,
+    segments: list[Segment],
+    font_dir: Path | None,
+) -> tuple[dict[str, list[Placed]], dict[str, dict[str, list[pymupdf.Rect]]], list[int]]:
+    """把译文和回退原文排进去字背景页，返回落位文字、落位公式图矩形和截断译文的原页码。"""
     placed: dict[str, list[Placed]] = {}
+    placed_images: dict[str, dict[str, list[pymupdf.Rect]]] = {}
     overflow_pages: set[int] = set()
     ts = Typesetter(FontSet.load(font_dir))
     blocks = {b.id: b for b in doc.blocks()}
@@ -520,11 +528,11 @@ def _typeset_all(src: pymupdf.Document, out: pymupdf.Document, doc: Document, se
             indent = bool(seg.target) and wants_indent(block, seg, first=n == 0)
             overflow = _place(
                 ts, out[block.page], block, tokens, indent, images, placed.setdefault(block.id, []), bool(seg.target),
-                neighbors=by_page[block.page],
+                neighbors=by_page[block.page], placed_images=placed_images.setdefault(block.id, {}),
             )  # fmt: skip
             if overflow:
                 overflow_pages.add(block.page + 1)
-    return placed, sorted(overflow_pages)
+    return placed, placed_images, sorted(overflow_pages)
 
 
 def _rects(runs: list[Placed], needle: str, nth: int) -> list[pymupdf.Rect]:
@@ -559,6 +567,101 @@ def _translated_rects(link: PdfLink, placed: dict[str, list[Placed]]) -> list[py
     if link.block_id is None:
         return [pymupdf.Rect(r.x0, r.y0, r.x1, r.y1)]
     return _rects(placed.get(link.block_id, []), link.text, link.nth) if link.text else []
+
+
+def _rect_intersection_area(a: Rect, b: Rect) -> float:
+    return max(0.0, min(a.x1, b.x1) - max(a.x0, b.x0)) * max(0.0, min(a.y1, b.y1) - max(a.y0, b.y0))
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return min(max(value, lo), hi)
+
+
+def _formula_link_rects(
+    link: PdfLink,
+    placed_images: dict[str, dict[str, list[pymupdf.Rect]]],
+    block_to_seg: dict[str, Segment],
+    block_pages: dict[str, int],
+) -> tuple[int, list[pymupdf.Rect]] | None:
+    """文本未定位到的块内链接若落在原文行内公式框内，按相对坐标映射到译文页绘出的公式图矩形。"""
+    if link.block_id is None or link.text or link.kind in SKIP_DESTS:
+        return None
+    seg = block_to_seg.get(link.block_id)
+    if seg is None or not seg.formula_refs:
+        return None
+    link_area = max(link.rect.width * link.rect.height, 1e-6)
+    best: tuple[float, float, str, FormulaRef] | None = None
+    for key, ref in seg.formula_refs.items():
+        if ref.page != link.page or ref.bbox.width <= 0 or ref.bbox.height <= 0:
+            continue
+        expanded = Rect(x0=ref.bbox.x0 - 2.0, y0=ref.bbox.y0 - 1.5, x1=ref.bbox.x1 + 2.0, y1=ref.bbox.y1 + 1.5)
+        ratio = _rect_intersection_area(link.rect, expanded) / link_area
+        if ratio < 0.5:
+            continue
+        raw_inter = _rect_intersection_area(link.rect, ref.bbox)
+        cand = (ratio, raw_inter, key, ref)
+        if best is None or cand[:2] > best[:2]:
+            best = cand
+    if best is None:
+        return None
+    _, _, key, ref = best
+    target_bid: str | None = None
+    drawn_rects: list[pymupdf.Rect] = []
+    search_order = [link.block_id, *(bid for bid in seg.block_ids if bid != link.block_id)]
+    for bid in search_order:
+        if rects := placed_images.get(bid, {}).get(key):
+            target_bid = bid
+            drawn_rects = rects
+            break
+    if target_bid is None or not drawn_rects:
+        return None
+    fb = ref.bbox
+    rx0 = _clamp((link.rect.x0 - fb.x0) / fb.width, 0.0, 1.0)
+    rx1 = _clamp((link.rect.x1 - fb.x0) / fb.width, 0.0, 1.0)
+    ry0 = _clamp((link.rect.y0 - fb.y0) / fb.height, 0.0, 1.0)
+    ry1 = _clamp((link.rect.y1 - fb.y0) / fb.height, 0.0, 1.0)
+    mapped: list[pymupdf.Rect] = []
+    for dst in drawn_rects:
+        if dst.width <= 0 or dst.height <= 0:
+            continue
+        mx0 = dst.x0 + rx0 * dst.width
+        mx1 = dst.x0 + rx1 * dst.width
+        my0 = dst.y0 + ry0 * dst.height
+        my1 = dst.y0 + ry1 * dst.height
+        mw = mx1 - mx0
+        if mw < 4.0:
+            target_w = min(dst.width, max(mw, 4.0))
+            cx = (mx0 + mx1) / 2
+            mx0 = _clamp(cx - target_w / 2, dst.x0, dst.x1 - target_w)
+            mx1 = mx0 + target_w
+        mh = my1 - my0
+        if mh < 4.0:
+            target_h = min(dst.height, max(mh, 0.45 * dst.height))
+            cy = (my0 + my1) / 2
+            my0 = _clamp(cy - target_h / 2, dst.y0, dst.y1 - target_h)
+            my1 = my0 + target_h
+        rect = pymupdf.Rect(mx0, my0, mx1, my1)
+        if not rect.is_empty:
+            mapped.append(rect)
+    if not mapped:
+        return None
+    return block_pages.get(target_bid, link.page), mapped
+
+
+def _resolved_translated_rects(
+    link: PdfLink,
+    placed: dict[str, list[Placed]],
+    placed_images: dict[str, dict[str, list[pymupdf.Rect]]],
+    block_to_seg: dict[str, Segment],
+    block_pages: dict[str, int],
+) -> tuple[int, list[pymupdf.Rect]]:
+    rects = _translated_rects(link, placed)
+    if rects:
+        return link.translated_page(block_pages), rects
+    fallback = _formula_link_rects(link, placed_images, block_to_seg, block_pages)
+    if fallback is not None:
+        return fallback
+    return link.translated_page(block_pages), []
 
 
 def page_links(original: Path, doc: Document, segments: list[Segment]) -> list[PdfLink]:
@@ -622,8 +725,9 @@ def _export[T](
     raw = links if links is not None else page_links(original, doc, segments)
     links = place_links(raw, doc, segments)
     block_pages = {b.id: b.page for b in doc.blocks()}
+    block_to_seg = {bid: seg for seg in segments for bid in seg.block_ids}
     with pymupdf.open(original) as src, pymupdf.open(background) as translated:
-        placed, overflow_pages = _typeset_all(src, translated, doc, segments, font_dir)
+        placed, placed_images, overflow_pages = _typeset_all(src, translated, doc, segments, font_dir)
         translated.subset_fonts()  # 中文字体只保留用到的字形
         if mode == "mono":
             # 去字时有些 PDF 里译文块内的旧链接没被删掉，停在原位置、下面已是别的译文：先删掉，再按译文位置补上
@@ -634,8 +738,9 @@ def _export[T](
                         page.delete_link(old)
             for link in links:  # 译文块外的链接在背景页里本来就在，只补块内的
                 if link.block_id is not None:
-                    for rect in _translated_rects(link, placed):
-                        _insert(translated[link.translated_page(block_pages)], link, rect)
+                    tr_page, rects = _resolved_translated_rects(link, placed, placed_images, block_to_seg, block_pages)
+                    for rect in rects:
+                        _insert(translated[tr_page], link, rect)
             return save(translated), overflow_pages
 
         with pymupdf.open() as out:
@@ -657,9 +762,9 @@ def _export[T](
                 dest = shifts(link.dest_page or 0)
                 dx_src, _ = shifts(link.page)
                 _insert(page, link, pymupdf.Rect(r.x0 + dx_src, r.y0, r.x1 + dx_src, r.y1), dest[0])
-                tr_page = link.translated_page(block_pages)
+                tr_page, rects = _resolved_translated_rects(link, placed, placed_images, block_to_seg, block_pages)
                 _, dx_tr = shifts(tr_page)
-                for rect in _translated_rects(link, placed):
+                for rect in rects:
                     _insert(
                         out[tr_page], link, pymupdf.Rect(rect.x0 + dx_tr, rect.y0, rect.x1 + dx_tr, rect.y1), dest[1]
                     )

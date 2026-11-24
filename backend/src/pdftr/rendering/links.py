@@ -17,14 +17,15 @@ from pydantic import BaseModel
 from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import Document
 
-VERSION = 4  # 提取规则变了就加一，让缓存的原文链接（links.v{VERSION}.json）重新提取
+VERSION = 5  # 提取规则变了就加一，让缓存的原文链接（links.v{VERSION}.json）重新提取
 _PLACEHOLDER = re.compile(r"<m\d+/>|</?(?:sup|sub|b|i)>")
 _COMPACT_TOKEN = re.compile(r"<m\d+/>|<(/?)(sup)>|</?(?:sub|b|i)>|\s+|[\s\S]")
 _SPACE = re.compile(r"\s+")
 _EDGE = " \t\n[]()（）【】,，;；:：.–—-−∗*†‡\u200b\ufeff"
 _NUMBER = re.compile(r"\d+(?:[.\-–]\d+)*[a-z]?")
 _LABELS = "图表节式算法附录定理引理推论定义章例"  # 中文译文里图表、章节编号前面的字
-SKIP_DESTS = ("Hfootnote", "footnote", "page")  # 脚注、页码跳转：编号很短，译文里容易配错，不加
+SKIP_DESTS = ("page",)  # 页码跳转：编号很短，译文里容易配错，不加
+_FOOTNOTE_DESTS = frozenset({"Hfootnote", "footnote"})  # 脚注仅在 <sup> 上标区间内精准匹配 1-2 位编号
 _CITE_DEST = re.compile(r"^(?:cite|cit|bib|ref)", re.I)  # LaTeX 的 cite.xxx，出版社排版的 CIT0032、bib12 等
 _CITE_PREFIX = re.compile(
     r"(?:参考文献|文献(?:第)?|(?<![A-Za-z])refs?\.?)"
@@ -290,6 +291,13 @@ def _candidates(link: PdfLink, text: str, sup_ranges: Sequence[tuple[int, int]] 
         return "", []
     core = compact(link.anchor).strip(_EDGE)
     if not core or link.kind in SKIP_DESTS:
+        return "", []
+    if link.kind in _FOOTNOTE_DESTS:
+        if re.fullmatch(r"\d{1,2}", core):
+            return core, [p for p in _numbers(text, core) if _in_sup(sup_ranges, p, len(core))]
+        if fn_tail := re.fullmatch(r"[A-Za-z](\d{1,2})", core):
+            num = fn_tail[1]
+            return num, [p for p in _numbers(text, num) if _in_sup(sup_ranges, p, len(num))]
         return "", []
     if core.endswith("-") and len(core) > 3:  # 行末断词（如“Rad-”），下一行的“ford et al.”是另一个链接
         core = core[:-1]

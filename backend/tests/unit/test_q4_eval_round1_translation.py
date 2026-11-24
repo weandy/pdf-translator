@@ -135,7 +135,7 @@ def test_target_problems_rejects_protocol_and_malformed_formula_tags():
 
 
 def test_prompt_v6_rules_cover_formula_scope_and_segment_boundary():
-    assert PROMPT_VERSION == "v6"
+    assert PROMPT_VERSION == "v7"
     assert "每条编号仅翻译该编号自身包含的文字" in RULES
     assert "对任意<m3/>，<m1/>当且仅当<m2/>" in RULES
     assert "<m1/>在<m3/>上与<m2/>重合" in RULES

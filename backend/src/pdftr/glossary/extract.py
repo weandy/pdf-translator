@@ -73,7 +73,7 @@ PROMPT = """阅读下面的论文信息，按顺序输出：
    - 仅在操作系统/Linux 权限语境下保留 root、sudo、系统调用名与命令行标识符原文
      （如 root privileges=root 权限、root user=root 用户）；树/图/数据结构中的 root node 仍译为「根节点」。
    - 普通可译名词（如 sockets、layers、containers、nodes）必须译为规范中文，
-     严禁保留英文普通复数自映射（如禁止 sockets=sockets）。
+     严禁保留英文单复数自映射（如禁止 sockets=sockets、sockets=socket）。
    - 常规临床/医学名词（如 Blood Pressure、Uterine contractions）应译为规范中文而非保留英文。
    - 严禁输出不伦不类的半中半英目标译法（如 Text信息片段）。
    - 使用中文学界通行译法。
@@ -156,6 +156,140 @@ def _candidate_group(keys: tuple[str, ...], written: str, count: int) -> str | N
     return "word" if count >= 5 else None
 
 
+_DEF_MINOR_WORDS = frozenset({
+    "of", "for", "and", "in", "to", "the", "on", "with", "by", "from", "at", "as", "or", "a", "an", "via", "into",
+})  # fmt: skip
+_DEF_SKIP_FIRST = _DEF_MINOR_WORDS | frozenset({
+    "see", "we", "our", "this", "that", "these", "those", "call", "called", "named", "using", "use", "used",
+    "each", "every", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+})  # fmt: skip
+_DEF_PAREN = re.compile(r"\(([^()\r\n]{2,80})\)")
+_DEF_CLAUSE_SPLIT = re.compile(r"[.,;:!?()\[\]{}—–\r\n]+")
+_DEF_WORD = re.compile(r"^[A-Za-z][A-Za-z0-9']*$|^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+$")
+_DEF_PART_SPLIT = re.compile(r"[\s-]+")
+_ROMAN_ONLY = re.compile(r"^[IVX]+$")
+_CAMEL_LOWER_START = re.compile(r"^[a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*$")
+
+
+def _normalize_acronym(raw: str) -> str | None:
+    if not 2 <= len(raw) <= 8 or not re.fullmatch(r"[A-Za-z0-9]+", raw):
+        return None
+    stem = raw[:-1] if len(raw) >= 3 and raw.endswith("s") and raw[-2].isupper() else raw
+    if _ROMAN_ONLY.fullmatch(stem):
+        return None
+    uppers = sum(ch.isupper() for ch in stem)
+    if uppers >= 2 or (uppers >= 1 and _CAMEL_LOWER_START.fullmatch(stem) is not None):
+        return stem
+    return None
+
+
+def _acronym_segments(stem: str) -> list[str]:
+    """将缩写按首字母或驼峰段拆成待匹配片段（如 TCM→[t,c,m]、ResNet→[res,net]、qGrams→[q,grams]）。"""
+    segs: list[str] = []
+    i = 0
+    while i < len(stem):
+        j = i + 1
+        if stem[i].isupper():
+            while j < len(stem) and stem[j].islower():
+                j += 1
+        segs.append(stem[i:j].lower())
+        i = j
+    return segs
+
+
+def _matches_acronym(stem: str, full_name: str) -> bool:
+    if not full_name or len(full_name) > 80 or re.search(r"[.,;:!?=()\[\]{}]", full_name):
+        return False
+    raw_words = full_name.split()
+    if not 2 <= len(raw_words) <= 7 or not all(_DEF_WORD.fullmatch(w) for w in raw_words):
+        return False
+    parts = [p for p in _DEF_PART_SPLIT.split(full_name) if p]
+    if not 2 <= len(parts) <= 7:
+        return False
+    if parts[0].lower() in _DEF_SKIP_FIRST or parts[-1].lower() in _DEF_MINOR_WORDS:
+        return False
+    content_count = sum(p.lower() not in _DEF_MINOR_WORDS for p in parts)
+    if not 2 <= content_count <= 6:
+        return False
+    segs = _acronym_segments(stem)
+    low_parts = [p.lower() for p in parts]
+    n_segs, n_parts = len(segs), len(low_parts)
+
+    def dfs(si: int, wi: int, skipped_content: int, matched_count: int, matched_last: bool) -> bool:
+        if si == n_segs and wi == n_parts:
+            return matched_last and matched_count >= 2
+        if wi >= n_parts:
+            return False
+        word = low_parts[wi]
+        if si < n_segs:
+            seg = segs[si]
+            # 整段匹配词首前缀（如 Res→Residual、Net→Network、T→Typed）。
+            if word.startswith(seg) and dfs(si + 1, wi + 1, skipped_content, matched_count + 1, wi == n_parts - 1):
+                return True
+            # 允许混合大小写词内首字母后剩余部分继续归下一个词（仅当本词仅匹配首字母时）。
+            if (
+                len(seg) > 1
+                and word.startswith(seg[0])
+                and wi + 1 < n_parts
+                and low_parts[wi + 1].startswith(seg[1:])
+                and dfs(si + 1, wi + 2, skipped_content, matched_count + 2, wi + 1 == n_parts - 1)
+            ):
+                return True
+        if 0 < wi < n_parts - 1:
+            if word in _DEF_MINOR_WORDS:
+                if dfs(si, wi + 1, skipped_content, matched_count, matched_last):
+                    return True
+            elif skipped_content < 1 and dfs(si, wi + 1, skipped_content + 1, matched_count, matched_last):
+                return True
+        return False
+
+    return dfs(0, 0, 0, 0, False)
+
+
+def extract_acronym_definitions(
+    texts: Sequence[str], candidates: Sequence[str] = (), *, limit: int = 15
+) -> dict[str, str]:
+    """从正文中提取显式缩写定义（Full Name (ABBR) 与 ABBR (Full Name)），按候选词优先截断。"""
+    if limit <= 0:
+        return {}
+    found: dict[str, str] = {}
+    for text in texts:
+        visible = mask_term_boundaries(RICH_TAG.sub("", text))
+        for match in _DEF_PAREN.finditer(visible):
+            inside = " ".join(match.group(1).split())
+            before = visible[: match.start()].rstrip()
+            if not inside or not before:
+                continue
+            # 形式 1: Full Name (ABBR)
+            if (stem := _normalize_acronym(inside)) is not None:
+                if stem in found:
+                    continue
+                clause = _DEF_CLAUSE_SPLIT.split(before)[-1].strip()
+                words = clause.split()
+                for size in range(2, min(len(words), 7) + 1):
+                    cand_full = " ".join(words[-size:])
+                    if _matches_acronym(stem, cand_full):
+                        found[stem] = cand_full
+                        break
+                continue
+            # 形式 2: ABBR (Full Name)
+            prev_match = re.search(r"(?<![A-Za-z0-9-])([A-Za-z0-9]{2,8})$", before)
+            if prev_match is None:
+                continue
+            stem = _normalize_acronym(prev_match.group(1))
+            if stem is None or stem in found:
+                continue
+            if _matches_acronym(stem, inside):
+                found[stem] = inside
+    if not found:
+        return {}
+    cand_keys = {normalize_term_key(c) for c in candidates if c}
+    prioritized = [k for k in found if normalize_term_key(k) in cand_keys]
+    rest = [k for k in found if normalize_term_key(k) not in cand_keys]
+    ordered = (prioritized + rest)[:limit]
+    return {k: found[k] for k in ordered}
+
+
 class Extraction(BaseModel):
     domain: str = ""
     terms: dict[str, str] = Field(default_factory=dict)
@@ -164,7 +298,7 @@ class Extraction(BaseModel):
 
 
 def _skip_extracted_term(k: str, v: str) -> bool:
-    """过滤摘要冒出的通用孤立学术泛词与普通小写英文复数自映射。"""
+    """过滤摘要冒出的通用孤立学术泛词与普通小写英文单复数自映射（如 sockets=sockets、sockets=socket）。"""
     if " " not in k and "-" not in k:
         key = normalize_term_key(k)
         if not key.startswith("acr:") and (
@@ -172,13 +306,17 @@ def _skip_extracted_term(k: str, v: str) -> bool:
         ):
             return True
     return (
-        k.casefold() == v.casefold()
-        and k.isascii()
+        k.isascii()
+        and v.isascii()
         and k.islower()
+        and v.islower()
         and k.isalpha()
-        and k.endswith("s")
+        and v.isalpha()
         and len(k) >= 5
+        and (k.endswith("s") or v.endswith("s"))
         and k not in _PLURAL_SELF_MAP_ALLOWLIST
+        and v not in _PLURAL_SELF_MAP_ALLOWLIST
+        and normalize_term_key(k) == normalize_term_key(v)
     )
 
 
@@ -214,6 +352,7 @@ async def extract_terms(
     intro: str,
     headings: list[str],
     candidates: Sequence[str] = (),
+    definitions: Mapping[str, str] | None = None,
     user_terms: Mapping[str, str] | None = None,
 ) -> Extraction:
     prompt = PROMPT.format(title=title, abstract=abstract, intro=intro[:1500], headings="; ".join(headings))
@@ -222,6 +361,13 @@ async def extract_terms(
             "\n正文高频候选词（仅供参考，仅筛选需要全文统一译法的领域术语与高频核心对象词，忽略普通词汇）："
             + "、".join(candidates)
         )
+    if definitions:
+        formatted_defs = "；".join(f"{k} = {v}" for k, v in definitions.items() if k.strip() and v.strip())
+        if formatted_defs:
+            prompt += (
+                "\n文中明确定义的缩写（若收入相关缩写或其复数形式，必须严格依据正文定义翻译或保留原文，"
+                "严禁按外部常见含义臆测）：" + formatted_defs
+            )
     if user_terms:
         formatted = "；".join(f"{k}={v}" for k, v in user_terms.items() if k.strip() and v.strip())
         if formatted:

@@ -621,8 +621,8 @@ def test_footnote_does_not_break_cross_page_continuation_while_title_still_block
 
 
 def test_cite_links_match_explicit_chinese_and_english_prefixes_only():
-    assert LINKS_VERSION == 4
-    assert EXPORT_CACHE_VERSION == 13
+    assert LINKS_VERSION == 5
+    assert EXPORT_CACHE_VERSION == 14
 
     def cite(anchor: str, x: float) -> PdfLink:
         return PdfLink(

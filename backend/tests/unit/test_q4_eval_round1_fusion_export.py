@@ -163,7 +163,7 @@ def test_segment_recovers_et_al_formula_to_plain_superscript_text():
 
 
 def test_superscript_citation_links_and_version_bump():
-    assert LINKS_VERSION == 4
+    assert LINKS_VERSION == 5
 
     def cite(anchor: str, x: float) -> PdfLink:
         return PdfLink(
@@ -463,7 +463,7 @@ def test_split_layout_separates_non_first_keywords_line(kw_line: str):
 
 
 def test_heading_align_centers_symmetric_single_column_title_and_keeps_left_column_titles_left(tmp_path: Path):
-    assert EXPORT_CACHE_VERSION == 13
+    assert EXPORT_CACHE_VERSION == 14
 
     def title_block(bid: str, bbox: list[float], text: str) -> Block:
         r = Rect.of(bbox)

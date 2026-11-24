@@ -68,7 +68,7 @@ def test_prompts():
     sys_p = system_prompt(DocContext(title="T", domain="NLP", abstract="A", terms={"encoder": "编码器"}))
     assert "论文标题：T" in sys_p and "encoder=编码器" in sys_p and "<m1>O(1)</m1>" in sys_p
     user = user_prompt([(1, "x"), (2, "y")], ["3 Model"], {"attention": "注意力"})
-    assert PROMPT_VERSION == "v6"
+    assert PROMPT_VERSION == "v7"
     assert "本文术语表（全文统一使用）" in sys_p
     assert "Problem statement" in sys_p and "Available online" in sys_p and "「等」" in sys_p
     assert user.splitlines() == [

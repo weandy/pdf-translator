@@ -603,6 +603,20 @@ _BARE_FONT_SWITCH = re.compile(
 _TRAILING_BARE_FONT_SWITCH = re.compile(rf"(?:\s*{_BARE_FONT_SWITCH.pattern})+$")
 _NATIVE_COLON_UNIT = re.compile(r"\\colon(?![A-Za-z])|\{\s*:\s*\}|:")
 _ITALIC_MATH_FONT = re.compile(r"CMMI", re.I)
+_BLACKBOARD_FONT = re.compile(r"MSBM|BBOLD|DSROM|BBO|DoubleStruck", re.I)
+_CODOMAIN_TRIGGER = frozenset("→↦∈∉⊂⊆⊃⊇=")
+_CODOMAIN_TEXT_HEAD = re.compile(r"^(?P<lead>\s*)(?P<ch>[RNZQCKEP])(?=$|\s|[,.;:!?)\]}])(?P<rest>.*)$", re.S)
+_HAS_MAPPING_ARROW = re.compile(r"(?:\\(?:to|rightarrow|longrightarrow|mapsto)(?![A-Za-z])|→)")
+_TRAILING_ARROW = re.compile(r"(?:\\(?:to|rightarrow|longrightarrow|mapsto)(?![A-Za-z])|→)\s*$")
+_MAPPING_COLON = re.compile(r"\\colon(?![A-Za-z])|:")
+_DOUBLE_SPACE = re.compile(r"\s{2,}")
+_BEFORE_MATHBB_SPACE = re.compile(r"(?<=[)\]}A-Za-z0-9])\s+(?=\\mathbb\s*\{)")
+_GRAZED_PREFIX = re.compile(r"(?<![A-Za-z])([a-z]{1,6})(\s*)$")
+_GRAZED_COMMON_WORDS = frozenset({
+    "if", "of", "in", "to", "as", "by", "at", "for", "the", "with", "from", "when", "where", "then", "than", "that",
+})  # fmt: skip
+_LEADING_DOT = re.compile(r"^\s*\\dot(?![A-Za-z])\s*\{")
+_DOT_GLYPHS = frozenset("\u0307\u02d9˙·\u22c5•")
 
 
 def _nearest_center(centers: Sequence[float], y: float) -> int:
@@ -852,6 +866,251 @@ def _split_native_if_formulas(line: LayoutLine, chars: Sequence[Char], block_cen
     return line.model_copy(update={"spans": out}) if changed else line
 
 
+def _recover_right_blackboard_codomain(line: LayoutLine, chars: Sequence[Char]) -> LayoutLine:
+    """回收紧贴在公式右侧、被 MinerU 甩入相邻正文开头的黑板粗体集合符号（如 → ℝ）。"""
+    if len(line.spans) < 2 or not any(s.kind == "inline_formula" and s.located for s in line.spans):
+        return line
+    spans = line.spans.copy()
+    changed = False
+    i = 0
+    while i + 1 < len(spans):
+        cur, nxt = spans[i], spans[i + 1]
+        if cur.kind != "inline_formula" or not cur.located or nxt.kind != "text":
+            i += 1
+            continue
+        head = _CODOMAIN_TEXT_HEAD.match(nxt.content)
+        if head is None:
+            i += 1
+            continue
+        f_chars = sorted((c for c in chars_in(chars, cur.bbox, tol=0.5) if not c.c.isspace()), key=lambda c: c.bbox.x0)
+        if not f_chars or f_chars[-1].c not in _CODOMAIN_TRIGGER:
+            i += 1
+            continue
+        last_char = f_chars[-1]
+        ch = head["ch"]
+        candidates = [
+            g
+            for g in chars
+            if not g.c.isspace()
+            and g.c == ch
+            and _BLACKBOARD_FONT.search(g.font)
+            and not cur.bbox.contains_point(*g.bbox.center, 0.5)
+            and 0.0 <= g.bbox.x0 - last_char.bbox.x1 <= 0.8 * last_char.size
+            and abs(g.bbox.center[1] - last_char.bbox.center[1]) <= 0.5 * last_char.size
+        ]
+        if len(candidates) != 1:
+            i += 1
+            continue
+        glyph = candidates[0]
+        new_box = Rect(
+            x0=min(cur.bbox.x0, glyph.bbox.x0),
+            y0=min(cur.bbox.y0, glyph.bbox.y0),
+            x1=max(cur.bbox.x1, glyph.bbox.x1),
+            y1=max(cur.bbox.y1, glyph.bbox.y1),
+        )
+        body = cur.content.rstrip()
+        if last_char.c == "→" and not _TRAILING_ARROW.search(body):
+            body = f"{body} \\to"
+        new_latex = f"{body} \\mathbb{{{ch}}}"
+        spans[i] = cur.model_copy(update={"content": new_latex, "bbox": new_box})
+        rest = head["rest"]
+        if not rest.strip():
+            spans.pop(i + 1)
+        else:
+            new_text = rest if (rest[:1].isspace() or not head["lead"]) else f"{head['lead']}{rest}"
+            new_nxt_box = nxt.bbox
+            if new_nxt_box.x0 < glyph.bbox.x1 < new_nxt_box.x1:
+                new_nxt_box = new_nxt_box.model_copy(update={"x0": glyph.bbox.x1})
+            spans[i + 1] = nxt.model_copy(update={"content": new_text, "bbox": new_nxt_box})
+        changed = True
+        i += 1
+    return line.model_copy(update={"spans": spans}) if changed else line
+
+
+def _restore_native_mapping_arrow(line: LayoutLine, chars: Sequence[Char]) -> LayoutLine:
+    """原生公式字符含 → 但 LaTeX 遗漏映射箭头时，在唯一无歧义的域/余域断点补齐 \\to。"""
+    if not any(s.kind == "inline_formula" and s.located for s in line.spans):
+        return line
+    changed = False
+    out: list[LayoutSpan] = []
+    for span in line.spans:
+        if span.kind != "inline_formula" or not span.located or _HAS_MAPPING_ARROW.search(span.content):
+            out.append(span)
+            continue
+        f_chars = [c for c in chars_in(chars, span.bbox, tol=0.5) if not c.c.isspace()]
+        if not any(c.c == "→" for c in f_chars):
+            out.append(span)
+            continue
+        content = span.content
+        surface, unmatched_before = _delimiters(content)
+        colons = [m for m in _MAPPING_COLON.finditer(content) if m.start() in surface]
+        if len(colons) != 1:
+            out.append(span)
+            continue
+        colon_end = colons[0].end()
+        tail = content[colon_end:]
+        gaps = [
+            m
+            for m in _DOUBLE_SPACE.finditer(tail)
+            if (colon_end + m.start()) in surface and tail[: m.start()].strip() and tail[m.end() :].strip()
+        ]
+        if not gaps:
+            gaps = [m for m in _BEFORE_MATHBB_SPACE.finditer(tail) if (colon_end + m.start()) in surface]
+        if len(gaps) != 1:
+            out.append(span)
+            continue
+        gap = gaps[0]
+        split_at = colon_end + gap.start()
+        split_end = colon_end + gap.end()
+        candidate = f"{content[:split_at]} \\to {content[split_end:]}"
+        if _delimiters(candidate)[1] != unmatched_before:
+            out.append(span)
+            continue
+        out.append(span.model_copy(update={"content": candidate}))
+        changed = True
+    return line.model_copy(update={"spans": out}) if changed else line
+
+
+def _strip_spurious_leading_dot(latex: str, inner_chars: Sequence[Char]) -> str:
+    """公式左缘擦伤修复后，若开头存在原生无对应点重音的虚假 \\dot{...}，安全剥离外层。"""
+    match = _LEADING_DOT.match(latex)
+    if match is None or not inner_chars:
+        return latex
+    if any(
+        c.c in _DOT_GLYPHS or any(unicodedata.category(ch) == "Mn" for ch in unicodedata.normalize("NFD", c.c))
+        for c in inner_chars
+    ):
+        return latex
+    max_size = max(c.size for c in inner_chars)
+    main_chars = [c for c in inner_chars if c.bbox.height > 0.45 * max_size]
+    if main_chars:
+        first_main = min(main_chars, key=lambda c: c.bbox.x0)
+        if any(
+            c is not first_main
+            and c.bbox.height <= 0.45 * first_main.size
+            and c.bbox.center[1] < first_main.bbox.center[1] - 0.2 * first_main.size
+            and first_main.bbox.x0 - 2.0 <= c.bbox.center[0] <= first_main.bbox.x1 + 2.0
+            for c in inner_chars
+        ):
+            return latex
+    open_idx = match.end() - 1
+    depth = 1
+    pos = open_idx + 1
+    while pos < len(latex) and depth > 0:
+        if latex[pos] == "\\" and pos + 1 < len(latex):
+            pos += 2
+            continue
+        if latex[pos] == "{":
+            depth += 1
+        elif latex[pos] == "}":
+            depth -= 1
+        pos += 1
+    if depth != 0:
+        return latex
+    inner_body = latex[open_idx + 1 : pos - 1].strip()
+    rest = latex[pos:]
+    candidate = f"{inner_body}{rest}".strip()
+    if not candidate or _delimiters(candidate)[1] != _delimiters(latex)[1]:
+        return latex
+    return candidate
+
+
+def _recover_left_grazed_word(line: LayoutLine, chars: Sequence[Char]) -> LayoutLine:
+    """恢复被行内公式左缘擦伤截断的相邻英文短词（如 i <m/> → if <m/>），收紧公式左缘并清理虚假 \\dot。"""
+    if len(line.spans) < 2 or not any(s.kind == "inline_formula" and s.located for s in line.spans):
+        return line
+    line_chars = [c for c in chars_in(chars, line.bbox, tol=1.0) if not c.c.isspace()]
+    if not line_chars:
+        return line
+    rows = visual_lines(line_chars)
+    if not rows:
+        return line
+    row_centers = [statistics.median(c.bbox.center[1] for c in row) for row in rows]
+    spans = line.spans.copy()
+    changed = False
+    for i in range(len(spans) - 1):
+        prev, formula = spans[i], spans[i + 1]
+        if prev.kind != "text" or formula.kind != "inline_formula" or not formula.located:
+            continue
+        match = _GRAZED_PREFIX.search(prev.content)
+        if match is None:
+            continue
+        prefix, trail_ws = match.group(1), match.group(2)
+        row = rows[_nearest_center(row_centers, formula.bbox.center[1])]
+        plen = len(prefix)
+        prev_end: int | None = None
+        for idx in range(len(row) - 1, plen - 2, -1):
+            if row[idx].bbox.center[0] >= formula.bbox.x0 or row[idx].bbox.x0 < prev.bbox.x0 - 1.5:
+                continue
+            window = row[idx - plen + 1 : idx + 1]
+            if "".join(c.c for c in window) != prefix:
+                continue
+            if any(b.bbox.x0 - a.bbox.x1 > 0.18 * max(a.size, b.size) for a, b in pairwise(window)):
+                continue
+            start_idx = idx - plen + 1
+            if start_idx > 0:
+                before = row[start_idx - 1]
+                if before.c.isalpha() and window[0].bbox.x0 - before.bbox.x1 <= 0.18 * max(before.size, window[0].size):
+                    continue
+            prev_end = idx
+            break
+        if prev_end is None:
+            continue
+        prev_last = row[prev_end]
+        gap_chars: list[Char] = []
+        cursor = prev_last
+        k = prev_end + 1
+        while k < len(row) and len(gap_chars) < 6:
+            cand = row[k]
+            if (
+                cand.bbox.x0 - cursor.bbox.x1 <= 0.18 * cursor.size
+                and cand.c.isascii()
+                and cand.c.islower()
+                and not MATH_FONT.search(cand.font)
+                and not cand.italic
+            ):
+                gap_chars.append(cand)
+                cursor = cand
+                k += 1
+            else:
+                break
+        if not gap_chars or k >= len(row):
+            continue
+        gap_text = "".join(c.c for c in gap_chars)
+        first_inner = row[k]
+        if first_inner.bbox.center[0] < formula.bbox.x0 or first_inner.bbox.center[0] > formula.bbox.x1 + 0.5:
+            continue
+        if first_inner.bbox.x0 - gap_chars[-1].bbox.x1 < 0.22 * prev_last.size:
+            continue
+        if gap_chars[-1].bbox.x1 < formula.bbox.x0 - 0.35 * prev_last.size:
+            continue
+        if not (
+            all(c.bbox.center[0] < formula.bbox.x0 for c in gap_chars) or (prefix + gap_text) in _GRAZED_COMMON_WORDS
+        ):
+            continue
+        inner_chars = [c for c in row[k:] if c.bbox.center[0] <= formula.bbox.x1 + 0.5]
+        if not inner_chars:
+            continue
+        new_x0 = min(c.bbox.x0 for c in inner_chars) - 0.5
+        new_formula_box = (
+            formula.bbox.model_copy(update={"x0": new_x0})
+            if formula.bbox.x0 < new_x0 < formula.bbox.x1
+            else formula.bbox
+        )
+        new_latex = _strip_spurious_leading_dot(formula.content, inner_chars)
+        new_prev_content = prev.content[: match.end(1)] + gap_text + trail_ws
+        new_prev_x1 = max(prev.bbox.x1, gap_chars[-1].bbox.x1)
+        new_prev_box = (
+            prev.bbox.model_copy(update={"x1": min(new_prev_x1, new_formula_box.x0)})
+            if new_prev_x1 > prev.bbox.x1 and min(new_prev_x1, new_formula_box.x0) > prev.bbox.x0
+            else prev.bbox
+        )
+        spans[i] = prev.model_copy(update={"content": new_prev_content, "bbox": new_prev_box})
+        spans[i + 1] = formula.model_copy(update={"content": new_latex, "bbox": new_formula_box})
+        changed = True
+    return line.model_copy(update={"spans": spans}) if changed else line
+
+
 def _clamp_line_formulas(line: LayoutLine, chars: Sequence[Char], block_centers: Sequence[float]) -> LayoutLine:
     """用整块视觉行中线约束单行行内公式的上下边界，防止高数学字框扎入上下邻行。"""
     if len(block_centers) < 2 or not any(s.kind == "inline_formula" and s.located for s in line.spans):
@@ -893,6 +1152,9 @@ def clean_formula_lines(block: LayoutBlock, chars: Sequence[Char]) -> LayoutBloc
             line = merge_torn_formulas(line, chars)
         if chars:
             line = _split_native_if_formulas(line, chars, block_centers)
+            line = _recover_right_blackboard_codomain(line, chars)
+            line = _restore_native_mapping_arrow(line, chars)
+            line = _recover_left_grazed_word(line, chars)
         if not any(span.kind == "inline_formula" for span in line.spans) or any(
             span.kind == "text" and "$" in span.content for span in line.spans
         ):
