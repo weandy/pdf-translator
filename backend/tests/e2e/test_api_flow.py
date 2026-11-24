@@ -53,7 +53,7 @@ def make_pdf() -> bytes:
     # 译文块里的页内跳转（要在译文里重新定位）与译文块外的网址（原位置保留）
     first = doc[0]
     first.insert_link({"kind": pymupdf.LINK_GOTO, "from": first.search_for("function")[0], "page": 1,
-                       "to": pymupdf.Point(52, 760)})  # fmt: skip
+                       "to": pymupdf.Point(52, 40)})  # fmt: skip
     first.insert_link({"kind": pymupdf.LINK_URI, "from": first.search_for("Running header")[0],
                        "uri": "https://example.org/"})  # fmt: skip
     return doc.tobytes()
@@ -410,7 +410,7 @@ def test_links_survive_translation(client: TestClient):
     # 正文里的跳转：在译文里找到 function（段落跨三块，按译文长度拆开后它落在相邻一块）
     # 页眉的网址在译文块外，原位置不变
     assert inner["block_id"] in ("p0-b1", "p0-b2") and inner["text"] == "function" and inner["dest_page"] == 1
-    assert abs(inner["dest_top"] - 40) < 1  # 目标点 y=760（自下而上）→ 离页顶 40
+    assert abs(inner["dest_top"] - 40) < 1  # 目标点 y=40（MuPDF 左上原点坐标）→ 离页顶 40
     assert outer["block_id"] is None and outer["uri"] == "https://example.org/"
 
     mono = client.get(f"/api/jobs/{job['id']}/export", params={"mode": "mono"})
@@ -419,7 +419,7 @@ def test_links_survive_translation(client: TestClient):
         jumps = [x for x in got if x["kind"] == pymupdf.LINK_GOTO]
         assert len(jumps) == 1  # 原位置的旧链接不残留
         jump = jumps[0]
-        assert "function" in pdf[0].get_textbox(jump["from"]) and jump["page"] == 1
+        assert "function" in pdf[0].get_textbox(jump["from"]) and jump["page"] == 1 and abs(jump["to"].y - 40) < 1
         assert any(x.get("uri") == "https://example.org/" for x in got)
     dual = client.get(f"/api/jobs/{job['id']}/export", params={"mode": "dual"})
     with pymupdf.open(stream=dual.content, filetype="pdf") as pdf:

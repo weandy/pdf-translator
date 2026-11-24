@@ -15,6 +15,13 @@ def pdf_outline(pdf: Path) -> list[OutlineItem]:
                 continue
             page = doc[page_no - 1]
             to = dest.get("to") if isinstance(dest, dict) else None
-            top = max(page.rect.height - to.y, 0.0) if to is not None else 0.0  # 书签目标的 y 自下而上
+            if to is None:
+                top = 0.0
+            elif dest.get("kind") == pymupdf.LINK_NAMED:
+                # resolve_names() 返回 PDF 左下原点坐标，经目标页矩阵转为 MuPDF 左上原点坐标
+                top = max((to * page.transformation_matrix).y, 0.0)
+            else:
+                # LINK_GOTO 的 to 已是 MuPDF 左上原点坐标
+                top = max(to.y, 0.0)
             out.append(OutlineItem(title=title.strip(), level=max(int(level), 1), page=page_no - 1, top=top))
     return out

@@ -29,7 +29,7 @@ from pdftr.translation.service import TranslateOptions, _request_timeout, _targe
 
 
 def test_sup_citation_accepts_chinese_enumeration_comma_dashes_and_formula_placeholders():
-    assert VALIDATION_VERSION == 5
+    assert VALIDATION_VERSION == 6
 
     # 02_chem_battery s5: 中文顿号、破折号、省略号后紧跟上标引文
     src_enum = (
@@ -205,7 +205,7 @@ def test_high_formula_batches_enforce_max_four_segments_and_eighteen_formulas():
     assert [len(b) for b, _ in chat1.batches] == [3, 1]
     assert all(opts.thinking == "low" for _, opts in chat1.batches)
 
-    # 3 段各 6 个公式 -> 合并为 1 批(18公式)；单段 12 + 单段 6 -> 合并为 1 批(18公式)；4 公式段走普通快速批
+    # 3 段各 6 个公式 -> 合并为 1 批(18公式)；单段 12 (>=10) 独立成批；单段 6 独立成批；4 公式段走普通快速批
     chat2 = BatchRecorder()
     segs_mix = [
         _formula_seg(1, 6),
@@ -218,8 +218,13 @@ def test_high_formula_batches_enforce_max_four_segments_and_eighteen_formulas():
     out2, report2 = asyncio.run(
         translate(segs_mix, chat=chat2, cache=_MemCache(), ctx=DocContext(), opts=TranslateOptions(concurrency=1))
     )
-    assert all(s.status is SegmentStatus.DONE for s in out2) and report2.requests == 3
-    assert [(len(b), opts.thinking) for b, opts in chat2.batches] == [(1, "off"), (3, "low"), (2, "low")]
+    assert all(s.status is SegmentStatus.DONE for s in out2) and report2.requests == 4
+    assert [(len(b), opts.thinking) for b, opts in chat2.batches] == [
+        (1, "off"),
+        (3, "low"),
+        (1, "low"),
+        (1, "low"),
+    ]
 
     # 普通段与高公式段混排：普通段合并保持不变，高公式段独立控容
     chat3 = BatchRecorder()

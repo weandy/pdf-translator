@@ -557,8 +557,10 @@ def _insert(page: pymupdf.Page, link: PdfLink, rect: pymupdf.Rect, dx: float = 0
     if link.uri:
         page.insert_link({"kind": pymupdf.LINK_URI, "from": rect, "uri": link.uri})
     elif link.dest_page is not None:
+        # extract_links 统一令 dest_y == dest_top（MuPDF 左上原点）；保留 dest_y 回退以兼容手造测试夹具
+        dest_top = link.dest_top or link.dest_y
         page.insert_link({"kind": pymupdf.LINK_GOTO, "from": rect, "page": link.dest_page,
-                          "to": pymupdf.Point(link.dest_x + dx, link.dest_y)})  # fmt: skip
+                          "to": pymupdf.Point(link.dest_x + dx, dest_top)})  # fmt: skip
 
 
 def _translated_rects(link: PdfLink, placed: dict[str, list[Placed]]) -> list[pymupdf.Rect]:

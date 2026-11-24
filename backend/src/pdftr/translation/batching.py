@@ -6,13 +6,14 @@ S7：约 1500 token 一批，比逐段请求或小批次省约 64% 输入；“�
 import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 
 from pdftr.domain.ir import BlockType
 from pdftr.domain.text import RICH_TAG
 
 BATCH_TOKENS = 1500
-VALIDATION_VERSION = 5
+VALIDATION_VERSION = 6
 _PLACEHOLDER = re.compile(r"<m\d+/>")
 _SPACED_FORMULA_PLACEHOLDER = re.compile(r"<(m\d+)\s+/>")
 _RICH_TAG = re.compile(r"<(/?)(b|i|sup|sub)>")
@@ -610,6 +611,129 @@ def script_value_problems(source: str, target: str) -> list[str]:
         for (tag, base, value), count in counts.items():
             anchor = f"{base or ''}<{tag}>{value}</{tag}>"
             problems.append(f"{detail}{_TAG_LABELS[tag]}数值 {anchor}（{count} 次）")
+    return problems
+
+
+_PCT_RANGE = re.compile(
+    r"(?<!\d)(\d+(?:[.,]\d+)?)\s*(?:[-–—~～]|to|至|到)\s*(\d+(?:[.,]\d+)?)\s*[%％]",
+    re.I,
+)
+_PCT_SINGLE = re.compile(r"(?<!\d)(\d+(?:[.,]\d+)?)\s*[%％]")
+_PCT_ZH_RANGE = re.compile(r"百分之\s*(\d+(?:[.,]\d+)?)\s*(?:[-–—~～]|至|到)\s*(\d+(?:[.,]\d+)?)")
+_PCT_ZH_SINGLE = re.compile(r"百分之\s*(\d+(?:[.,]\d+)?)")
+_PCT_ZH_HUNDRED = re.compile(r"百分之百|百分百")
+_DECIMAL_TOKEN = re.compile(r"(?<!\d)(\d+[.,]\d+|\.\d+)(?!\d)")
+_FORMULA_DIGIT_SPACE = re.compile(r"(?<=\d)\s+(?=\d)")
+_FORMULA_DEC_SPACE = re.compile(r"(?<=\d)\s*([.,])\s*(?=\d)")
+_FORMULA_PCT_ESCAPE = re.compile(r"(?<=\d)\s*\\%")
+
+
+def _parse_decimal(raw: str) -> Decimal | None:
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    if "," in cleaned and "." not in cleaned:
+        parts = cleaned.split(",")
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            cleaned = (
+                cleaned.replace(",", "") if len(parts[1]) == 3 and int(parts[0]) >= 1 else cleaned.replace(",", ".")
+            )
+        else:
+            return None
+    try:
+        return Decimal(cleaned)
+    except InvalidOperation:
+        return None
+
+
+def _collapse_formula_numbers(latex: str) -> str:
+    """折叠公式 LaTeX 中数字与小数点/百分号间的空格（如 '0 . 0 5' -> '0.05'）。"""
+    collapsed = _FORMULA_PCT_ESCAPE.sub("%", latex)
+    collapsed = _FORMULA_DEC_SPACE.sub(r"\1", collapsed)
+    return _FORMULA_DIGIT_SPACE.sub("", collapsed)
+
+
+def _extract_percentages(text: str) -> list[tuple[str, Decimal]]:
+    view = _URL_RE.sub(" ", RICH_TAG.sub("", _PLACEHOLDER.sub(" ", text))).translate(_FULLWIDTH_DIGITS)
+    found: list[tuple[str, Decimal]] = []
+    consumed: list[tuple[int, int]] = []
+
+    def add(raw: str) -> None:
+        val = _parse_decimal(raw)
+        if val is not None:
+            found.append((raw, val))
+
+    for pattern in (_PCT_RANGE, _PCT_ZH_RANGE):
+        for match in pattern.finditer(view):
+            add(match.group(1))
+            add(match.group(2))
+            consumed.append((match.start(), match.end()))
+
+    def overlaps_consumed(start: int, end: int) -> bool:
+        return any(a < end and start < b for a, b in consumed)
+
+    for pattern in (_PCT_SINGLE, _PCT_ZH_SINGLE):
+        for match in pattern.finditer(view):
+            if overlaps_consumed(match.start(), match.end()):
+                continue
+            add(match.group(1))
+
+    for match in _PCT_ZH_HUNDRED.finditer(view):
+        if not overlaps_consumed(match.start(), match.end()):
+            found.append(("100", Decimal("100")))
+    return found
+
+
+def _extract_decimals(text: str) -> set[Decimal]:
+    view = _URL_RE.sub(" ", RICH_TAG.sub("", _PLACEHOLDER.sub(" ", text))).translate(_FULLWIDTH_DIGITS)
+    decimals: set[Decimal] = set()
+    for match in _DECIMAL_TOKEN.finditer(view):
+        val = _parse_decimal(match.group(1))
+        if val is not None:
+            decimals.add(val)
+    return decimals
+
+
+def percentage_problems(source: str, target: str, *, formulas: Mapping[str, str] | None = None) -> list[str]:
+    """校验百分数事实锚点：拦截译文凭空新增或遗漏的百分数，允许与原文精确小数或 1-α 补数等价的写法。"""
+    src_items = _extract_percentages(source)
+    tgt_items = _extract_percentages(target)
+    if not src_items and not tgt_items:
+        return []
+
+    formula_text = " ".join(_collapse_formula_numbers(v) for v in (formulas or {}).values())
+    src_allowed_pcts = {val for _, val in src_items}
+    if formula_text:
+        src_allowed_pcts.update(val for _, val in _extract_percentages(formula_text))
+    src_decimals = _extract_decimals(source)
+    if formula_text:
+        src_decimals.update(_extract_decimals(formula_text))
+
+    tgt_pcts = {val for _, val in tgt_items}
+    tgt_decimals = _extract_decimals(target)
+    hundred = Decimal(100)
+    problems: list[str] = []
+
+    reported_extra: set[Decimal] = set()
+    for raw, val in tgt_items:
+        if val in src_allowed_pcts or val in reported_extra:
+            continue
+        ratio = val / hundred
+        complement = (hundred - val) / hundred
+        if ratio in src_decimals or (0 < val < hundred and complement in src_decimals):
+            continue
+        reported_extra.add(val)
+        problems.append(f"译文新增了原文不存在的百分数 {raw}%，请严格忠实原文数值")
+
+    reported_missing: set[Decimal] = set()
+    for raw, val in src_items:
+        if val in tgt_pcts or val in reported_missing:
+            continue
+        if (val / hundred) in tgt_decimals:
+            continue
+        reported_missing.add(val)
+        problems.append(f"译文遗漏了原文百分数 {raw}%")
+
     return problems
 
 

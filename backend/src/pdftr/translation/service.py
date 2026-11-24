@@ -32,6 +32,7 @@ from pdftr.translation.batching import (
     normalize_cjk_spacing,
     normalize_formula_placeholders,
     parse_numbered,
+    percentage_problems,
     placeholder_problems,
     prose_problems,
     rich_text_problems,
@@ -94,7 +95,25 @@ class TranslateReport(BaseModel):
 _PROTOCOL_TAG = re.compile(r"</?translations\b[^>]*>", re.I)
 _MALFORMED_FORMULA_TAG = re.compile(r"</m\d+\s*>|<m\d+(?:\s[^<>]*?)?(?<!/)>|<m\d+\s+[^<>/\s][^<>]*/>", re.I)
 _FORMULA_FOLLOWED_BY_EQ = re.compile(r"<(m\d+)/>\s*[=＝]")
+_PAREN_NUM_BEFORE_FORMULA = re.compile(r"\(\s*(\d+(?:\.\d+)?)\s*[+\-−×*/]?\s*<(m\d+)/>\s*\)")
+_PAREN_NUM_AFTER_FORMULA = re.compile(r"\(\s*<(m\d+)/>\s*[+\-−×*/]?\s*(\d+(?:\.\d+)?)\s*\)")
+_TRAILING_LATEX_NOISE = re.compile(r"(?:\s|\\(?:sf|rm|bf|it|tt|quad|qquad|enspace|thinspace|,|;|!|:|\s))+$")
+_TRAILING_COMPARATOR = re.compile(r"(?:\\(?:geq|ge|leq|le|neq|ne|approx|equiv)(?![A-Za-z])|[><≥≤≠])$")
+_TRAILING_BRACED_COMPARATOR = re.compile(r"(?<![_^])\{\s*([^\{\}]+?)\s*\}$")
+_SPLITTING_ADVERBIAL_HEADS = frozenset({"在", "于", "对", "当"})
+_LEAKED_LATEX_CMD = re.compile(
+    r"\\(?:bar|tilde|hat|vec|dot|ddot|widehat|widetilde|overline|underline|"
+    r"mathbb|mathcal|mathsf|mathbf|mathrm|mathit|mathtt|mathfrak|operatorname|"
+    r"frac|dfrac|tfrac|sum|int|prod|sqrt|partial|nabla|infty|forall|exists|"
+    r"alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|vartheta|iota|kappa|"
+    r"lambda|mu|nu|xi|pi|rho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|"
+    r"Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega|"
+    r"leq|le|geq|ge|neq|ne|approx|equiv|sim|simeq|times|cdot|pm|mp|"
+    r"subset|subseteq|supset|supseteq|in|notin|cup|cap|"
+    r"to|rightarrow|leftarrow|Rightarrow|Leftarrow|mapsto|colon)(?![A-Za-z])"
+)
 _HIGH_FORMULA_THRESHOLD = 5
+_HIGH_FORMULA_SOLO_THRESHOLD = 10
 _HIGH_FORMULA_MAX_SEGMENTS = 4
 _HIGH_FORMULA_MAX_FORMULAS = 18
 _THINKING_MIN_TIMEOUT_S = 60.0
@@ -142,6 +161,100 @@ def _duplicate_formula_equals_problems(source: str, target: str, formulas: Mappi
     return problems
 
 
+def _adjacent_formula_number_problems(source: str, target: str) -> list[str]:
+    """检查源文括号内紧邻公式占位符的字面数值（如 (1 <m5/>)）在译文同侧 6 非空字符内是否保留。"""
+    src_plain = RICH_TAG.sub("", source)
+    tgt_plain = RICH_TAG.sub("", target)
+    checks: list[tuple[str, str, str, str]] = []
+    for match in _PAREN_NUM_BEFORE_FORMULA.finditer(src_plain):
+        checks.append((match.group(1), match.group(2), "before", match.group(0)))
+    for match in _PAREN_NUM_AFTER_FORMULA.finditer(src_plain):
+        checks.append((match.group(2), match.group(1), "after", match.group(0)))
+    if not checks:
+        return []
+    problems: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for num, key, side, matched_text in checks:
+        if (key, num) in seen:
+            continue
+        token = f"<{key}/>"
+        num_pat = re.compile(rf"(?<!\d){re.escape(num)}(?!\d)")
+        found = False
+        pos = tgt_plain.find(token)
+        while pos >= 0:
+            if side == "before":
+                window = "".join(tgt_plain[:pos].split())[-6:]
+            else:
+                window = "".join(tgt_plain[pos + len(token) :].split())[:6]
+            if num_pat.search(window):
+                found = True
+                break
+            pos = tgt_plain.find(token, pos + len(token))
+        if not found:
+            seen.add((key, num))
+            problems.append(f"请保留公式 <{key}/> 旁的数值 {num}（原文写作 {matched_text}）")
+    return problems
+
+
+def _ends_with_comparator(latex: str) -> bool:
+    """剥离末尾空白、裸字体开关与纯外层花括号后，判断公式是否以二元比较符结尾。"""
+    s = latex.strip()
+    while s:
+        prev = s
+        s = _TRAILING_LATEX_NOISE.sub("", s).strip()
+        if len(s) >= 2 and s[0] == "{" and s[-1] == "}":
+            depth = 0
+            wraps_all = True
+            for idx, ch in enumerate(s):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0 and idx < len(s) - 1:
+                        wraps_all = False
+                        break
+            if wraps_all and depth == 0:
+                s = s[1:-1].strip()
+        if s == prev:
+            break
+    if (braced := _TRAILING_BRACED_COMPARATOR.search(s)) and _TRAILING_COMPARATOR.fullmatch(braced.group(1)):
+        return True
+    return _TRAILING_COMPARATOR.search(s) is not None
+
+
+def _trailing_comparator_formula_problems(source: str, target: str, formulas: Mapping[str, str] | None) -> list[str]:
+    """比较符结尾的公式在译文中若紧接“在/于/对/当”介词状语会割裂比较关系，强制要求直接衔接右值或括号定语。"""
+    del source
+    if not formulas:
+        return []
+    problems: list[str] = []
+    for key, latex in formulas.items():
+        if not latex or not _ends_with_comparator(latex):
+            continue
+        pat = re.compile(rf"<{re.escape(key)}/>(?:\s|</?(?:b|i|sup|sub)>)*")
+        for match in pat.finditer(target):
+            after = target[match.end() :]
+            if not after:
+                continue
+            ch = after[0]
+            if ch in _SPLITTING_ADVERBIAL_HEADS and not after.startswith("对应"):
+                problems.append(
+                    f"公式 <{key}/> 以比较符结尾，其后请直接衔接比较右值或括号定语"
+                    f"（如“<{key}/>（……的）临界值”），请勿在比较符后直接接“{ch}……”割裂比较式"
+                )
+                break
+    return problems
+
+
+def _leaked_latex_command_problems(source: str, target: str) -> list[str]:
+    """拦截译文意外泄漏的 LaTeX 数学控制序列（原文正文已包含的命令不误报）。"""
+    leaked = list(dict.fromkeys(m[0] for m in _LEAKED_LATEX_CMD.finditer(target) if m[0] not in source))
+    if not leaked:
+        return []
+    sample = "、".join(leaked[:5])
+    return [f"译文意外泄漏了 LaTeX 命令（{sample}），公式请仅保留 <mN/> 占位符"]
+
+
 def _protocol_tag_problems(source: str, target: str) -> list[str]:
     problems: list[str] = []
     if any(m[0] not in source for m in _PROTOCOL_TAG.finditer(target)):
@@ -164,7 +277,12 @@ def _target_problems(
         return problems
     if problems := placeholder_problems(source, target):
         return ["公式占位符不一致：" + "；".join(problems)]
-    if problems := _duplicate_formula_equals_problems(source, target, formulas):
+    if problems := (
+        _duplicate_formula_equals_problems(source, target, formulas)
+        + _adjacent_formula_number_problems(source, target)
+        + _trailing_comparator_formula_problems(source, target, formulas)
+        + _leaked_latex_command_problems(source, target)
+    ):
         return problems
     errors: list[str] = []
     for label, check in (
@@ -176,7 +294,11 @@ def _target_problems(
             errors.append(f"{label}不一致：" + "；".join(problems))
     if structure := errors or rich_text_problems(target):
         return structure
-    anchors = citation_problems(source, target) + script_value_problems(source, target)
+    anchors = (
+        citation_problems(source, target)
+        + script_value_problems(source, target)
+        + percentage_problems(source, target, formulas=formulas)
+    )
     return anchors or prose_problems(source, target, translated_terms=translated_terms)
 
 
@@ -304,12 +426,18 @@ def _request_timeout(base_timeout_s: float, thinking: str) -> float:
 
 
 def _chunk_high_formula(units: list[_Unit]) -> list[list[_Unit]]:
-    """对高公式密度段施加独立小批上限：每批最多 4 段且累计公式数 <= 18。"""
+    """对高公式密度段施加独立小批上限：>= 10 式单独成批，其余每批最多 4 段且累计公式数 <= 18。"""
     chunks: list[list[_Unit]] = []
     cur: list[_Unit] = []
     formulas = 0
     for unit in units:
         count = len(unit.formulas)
+        if count >= _HIGH_FORMULA_SOLO_THRESHOLD:
+            if cur:
+                chunks.append(cur)
+                cur, formulas = [], 0
+            chunks.append([unit])
+            continue
         if cur and (len(cur) >= _HIGH_FORMULA_MAX_SEGMENTS or formulas + count > _HIGH_FORMULA_MAX_FORMULAS):
             chunks.append(cur)
             cur, formulas = [], 0

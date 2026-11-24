@@ -177,13 +177,13 @@ def cached_export(stored_job, monkeypatch):
         b"{",
         b"\xff",
         "[]",
-        '{"v":13,"overflow_pages":[]}',
-        '{"v":14,"overflow_pages":[true]}',
-        '{"v":14,"overflow_pages":[0]}',
-        '{"v":14,"overflow_pages":[7,3]}',
-        '{"v":14,"overflow_pages":[3,3]}',
-        '{"v":14,"overflow_pages":[3.0]}',
-        '{"v":14}',
+        '{"v":14,"overflow_pages":[]}',
+        '{"v":15,"overflow_pages":[true]}',
+        '{"v":15,"overflow_pages":[0]}',
+        '{"v":15,"overflow_pages":[7,3]}',
+        '{"v":15,"overflow_pages":[3,3]}',
+        '{"v":15,"overflow_pages":[3.0]}',
+        '{"v":15}',
     ],
 )
 def test_export_rebuilds_invalid_pair_and_reuses_repaired_cache(cached_export, invalid_meta):
@@ -198,7 +198,7 @@ def test_export_rebuilds_invalid_pair_and_reuses_repaired_cache(cached_export, i
         meta.write_bytes(invalid_meta if isinstance(invalid_meta, bytes) else invalid_meta.encode())
 
     assert usecases.export_job(pipeline, JOB_ID, "mono") == ("synthetic_译文.pdf", pdf)
-    assert json.loads(meta.read_text(encoding="utf-8")) == {"v": 14, "overflow_pages": [3, 7]}
+    assert json.loads(meta.read_text(encoding="utf-8")) == {"v": 15, "overflow_pages": [3, 7]}
     assert usecases.export_job(pipeline, JOB_ID, "mono")[1] == pdf
     assert pdf.read_bytes() == b"%PDF synthetic" and renders == [pdf]
 
@@ -239,7 +239,7 @@ def test_snapshot_is_downloadable_only_after_both_files_are_published(cached_exp
     snapshot, _ = usecases._lookup_export(container.pipeline, JOB_ID, "mono", "right")
     if has_orphan_meta:
         snapshot.path.parent.mkdir()
-        snapshot.path.with_suffix(".meta.json").write_text('{"v":14,"overflow_pages":[8]}', encoding="utf-8")
+        snapshot.path.with_suffix(".meta.json").write_text('{"v":15,"overflow_pages":[8]}', encoding="utf-8")
     root = f"/api/jobs/{JOB_ID}/export"
     url = f"{root}?mode=mono&side=right&snapshot={snapshot.digest}"
     pdf_published, resume = threading.Event(), threading.Event()

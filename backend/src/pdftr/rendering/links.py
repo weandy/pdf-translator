@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import Document
 
-VERSION = 5  # 提取规则变了就加一，让缓存的原文链接（links.v{VERSION}.json）重新提取
+VERSION = 6  # 修复命名内部跳转（LINK_NAMED）纵坐标转换，统一 dest_y 与 dest_top 为 MuPDF 左上原点坐标系
 _PLACEHOLDER = re.compile(r"<m\d+/>|</?(?:sup|sub|b|i)>")
 _COMPACT_TOKEN = re.compile(r"<m\d+/>|<(/?)(sup)>|</?(?:sub|b|i)>|\s+|[\s\S]")
 _SPACE = re.compile(r"\s+")
@@ -41,9 +41,9 @@ class PdfLink(BaseModel):
     rect: Rect
     uri: str = ""
     dest_page: int | None = None
-    dest_x: float = 0.0  # 目标位置，PDF 原始坐标（y 自下而上），写回 PDF 时原样使用
-    dest_y: float = 0.0
-    dest_top: float = 0.0  # 目标位置离页面顶部的距离（网页阅读器滚动用）
+    dest_x: float = 0.0  # 目标位置横坐标（MuPDF 左上原点坐标系），供 insert_link 直接使用
+    dest_y: float = 0.0  # 目标位置纵坐标（MuPDF 左上原点坐标系，与 dest_top 同口径，供 insert_link 直接使用）
+    dest_top: float = 0.0  # 目标位置离页面顶部的距离（MuPDF 左上原点坐标系，网页阅读器滚动与 PDF 导出共用）
     anchor: str = ""  # 原文里链接覆盖的文字
     kind: str = ""  # 命名跳转的类型（cite、figure、section…），没有时为空
     block_id: str | None = None  # 落在哪个译文块里；None 表示在译文块外，原位置不变
@@ -213,10 +213,11 @@ def extract_links(pdf: Path, doc: Document, translated: Iterable[str]) -> list[P
     with pymupdf.open(pdf) as src:
         for page_no in range(len(src)):
             page = src[page_no]
-            height = page.rect.height
             lines = None
             for raw in page.get_links():
-                if raw["kind"] != pymupdf.LINK_URI and (raw.get("page", -1) is None or raw.get("page", -1) < 0):
+                if raw["kind"] != pymupdf.LINK_URI and (
+                    raw.get("page", -1) is None or not 0 <= raw.get("page", -1) < len(src)
+                ):
                     continue  # 打开文件、启动程序等其他链接不保留，也无需解析页面文字
                 if lines is None:
                     # PyMuPDF 的 get_textbox 会逐链接跨 C/Python 遍历整页字符，缓存字符框后复用相同选字规则。
@@ -229,9 +230,20 @@ def extract_links(pdf: Path, doc: Document, translated: Iterable[str]) -> list[P
                 if raw["kind"] == pymupdf.LINK_URI:
                     link.uri = raw.get("uri") or ""
                 else:
-                    to = raw.get("to") or pymupdf.Point(0, height)
-                    link.dest_page, link.dest_x, link.dest_y = raw["page"], to.x, to.y
-                    link.dest_top = max(src[raw["page"]].rect.height - to.y, 0.0)
+                    dest_page = src[raw["page"]]
+                    to = raw.get("to")
+                    if to is None:
+                        top_pt = pymupdf.Point(0.0, 0.0)
+                    elif raw["kind"] == pymupdf.LINK_NAMED:
+                        # resolve_names() 返回 PDF 左下原点坐标，经目标页矩阵转为 MuPDF 左上原点坐标
+                        top_pt = to * dest_page.transformation_matrix
+                    else:
+                        # LINK_GOTO 的 to 已是 MuPDF 左上原点坐标
+                        top_pt = to
+                    link.dest_page = raw["page"]
+                    link.dest_x = max(top_pt.x, 0.0)
+                    link.dest_top = max(top_pt.y, 0.0)
+                    link.dest_y = link.dest_top
                 candidates = [b for b in blocks if b.page == page_no and _overlap_area(r, b.bbox) > 0]
                 owner = max(candidates, key=lambda b: _overlap_area(r, b.bbox), default=None)
                 link.block_id = owner.id if owner else None

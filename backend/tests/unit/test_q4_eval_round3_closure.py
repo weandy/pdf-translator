@@ -489,8 +489,8 @@ def test_formula_align_ignores_bare_font_switches_and_splits_s44_if_colon():
 
 
 def test_duplicate_formula_equals_guard_catches_leak_and_allows_legitimate_cases():
-    assert VALIDATION_VERSION == 5
-    assert EXPORT_CACHE_VERSION == 14
+    assert VALIDATION_VERSION == 6
+    assert EXPORT_CACHE_VERSION == 15
 
     formulas = {"m1": r"{ { q } _ { \alpha } }", "m2": r"\mathtt { C D } = 0 , 6 9 4"}
     source = "We get that <m1/> = 4.037 and <m2/>."

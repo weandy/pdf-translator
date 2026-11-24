@@ -61,7 +61,7 @@ def test_without_bookmarks_titles_are_levelled_by_numbering(tmp_path: Path):
 def test_bookmark_that_does_not_match_text_falls_back_to_nearest_heading(tmp_path: Path):
     doc = pymupdf.open()
     doc.new_page(width=600, height=800)
-    doc.set_toc([[1, "Overview", 1, {"kind": pymupdf.LINK_GOTO, "page": 0, "to": pymupdf.Point(50, 800 - 118)}]])
+    doc.set_toc([[1, "Overview", 1, {"kind": pymupdf.LINK_GOTO, "page": 0, "to": pymupdf.Point(50, 118)}]])
     pdf = tmp_path / "y.pdf"
     doc.save(pdf)
     d, segs = _doc([(0, "Paper Title"), (0, "1 Introduction and Motivation")])  # 书签文字与标题对不上

@@ -298,13 +298,17 @@ class Extraction(BaseModel):
 
 
 def _skip_extracted_term(k: str, v: str) -> bool:
-    """过滤摘要冒出的通用孤立学术泛词与普通小写英文单复数自映射（如 sockets=sockets、sockets=socket）。"""
-    if " " not in k and "-" not in k:
-        key = normalize_term_key(k)
-        if not key.startswith("acr:") and (
-            k.lower() in _GENERIC_UNIGRAM_WORDS or key.removeprefix("word:") in _GENERIC_UNIGRAM_WORDS
-        ):
-            return True
+    """过滤摘要冒出的通用孤立学术泛词、普通小写英文单复数自映射以及缩写=纯英文多词全称误抽。"""
+    key = normalize_term_key(k)
+    if (
+        " " not in k
+        and "-" not in k
+        and not key.startswith("acr:")
+        and (k.lower() in _GENERIC_UNIGRAM_WORDS or key.removeprefix("word:") in _GENERIC_UNIGRAM_WORDS)
+    ):
+        return True
+    if key.startswith("acr:") and v.isascii() and " " in v.strip():
+        return True
     return (
         k.isascii()
         and v.isascii()
@@ -316,7 +320,7 @@ def _skip_extracted_term(k: str, v: str) -> bool:
         and (k.endswith("s") or v.endswith("s"))
         and k not in _PLURAL_SELF_MAP_ALLOWLIST
         and v not in _PLURAL_SELF_MAP_ALLOWLIST
-        and normalize_term_key(k) == normalize_term_key(v)
+        and key == normalize_term_key(v)
     )
 
 
@@ -366,7 +370,7 @@ async def extract_terms(
         if formatted_defs:
             prompt += (
                 "\n文中明确定义的缩写（若收入相关缩写或其复数形式，必须严格依据正文定义翻译或保留原文，"
-                "严禁按外部常见含义臆测）：" + formatted_defs
+                "严禁按外部常见含义臆测，禁止输出「缩写=英文全称」）：" + formatted_defs
             )
     if user_terms:
         formatted = "；".join(f"{k}={v}" for k, v in user_terms.items() if k.strip() and v.strip())
