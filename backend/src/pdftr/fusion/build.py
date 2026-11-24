@@ -6,6 +6,7 @@
 
 import re
 import statistics
+import unicodedata
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -478,6 +479,8 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], report: FusionRepor
                     continue
                 plain = RICH_TAG.sub("", piece).strip()
                 if plain and all(c.isspace() or is_broken(c) for c in plain):
+                    if all(c.isspace() or unicodedata.category(c) in {"Cc", "Cf"} for c in plain):
+                        continue
                     unresolved = True
                 bold, ranges = bold_ranges(piece, piece_chars)
                 italic, italic_ranges_ = italic_ranges(piece, piece_chars)

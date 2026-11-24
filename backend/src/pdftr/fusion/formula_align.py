@@ -420,7 +420,7 @@ def merge_torn_formulas(line: LayoutLine, chars: Sequence[Char]) -> LayoutLine:
                 if (
                     all(owned)
                     and text_of(inner).replace(" ", "") == "".join(middle.content.split())
-                    and all(MATH_FONT.search(c.font) for c in inner if c.c.isalpha())
+                    and all(MATH_FONT.search(c.font) or c.italic for c in inner if c.c.isalpha())
                     and len(visual_lines([c for group in owned for c in group])) == 1
                 ):
                     latex = " ".join((left.content.rstrip(), middle.content.strip(), right.content.lstrip()))

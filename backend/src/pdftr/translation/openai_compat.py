@@ -43,6 +43,7 @@ class OpenAICompatChat:
             raise ChatError("未配置翻译服务的 API Key")
         self.model = model
         self.dialect: Dialect = dialect or guess_dialect(base_url)
+        self.provider_id = f"openai:{base_url.rstrip('/')}"
         self._client = client or AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=3)
 
     async def aclose(self) -> None:

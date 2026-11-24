@@ -74,6 +74,8 @@ def user_prompt(
     sections: list[str],
     extra_terms: dict[str, str],
     user_terms: dict[str, str] | None = None,
+    *,
+    retry_feedback: str = "",
 ) -> str:
     """items：(批内编号, 已展开公式的原文)。extra_terms：本批命中的词库术语（不放进固定前缀）。"""
     lines = []
@@ -85,6 +87,10 @@ def user_prompt(
         lines.append(
             "参考词库（仅在语境与论文领域吻合时参考，冲突时以自然学术译法为准）："
             + "；".join(f"{k}={v}" for k, v in extra_terms.items())
+        )
+    if retry_feedback:
+        lines.append(
+            f"上次翻译未通过校验（{retry_feedback}），请修正该问题并重新输出完整「编号|译文」，严格保留所有公式占位符与格式标签。"
         )
     lines += [f"{i}|{text}" for i, text in items]
     return "\n".join(lines)

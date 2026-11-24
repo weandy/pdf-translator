@@ -47,9 +47,8 @@ class Source:
 
 def clean_zh(text: str) -> str:
     """取第一个译法，去掉注释、括号里的缩写；没有汉字或像解释句子（过长）时返回空串。"""
-    text = _TAGS.sub("", text)
-    text = re.split(r"[/／；;、，,]|\s+或\s+", text)[0]
-    text = _PAREN.sub("", text).strip(" *`")
+    text = _PAREN.sub("", _TAGS.sub("", text))
+    text = re.split(r"[/／；;、，,]|\s+或\s+", text)[0].strip(" *`")
     if any(q in text for q in '“”"「」'):  # 带引号的多是解释（如“中文为‘变换器’”），不是译名
         return ""
     return text if _CJK.search(text) and len(text) <= 20 else ""

@@ -31,7 +31,18 @@ _CROSS_REFERENCE = re.compile(
 _TEXT_MACRO = re.compile(r"\\(?:operatorname|mathrm|text|textrm)\{([^{}]+)\}")
 _REFERENCE_DELIMITERS = re.compile(r"\\left(?=\()|\\right(?=\))")
 _REFERENCE_FRAGMENT = re.compile(r"\((?:Eq|Fig|Sec)\.", re.I)
-_LEGACY_WORD_SCRIPT = re.compile(r"(?<=[A-Za-z])<(sub|sup)>([A-Za-z])</\1>(?=[A-Za-z])")
+_LEGACY_WORD_SCRIPT = re.compile(r"(?<=[a-z])<(sub|sup)>[a-z]</\1>(?=[a-z])")
+_PLAIN_WORD = re.compile(r"^[A-Za-z][a-z]{4,}$")
+_STRUCTURED_ABSTRACT = re.compile(
+    r"^(?:background|objective|objectives|purpose|aims?|methods?|methodology|results?|findings?|conclusions?|"
+    r"significance|summary)\s*[—–\-:：]\s*\S",
+    re.I,
+)
+_AFFILIATION_HINT = re.compile(
+    r"@|\b(?:university|institute|department|school|college|laboratory|lab|academy|center|centre|hospital|"
+    r"faculty|correspondence|orcid|email)\b",
+    re.I,
+)
 BAD_SOURCE_MESSAGE = "原文包含大量异常上下标，请重新上传文档以使用新版解析"
 _UNIT = re.compile(
     r"(?P<wrapped>\{)?\\(?:mathrm|mathbf)\{(?P<symbol>s|ms|ns|us|min|h|Hz|kHz|MHz|GHz|m|cm|mm|km|kg|g|mg|K|Pa|kPa)"
@@ -216,7 +227,17 @@ def front_matter_ids(doc: Document) -> set[str]:
         plain = _FORMAT.sub("", block_source(block, {})).strip()
         if block.type is BlockType.TITLE:
             return re.sub(r"[^a-z]", "", SECTION_NUMBER.sub("", plain).lower()) in _FRONT_HEADINGS
-        return block.type is BlockType.TEXT and INLINE_ABSTRACT.match(plain) is not None
+        return block.type is BlockType.TEXT and (
+            INLINE_ABSTRACT.match(plain) is not None or _STRUCTURED_ABSTRACT.match(plain) is not None
+        )
+
+    def looks_like_body_prose(block: Block) -> bool:
+        plain = _PLACEHOLDER.sub(" ", _FORMAT.sub("", block_source(block, {}))).strip()
+        words = re.findall(r"[A-Za-z]{2,}", plain)
+        if len(words) < 35 or "." not in plain:
+            return False
+        aff_hits = len(_AFFILIATION_HINT.findall(plain))
+        return aff_hits == 0 and "@" not in plain
 
     heading = min((b for b in blocks if b.order > title.order and is_heading(b)), key=lambda b: b.order, default=None)
     if heading is None:
@@ -227,18 +248,20 @@ def front_matter_ids(doc: Document) -> set[str]:
         if b.type is BlockType.TEXT
         and title.order < b.order < heading.order
         and not (b.list_item and PUBLICATION_DATE.match(_FORMAT.sub("", block_source(b, {}))))
+        and not looks_like_body_prose(b)
     }
 
 
 def bad_source(segments: Iterable[Segment]) -> bool:
-    """历史坏源在一个段落的多个普通词中反复夹入单字母标签。"""
+    """历史坏源在一个段落的多个普通英文词中反复夹入单字母标签（排除内部含大写的化学式/符号）。"""
     for seg in segments:
         if seg.status in (SegmentStatus.DONE, SegmentStatus.EDITED):
             continue
         plain = re.sub(r"</?[bi]>", "", seg.source)
         words: set[str] = set()
         for token in plain.split():
-            if _LEGACY_WORD_SCRIPT.search(token) and len(re.findall(r"[A-Za-z]", _FORMAT.sub("", token))) >= 5:
+            cleaned = _FORMAT.sub("", token).strip(".,;:()[]\"'")
+            if _LEGACY_WORD_SCRIPT.search(token) and _PLAIN_WORD.fullmatch(cleaned):
                 words.add(token)
                 if len(words) >= 3:
                     return True

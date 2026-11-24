@@ -31,6 +31,7 @@ class AnthropicChat:
         from anthropic import AsyncAnthropic
 
         self.model = model
+        self.provider_id = f"anthropic:{base_url.rstrip('/')}"
         # SDK 2.x 用 Authorization: Bearer 传 Key；兼容接口（如 DeepSeek /anthropic）多数只认 x-api-key，两个都带上
         self._client = client or AsyncAnthropic(
             base_url=base_url, api_key=api_key, timeout=timeout, max_retries=3, default_headers={"x-api-key": api_key}

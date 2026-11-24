@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from pdftr.domain.ir import Document, OutlineItem, Revision, Segment
 from pdftr.domain.job import Job, JobOptions
@@ -224,6 +224,14 @@ class RevisionOut(BaseModel):
 
 class EditIn(BaseModel):
     target: str = Field(min_length=1, max_length=20000)
+
+    @field_validator("target")
+    @classmethod
+    def _non_blank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("译文不能为空")
+        return cleaned
 
 
 class RetranslateIn(BaseModel):

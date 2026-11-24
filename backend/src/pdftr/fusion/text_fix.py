@@ -166,14 +166,14 @@ def recover_dropped_chars(parser_text: str, pdf_text: str) -> str:
     if not 0 < missing <= min(16, max(2, len(wanted) // 4)):
         return parser_text
 
-    # wanted 必须是 actual 的严格子序列，且所有新增字符必须为纯英文字母。
+    # wanted 必须是 actual 的严格子序列，新增字符须为英文字母或紧附词尾的逗号/句号。
     matched = [False] * len(actual)
     for tag, _i1, _i2, j1, j2 in difflib.SequenceMatcher(None, wanted, actual, autojunk=False).get_opcodes():
         if tag == "equal":
             for j in range(j1, j2):
                 matched[j] = True
         elif tag == "insert":
-            if any(not _LETTER.fullmatch(actual[j]) for j in range(j1, j2)):
+            if any(not (_LETTER.fullmatch(actual[j]) or actual[j] in ",.") for j in range(j1, j2)):
                 return parser_text
         else:
             return parser_text
@@ -189,6 +189,12 @@ def recover_dropped_chars(parser_text: str, pdf_text: str) -> str:
         word_missing = word_matched.count(False)
         if not word_missing:
             continue
+        # 新增的逗号/句号只允许出现在词尾，禁止在词内插入标点。
+        if any(
+            not ok and ch in ",." and idx < len(word) - 1
+            for idx, (ch, ok) in enumerate(zip(word, word_matched, strict=True))
+        ):
+            return parser_text
         letters = sum(bool(_LETTER.fullmatch(ch)) for ch in word)
         matched_letters = sum(bool(_LETTER.fullmatch(ch)) and ok for ch, ok in zip(word, word_matched, strict=True))
         if letters < 3 or matched_letters < 1 or word_missing > max(2, letters // 2):
@@ -197,7 +203,7 @@ def recover_dropped_chars(parser_text: str, pdf_text: str) -> str:
 
 
 def _restore_tags(original: str, replacement: str) -> str:
-    """把已对齐的富文本边界映射回替换文本，含脚本的内容必须完整对应。"""
+    """把已对齐的富文本边界映射回替换文本，含脚本的内容必须完整对应或原本即坏字。"""
     if not RICH_TAG.search(original):
         return replacement
     plain = RICH_TAG.sub("", original)
@@ -210,6 +216,7 @@ def _restore_tags(original: str, replacement: str) -> str:
             for i in range(count + 1):
                 old_to_new.setdefault(a + i, set()).add(b + i)
     script_start: int | None = None
+    script_new_start: int | None = None
     tags: list[tuple[int, str]] = []
     offset = 0
     for tag in RICH_TAG.finditer(original):
@@ -218,13 +225,19 @@ def _restore_tags(original: str, replacement: str) -> str:
         targets = old_to_new.get(pos, set())
         if len(targets) != 1:
             return original
+        mapped = next(iter(targets))
         if tag[0] in {"<sub>", "<sup>"}:
-            script_start = pos
+            script_start, script_new_start = pos, mapped
         elif tag[0] in {"</sub>", "</sup>"}:
-            if script_start is None or not all(i in unchanged for i in range(script_start, pos)):
+            if script_start is None or script_new_start is None:
                 return original
-            script_start = None
-        tags.append((next(iter(targets)), tag[0]))
+            span_orig = plain[script_start:pos]
+            span_new = replacement[script_new_start:mapped]
+            repaired_bad = any(_bad(c) for c in span_orig) and bool(span_new) and not any(c.isspace() for c in span_new)
+            if not (all(i in unchanged for i in range(script_start, pos)) or repaired_bad):
+                return original
+            script_start = script_new_start = None
+        tags.append((mapped, tag[0]))
     for pos, tag in reversed(tags):
         replacement = replacement[:pos] + tag + replacement[pos:]
     return replacement
@@ -250,4 +263,8 @@ def choose(parser_text: str, pdf_text: str) -> tuple[str, bool]:
     if not safe:
         return parser_text, False
     text = _restore_tags(parser_text, pdf_text)
+    if text == parser_text and pdf_bad == 0 and not re.search(r"</?[bi]>", parser_text):
+        scripts = list(_SCRIPT.finditer(parser_text))
+        if scripts and all(any(_bad(c) for c in m[2]) for m in scripts):
+            return pdf_text, True
     return text, text != parser_text

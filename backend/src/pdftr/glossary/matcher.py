@@ -13,22 +13,33 @@ MAX_WORDS = 6
 _WORD = re.compile(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*")
 
 
+_GAP_OK = re.compile(r"[\s/-]+")
+
+
 def _norm(word: str) -> str:
-    """小写 + 去掉简单复数，让 networks / network 都能命中。"""
+    """小写 + 去掉简单复数，让 networks / network、boxes / box 都能命中。"""
     w = word.lower()
     if len(w) > 3 and w.endswith("ies"):
         return w[:-3] + "y"
+    if len(w) > 3 and re.search(r"(?:s|x|z|ch|sh)es$", w):
+        return w[:-2]
     if len(w) > 3 and w.endswith("s") and not w.endswith(("ss", "us", "is")):
         return w[:-1]
     return w
 
 
 def _key(words: list[str]) -> str:
-    return " ".join(_norm(w) for w in words)
+    parts = [part for w in words for part in w.split("-") if part]
+    return " ".join(_norm(p) for p in parts)
 
 
 def _acronym(term: str) -> bool:
     return term.isupper() and sum(c.isalpha() for c in term) >= 2 and len(term.split()) == 1
+
+
+def _matches_acronym(window: list[str]) -> bool:
+    raw = "".join(window)
+    return raw.isupper() or (len(raw) >= 3 and raw.endswith("s") and raw[:-1].isupper())
 
 
 class TermMatcher:
@@ -46,18 +57,23 @@ class TermMatcher:
         return len(self._table)
 
     def match(self, text: str, accept: Callable[[str, str, str], bool] | None = None) -> dict[str, str]:
-        words = _WORD.findall(text)
+        spans = list(_WORD.finditer(text))
+        words = [m.group(0) for m in spans]
         hits: dict[str, str] = {}
         i = 0
         while i < len(words):
             for n in range(min(MAX_WORDS, len(words) - i), 0, -1):
+                if n > 1 and any(
+                    not _GAP_OK.fullmatch(text[spans[k].end() : spans[k + 1].start()]) for k in range(i, i + n - 1)
+                ):
+                    continue
                 window = words[i : i + n]
                 key = _key(window)
                 found = self._table.get(key)
                 if found is None:
                     continue
                 term, target, strict = found
-                if (strict and not "".join(window).isupper()) or (accept is not None and not accept(key, term, target)):
+                if (strict and not _matches_acronym(window)) or (accept is not None and not accept(key, term, target)):
                     continue
                 hits[term] = target
                 i += n
@@ -74,14 +90,19 @@ class TermSelection:
         self, found: Extraction, user_terms: Mapping[str, str], load_library: Callable[[], TermMatcher | None]
     ) -> None:
         user_keys: dict[str, str] = {}
+        user_norms: dict[str, str] = {}
         for term, target in user_terms.items():
             user_keys.setdefault(term.casefold(), target)
+            if words := _WORD.findall(term):
+                user_norms.setdefault(_key(words), target)
         self.paper: dict[str, str] = {}
         paper_keys: set[str] = set()
         for term, target in found.terms.items():
             folded = term.casefold()
             if folded not in paper_keys:
-                self.paper[term] = user_keys.get(folded, target)
+                words = _WORD.findall(term)
+                override = user_keys.get(folded) or (user_norms.get(_key(words)) if words else None)
+                self.paper[term] = override if override is not None else target
                 paper_keys.add(folded)
         self._user = TermMatcher(user_terms, min_length=2)
         self._paper = TermMatcher(self.paper, min_length=2)

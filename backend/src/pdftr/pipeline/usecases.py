@@ -588,6 +588,9 @@ def _record(
 
 
 def edit_segment(pipeline: Pipeline, segment_id: str, target: str) -> Segment:
+    cleaned = target.strip()
+    if not cleaned:
+        raise UserError("译文不能为空")
     seg = _segment(pipeline, segment_id)
     job = get_job(pipeline, seg.job_id)
     if job.status is not JobStatus.DONE:
@@ -600,12 +603,12 @@ def edit_segment(pipeline: Pipeline, segment_id: str, target: str) -> Segment:
         if job.status is not JobStatus.DONE:
             raise UserError("任务完成后才能编辑译文")
         # 公式占位符少了或多了，阅读器与导出 PDF 里对应的公式会悄悄消失或重复，不保存
-        if problems := placeholder_problems(seg.source, target):
+        if problems := placeholder_problems(seg.source, cleaned):
             raise UserError("译文里的公式不对：" + "；".join(problems) + "。每个公式占位符要各保留一次")
-        if problems := rich_text_problems(target):
+        if problems := rich_text_problems(cleaned):
             raise UserError("译文里的格式标记不对：" + "；".join(problems))
         before = seg.model_copy()
-        seg.target, seg.status = target.strip(), SegmentStatus.EDITED
+        seg.target, seg.status = cleaned, SegmentStatus.EDITED
         seg.failure_reason = ""
         pipeline.deps.store.save_segments([seg])
         _record(pipeline, before, seg, "edit")

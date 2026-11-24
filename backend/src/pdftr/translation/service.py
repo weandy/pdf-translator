@@ -87,7 +87,15 @@ def _target_problems(source: str, target: str) -> list[str]:
 
 
 def cache_key(
-    seg: Segment, model: str, terms: dict[str, str], quality: Quality, *, reference_terms: dict[str, str] | None = None
+    seg: Segment,
+    model: str,
+    terms: dict[str, str],
+    quality: Quality,
+    *,
+    reference_terms: dict[str, str] | None = None,
+    domain: str = "",
+    section: str = "",
+    provider: str = "",
 ) -> str:
     payload = json.dumps(
         [
@@ -98,6 +106,9 @@ def cache_key(
             sorted(terms.items()),
             quality,
             sorted((reference_terms or {}).items()),
+            domain,
+            section,
+            provider,
         ],
         ensure_ascii=False,
         sort_keys=True,
@@ -141,6 +152,7 @@ async def translate(
     report = TranslateReport(total=len(out), attempts={s.id: 0 for s in out})
 
     doc_terms = {k.casefold(): v for k, v in ctx.terms.items()}
+    provider = str(getattr(chat, "provider_id", ""))
     units: dict[str, _Unit] = {}
     for i, seg in enumerate(out):
         if seg.status in (SegmentStatus.DONE, SegmentStatus.EDITED):
@@ -154,7 +166,16 @@ async def translate(
         user_hits = {k: v for k, v in mine.items() if k.casefold() not in doc_terms}
         locked = doc_terms | {k.casefold(): v for k, v in user_hits.items()}
         reference_hits = {k: v for k, v in references.items() if k.casefold() not in locked}
-        key = cache_key(seg, chat.model, ctx.terms | user_hits, o.quality, reference_terms=reference_hits)
+        key = cache_key(
+            seg,
+            chat.model,
+            ctx.terms | user_hits,
+            o.quality,
+            reference_terms=reference_hits,
+            domain=ctx.domain,
+            section=seg.section,
+            provider=provider,
+        )
         if o.use_cache and (hit := cache.get(key)) and not _target_problems(seg.source, hit):
             seg.target, seg.status = normalize_cjk_spacing(hit), SegmentStatus.DONE
             report.cached += 1
@@ -183,6 +204,7 @@ async def translate(
     sem = asyncio.Semaphore(o.concurrency)
     note = f"首次翻译（第 1/{o.max_attempts} 次）"
     reasons: dict[str, str] = {}
+    feedback: dict[str, str] = {}
     refused: list[_Unit] = []
     expired_deadlines: set[float] = set()
 
@@ -191,9 +213,11 @@ async def translate(
             return total_deadline, "本次翻译总时限耗尽"
         return retry_deadline, "补救总时限耗尽"
 
-    def fail(batch: list[_Unit], reason: str) -> list[_Unit]:
+    def fail(batch: list[_Unit], reason: str, *, diagnostic: bool = False) -> list[_Unit]:
         for u in batch:
             reasons[u.key] = reason
+            if diagnostic:
+                feedback[u.key] = reason
         if on_progress:
             on_progress(done, total_units, note)
         return batch
@@ -207,7 +231,10 @@ async def translate(
         sections = list(dict.fromkeys(s for u in batch for s in u.sections))
         mine = {k: v for u in batch for k, v in u.user_terms.items()}
         extra = {k: v for u in batch for k, v in u.reference_terms.items()}
-        user = user_prompt([(n + 1, u.expanded) for n, u in enumerate(batch)], sections, extra, mine)
+        hint = feedback.get(batch[0].key, "") if len(batch) == 1 else ""
+        user = user_prompt(
+            [(n + 1, u.expanded) for n, u in enumerate(batch)], sections, extra, mine, retry_feedback=hint
+        )
         # 排队不计为模型尝试；有整次时限时，等待并发名额也必须受限。
         try:
             if deadline is None:
@@ -251,7 +278,7 @@ async def translate(
         try:
             got = parse_numbered(result.text, batch_size=len(batch))
         except NumberedResponseError as e:
-            return fail(batch, str(e))
+            return fail(batch, str(e), diagnostic=True)
         truncated = result.finish_reason in ("length", "max_tokens")
         if truncated and got:
             # 最后一项可能在段内或紧贴下一项编号中断，仅信任有后续完整编号分隔的前缀。
@@ -262,13 +289,17 @@ async def translate(
             errors = _target_problems(u.source, target) if target else []
             if target and not errors:
                 target = normalize_cjk_spacing(target)
-                cache.put(u.key, target)
+                if o.use_cache:
+                    cache.put(u.key, target)
                 for i in u.seg_indexes:
                     out[i].target, out[i].status = target, SegmentStatus.DONE
                 done += 1
             else:
                 missing = "模型输出截断" if truncated else "返回编号缺失或译文为空"
-                reasons[u.key] = "；".join(errors) if target else missing
+                reason = "；".join(errors) if target else missing
+                reasons[u.key] = reason
+                if target or not truncated:
+                    feedback[u.key] = reason
                 retry.append(u)
         if on_progress:
             on_progress(done, total_units, note)
@@ -302,7 +333,8 @@ async def translate(
         note = f"还有 {len(failed)} 段待完成，正在单段重试（第 {attempt}/{o.max_attempts} 次）"
         if on_progress:
             on_progress(done, total_units, note)
-        # 首次失败后即拆开，避免同批段落编号错位；第三次起使用已有的低强度思考策略。
+        # 首次失败后即拆开，避免同批段落编号错位；按已尝试次数升序排列，优先保障未补救段落。
+        failed.sort(key=lambda u: min(report.attempts[out[i].id] for i in u.seg_indexes))
         retry_opts = chat_opts if attempt == 2 else ChatOptions(thinking="low", transport_retries=0)
         failed = await run_all([[u] for u in failed], retry_opts, retry_deadline)
     failed.extend(refused)

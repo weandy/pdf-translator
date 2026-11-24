@@ -9,14 +9,38 @@ import re
 from collections import Counter
 from collections.abc import Iterable
 
+_SECTION_ONLY = frozenset({
+    "abstract", "acknowledgment", "acknowledgments", "appendix", "background", "conclusion", "conclusions",
+    "discussion", "evaluation", "experimental setup", "experiments", "highlights", "introduction", "keywords",
+    "method", "methodology", "methods", "overview", "references", "related work", "related works", "results",
+    "results and analysis", "summary",
+})  # fmt: skip
+
+
+def _term_pattern(term: str) -> re.Pattern[str]:
+    flex = re.sub(r"(?:\\ |-)+", r"[\\s-]+", re.escape(term.strip()))
+    return re.compile(rf"(?<![\w-]){flex}(?![\w-])", flags=re.IGNORECASE)
+
 
 def normalize_terms(terms: dict[str, str], body: str, headings: Iterable[str] = ()) -> dict[str, str]:
-    heading_set = {re.sub(r"^[\d.\s]+", "", h).strip().lower() for h in headings}
+    heading_list = list(headings)
+    heading_set = {
+        re.sub(r"^(?:[IVXLCDM]+\.|[A-Z]\.|\d+(?:\.\d+)*\.?)\s*", "", h).strip().lower() for h in heading_list
+    }
+    heading_blob = "\n".join(heading_list)
     out: dict[str, str] = {}
     for term, target in terms.items():
-        found = re.findall(rf"(?<![\w-]){re.escape(term)}(?![\w-])", body, flags=re.IGNORECASE)
-        if not found or term.lower() in heading_set:
+        pat = _term_pattern(term)
+        found = pat.findall(body)
+        if not found:
             continue
-        written = Counter(found).most_common(1)[0][0]
+        low = term.strip().lower()
+        if low in heading_set:
+            if low in _SECTION_ONLY:
+                continue
+            body_hits = len(found) - len(pat.findall(heading_blob))
+            if body_hits < 2:
+                continue
+        written = term if term.isupper() and len(term) >= 2 and term in found else Counter(found).most_common(1)[0][0]
         out[written] = written if target.strip().lower() == term.strip().lower() else target.strip()
     return out
