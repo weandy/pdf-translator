@@ -183,9 +183,11 @@ def _adjacent_formula_number_problems(source: str, target: str) -> list[str]:
         pos = tgt_plain.find(token)
         while pos >= 0:
             if side == "before":
-                window = "".join(tgt_plain[:pos].split())[-6:]
+                segment = _CONTEXT_FORMULA.sub("\x00", tgt_plain[:pos]).rsplit("\x00", 1)[-1]
+                window = "".join(segment.split())[-6:]
             else:
-                window = "".join(tgt_plain[pos + len(token) :].split())[:6]
+                segment = _CONTEXT_FORMULA.sub("\x00", tgt_plain[pos + len(token) :]).split("\x00", 1)[0]
+                window = "".join(segment.split())[:6]
             if num_pat.search(window):
                 found = True
                 break

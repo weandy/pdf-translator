@@ -4,7 +4,23 @@
 >
 > 最后更新：2026-11-24（Asia/Shanghai）
 
-### 本轮完成：Q4 翻译质量与词库进阶加固（2026-11-24，本地分支 `feat/q4-translation-quality-tier2`）
+### 部署与结项：Q4 翻译质量与词库进阶加固及六轮跨学科双盲评测闭环（2026-11-24）
+
+- **方案与主包合入（`d72fba1`）**：经主控初稿 → Codex（`apice/gpt-6.2-sol xhigh`）红队审改 → 独立 Neon（`gemini-4-neon xhigh`）二轮审改 → 主控定稿（见 [Q4 设计方案](14-q4-translation-quality-and-glossary-tier2-design.md)），落地 Q4a–Q4d 全部能力并部署 HW-SGP（`app` + `web` 双镜像）。
+- **六轮跨学科公开论文线上实测与双盲迭代收口（`edbccbb` → `03a5c2a` → `2957528` → `a7fe439` → `5f97183` → 收尾补丁）**：
+  - 选取 6 篇覆盖 AI/CV 双栏（ResNet）、材料电化学单栏、Linux 系统双栏、金融数学单栏（带 `user_terms` 覆盖）、医学信息学全文及 200 DPI 纯图像扫描件的公开论文，在 `https://pdf.667786.xyz/` 完成 6 轮端到端翻译与单/双语导出实测（每轮测后均 `DELETE 204` 清理线上测试任务），每轮均由 **Codex** 与 **AGY / Neon** 独立双盲打分并交叉收敛共性工程缺陷：
+  - **R2（`edbccbb`）**：修复引文校验三重假阳性与上标范围/混合定位引文、`</translations>` 行内截断、`\operatorname{If}`/尾 `=` 回收、Prompt `v6` 与高公式思考升档、上标无括号链接与 1pt 扁框自适应重叠过滤、原生 `×`/空格/上标恢复、绕图跨栏续接、术语上限 45/去泛词/用户词复合词消解、主标题居中、`CAPTION` 防孤字、扫描首页 `ABSTRACT` 纠序与 `Keywords.` 拆块。
+  - **R3（`03a5c2a`）**：修复上标顿号/占位符假阳性、`relocate.py` 跨页坐标重合假命中与 `pi+2` 跨图归位、`INLINE_ABSTRACT` 补句点、`align.py` 双栏右溢出回收、`formula_align.py` 行中线约束与原生 `if:` 拆分、`background.py` 垂直墨迹连通带清跨行公式残影、移除 `_CHAIN_BARRIERS` 中的 `FOOTNOTE`、高公式批 60s 超时与 `<mN />` 规范化、前后端同构 `split_by_parts` 容量感知半径与短 ASCII 词界防腰斩、`links.py` 放行 `文献39`、`extract.py` 限域 `root` 与防复数自映射。
+  - **R4（`2957528`）**：收紧 `_trim_formula_edges` 最小缝隙消除 `≤`/`≥`/`\tilde` 数学笔画误切；解耦单行溢出擦除与整块 `Block.bbox`、领回右栏误吸句末 `.` 并加 8pt 双栏右缘钳位；调优高公式批参数（`THRESHOLD=5, MAX_SEGMENTS=4, MAX_FORMULAS=18`）将 `04` 同口径费用压降 `48.2%`；`typesetter.py` 修复跨标签/`caption_no` 吞空格并补公式→中文标点微间距；`formula_align.py` 跳过裸字体开关 `\sf`；`service.py` 增设 `<mN/>=` 重复等号守卫。
+  - **R5（`a7fe439`）**：回收公式右侧脱框黑板粗体（`→ ℝ`）、补全原 PDF 有 `→` 而 LaTeX 遗漏的 `\to`、恢复公式左缘擦断的相邻英文短词（如 `i` + `f` → `if`）并剥离虚假 `\dot`；升级 `PROMPT_VERSION = "v7"`；`links.py` 在 `<sup>` 内安全恢复 `Hfootnote/footnote` 跳转；`typesetter.py` + `export.py` 按几何相对坐标将公式裁图内引文热点精准映射到译文公式图（`02` 链接 `205→205`）；`align.py` 按垂直中心判行尾标点碰撞清零双栏栏缝残余 `]`；`extract.py`/`runner.py`/`cli.py` 提取文内显式缩写定义防先验幻觉并拦截 `sockets=socket` 同规范键单复数留英。
+  - **R6（`5f97183`）及收尾补丁**：修复全仓导出 PDF 命名内部跳转（`LINK_NAMED`）纵坐标上下翻转 P0 Bug 与 `outline.py` 坐标系统一（`01`–`04` 共 1,639 条单/双语直接 `GoTo` 纵坐标翻转归零，误差 `< 0.0001pt`）；新增百分数事实锚点守卫、公式旁括号字面数值守卫（剥离相邻占位符编号防误判）、比较符结尾公式衔接守卫与译文 LaTeX 命令泄漏守卫；过滤 `缩写=纯英文多词全称` 误抽词条；`>= 10` 公式超高密度段独立成批防满载反转。
+- **六轮质量演进实测**：
+  - 交付成功率：`50% (3/6) → 100% (6/6)`（`342/342` 完成，R6 首试 `341/342 = 99.71%`，译文区坏字/PUA 全 `0/0`，溢出页全 `[]`）；
+  - 双盲独立评分（6 篇等权均分）：**Codex `78.3 → 88.0 → 90.1 → 90.8 → 91.0 → 91.9`**（`+13.6`）；**AGY / Neon `69.0 → 85.3 → 89.0 → 91.2 → 91.7 → 93.0`**（`+24.0`，全员 90+）；
+  - 线上最终状态（HW-SGP）：`PROMPT_VERSION="v7"`、`VALIDATION_VERSION=6`、`links.VERSION=6`、`EXPORT_CACHE_VERSION=15`，后端全量门禁 `1,170+ passed, 6 skipped`、`ruff`/`pyright`/`lint-imports` 0 错，前端 `40 files / 279 passed` + `vite build` 绿灯，公网 `/api/health` 200，镜像严格保留 2 代。
+- **已明确归档的上游与轻模型边界（供 Q5 可选评估）**：原 PDF 矢量下划线/非标准数学字体致 MinerU LaTeX 错认、200 DPI 无文字层扫描 OCR 极限、原稿表文自身数值矛盾，以及轻模型 `deepseek-flash` 单次极偶发漏词/繁体字波动（长难数学或临床论文建议引导用户选择 `careful` 档）。
+
+### 本轮完成：Q4 翻译质量与词库进阶加固初版（2026-11-24，已合入 `main` `d72fba1`）
 
 - **方案与评审**：经主控初稿（v1）→ Codex（`apice/gpt-6.2-sol xhigh`）红队审改（v2）→ 独立 Neon（`gemini-4-neon xhigh`）二轮审改（v3）→ 主控拍板定稿（Final），完整设计见 [Q4 翻译质量与词库进阶加固设计方案](14-q4-translation-quality-and-glossary-tier2-design.md)。
 - **核心落地（4 路零重叠 Codex 并发 + 阶段 2 端到端接线 + 主控自审收口）**：

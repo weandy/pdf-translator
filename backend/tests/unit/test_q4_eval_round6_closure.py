@@ -316,6 +316,19 @@ def test_r6_3_adjacent_number_and_trailing_comparator_guards():
     )
     assert _target_problems(s44_src, s44_good_tgt, formulas=s44_formulas) == []
 
+    # 真实 R6 正例通过，单变量仅删除 <m5/> 前的 1 时（即使前 6 字符紧邻 <m1/>）绝不把 <m1/> 编号 1 误判为字面 1
+    s44_r6_tgt = "若<m2/>自由度为k-1的<m4/>分布表中<m3/>处的临界值，则拒绝<m1/>，其中1<m5/>为我们期望达到的置信水平。"
+    s44_r6_drop_one = (
+        "若<m2/>自由度为k-1的<m4/>分布表中<m3/>处的临界值，则拒绝<m1/>，其中<m5/>为我们期望达到的置信水平。"
+    )
+    assert _target_problems(s44_src, s44_r6_tgt, formulas=s44_formulas) == []
+    assert _target_problems(s44_src, s44_r6_drop_one, formulas=s44_formulas) == [
+        "请保留公式 <m5/> 旁的数值 1（原文写作 (1 <m5/>)）"
+    ]
+    assert _adjacent_formula_number_problems("Take (<m1/> + 1) and <m2/>.", "执行<m1/>以及<m2/>。") == [
+        "请保留公式 <m1/> 旁的数值 1（原文写作 (<m1/> + 1)）"
+    ]
+
     # 合法放行：<m2/>对应于……的临界值、<m2/>临界值
     assert (
         _trailing_comparator_formula_problems(
