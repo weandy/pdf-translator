@@ -156,9 +156,9 @@ def test_frequent_candidates_keeps_technical_words_and_only_real_ngrams():
 
 
 def test_frequent_candidates_enforces_count_and_character_budgets_with_rare_reserve():
-    frequent = [f"cell{chr(97 + i // 26)}{chr(97 + i % 26)}" for i in range(30)]
+    frequent = [f"cell{chr(97 + i // 26)}{chr(97 + i % 26)}" for i in range(35)]
     repeated = [f"sample {word}" for word in frequent for _ in range(6)]
-    technical = [f"metric-{i}" for i in range(12)]
+    technical = [f"metric-{i}" for i in range(18)]
     rare = [f"AP@0.{i}" for i in range(7)]
     candidates = frequent_candidates([*repeated, *technical, *technical, *rare])
     assert len(candidates) == 60

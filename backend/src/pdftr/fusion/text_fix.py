@@ -155,51 +155,309 @@ def strip_fake_scripts(parser_text: str, span_chars: Sequence[Char]) -> str:
     return _SCRIPT.sub(replace, parser_text)
 
 
+_SAFE_INSERT_SYMBOLS = frozenset("×−_{}[]()")
+_WORD_EDGE_PUNCT = "\"'“”‘’()[]{}.,;:!?"
+_SINGLE_LETTER_WORDS = frozenset({"a", "A", "I"})
+_CITE_SUP_CANDIDATE = re.compile(
+    r"(?:(?<![\d])(?P<punct>[.,;:!?)\]\}”’\"'])|(?P<word>[A-Za-z]?[a-z]{2,}))"
+    r"(?P<nums>\d{1,3}(?:[,–—\-−]\d{1,3})*)"
+    r"(?=$|[\s.,;:!?)\]\}”’\"']|</(?:b|i|sup|sub)>)"
+)
+_NO_CITE_DOT_PREFIX = re.compile(
+    r"(?:^|[\s(\[])(?:fig|figs|eq|eqs|sec|secs|no|nos|vol|vs|ref|refs|tab|art|ch|p|pp|v)$", re.I
+)
+
+
+def _strip_edge_punct(token: str) -> str:
+    return token.strip(_WORD_EDGE_PUNCT)
+
+
+def _valid_split_subword(word: str, *, is_first: bool) -> bool:
+    core = _strip_edge_punct(word)
+    if not core or not core.isalpha():
+        return False
+    if len(core) == 1:
+        return core in _SINGLE_LETTER_WORDS
+    return is_first or core[0].islower()
+
+
+def _recover_glued_spaces(parser_text: str, pdf_text: str) -> str:
+    """字符完全一致时，仅把 parser 粘连在一起、在 PDF 中明确分开的合法英文词拆开。"""
+    plain = RICH_TAG.sub("", parser_text)
+    p_words = plain.split()
+    f_words = pdf_text.split()
+    if p_words == f_words:
+        return parser_text
+    rebuilt: list[str] = []
+    pi = fi = 0
+    changed = False
+    while pi < len(p_words) and fi < len(f_words):
+        pw, fw = p_words[pi], f_words[fi]
+        if pw == fw:
+            rebuilt.append(pw)
+            pi += 1
+            fi += 1
+            continue
+        if len(pw) > len(fw) and pw.startswith(fw):
+            chunk: list[str] = []
+            acc = ""
+            fj = fi
+            while fj < len(f_words) and len(acc) < len(pw):
+                chunk.append(f_words[fj])
+                acc += f_words[fj]
+                fj += 1
+            if acc == pw and len(chunk) >= 2:
+                stripped = _strip_edge_punct(pw)
+                if stripped.isalpha() and all(
+                    _valid_split_subword(sub, is_first=idx == 0) for idx, sub in enumerate(chunk)
+                ):
+                    rebuilt.extend(chunk)
+                    changed = True
+                else:
+                    rebuilt.append(pw)
+                pi += 1
+                fi = fj
+                continue
+        # 同步前进到下一个词边界重合点，保留 parser 原本的分词，绝不把 parser 已分开的词粘起来。
+        p_acc, f_acc = pw, fw
+        pj, fj = pi + 1, fi + 1
+        while p_acc != f_acc:
+            if len(p_acc) < len(f_acc):
+                if pj >= len(p_words):
+                    return parser_text
+                p_acc += p_words[pj]
+                pj += 1
+            else:
+                if fj >= len(f_words):
+                    return parser_text
+                f_acc += f_words[fj]
+                fj += 1
+        rebuilt.extend(p_words[pi:pj])
+        pi, fi = pj, fj
+    if pi != len(p_words) or fi != len(f_words) or not changed:
+        return parser_text
+    return _restore_tags(parser_text, " ".join(rebuilt))
+
+
+def _has_bad_kerning_split(plain: str, pdf_text: str) -> bool:
+    """拒绝 PDF 因字距微调把完整英文词拆出的单字母碎片（如 'f rom'）。"""
+    parser_tokens = set(plain.split())
+    for word in pdf_text.split():
+        core = _strip_edge_punct(word)
+        if len(core) == 1 and core.isalpha() and core not in _SINGLE_LETTER_WORDS and word not in parser_tokens:
+            return True
+    return False
+
+
+def _valid_inserted_digit(word: str, word_matched: list[bool], idx: int) -> bool:
+    """只允许恢复括号内紧贴的短数字（如 getpeername(2).、foo[1]）。"""
+    lo = idx
+    while lo > 0 and word[lo - 1].isdigit():
+        lo -= 1
+    hi = idx + 1
+    while hi < len(word) and word[hi].isdigit():
+        hi += 1
+    if hi - lo > 3 or lo == 0 or hi >= len(word):
+        return False
+    open_ch, close_ch = word[lo - 1], word[hi]
+    if (open_ch, close_ch) not in {("(", ")"), ("[", "]")}:
+        return False
+    return sum(word_matched) >= 2
+
+
 def recover_dropped_chars(parser_text: str, pdf_text: str) -> str:
-    """仅补上已有英文词内部、词首或词尾的少量缺字，拒绝整词外溢与非字母差异。"""
+    """补上已有词内/词尾少量缺字、受控数学/代码符号与括号、以及被粘连词的真实词间空格。"""
     if re.search(r"</?(?:sub|sup)>", parser_text) or not parser_text.strip() or is_broken(pdf_text):
         return parser_text
     plain = RICH_TAG.sub("", parser_text)
     wanted = "".join(plain.split())
     actual = "".join(pdf_text.split())
     missing = len(actual) - len(wanted)
-    if not 0 < missing <= min(16, max(2, len(wanted) // 4)):
+    if missing == 0:
+        return _recover_glued_spaces(parser_text, pdf_text) if wanted == actual else parser_text
+    if not 0 < missing <= min(16, max(4, len(wanted) // 3)):
         return parser_text
 
-    # wanted 必须是 actual 的严格子序列，新增字符须为英文字母或紧附词尾的逗号/句号。
+    # wanted 必须是 actual 的严格子序列，新增字符须为英文字母、尾标点、受控安全符号或括号内短数字。
     matched = [False] * len(actual)
     for tag, _i1, _i2, j1, j2 in difflib.SequenceMatcher(None, wanted, actual, autojunk=False).get_opcodes():
         if tag == "equal":
             for j in range(j1, j2):
                 matched[j] = True
         elif tag == "insert":
-            if any(not (_LETTER.fullmatch(actual[j]) or actual[j] in ",.") for j in range(j1, j2)):
-                return parser_text
+            for j in range(j1, j2):
+                ch = actual[j]
+                if not (_LETTER.fullmatch(ch) or ch in ",." or ch in _SAFE_INSERT_SYMBOLS or ch.isdigit()):
+                    return parser_text
         else:
             return parser_text
 
-    # 按 PDF 词边界检查：每个词都必须已有匹配字符（禁止行首/行尾整词外溢），且补字限于词内合理比例。
+    if _has_bad_kerning_split(plain, pdf_text):
+        return parser_text
+
+    # 按 PDF 词边界检查：每个词都必须已有匹配字符（允许独立乘号 '×' 夹在数字表达式间），并逐类校验新增字符上下文。
+    pdf_words = pdf_text.split()
     pos = 0
-    for word in pdf_text.split():
+    for wi, word in enumerate(pdf_words):
         end = pos + len(word)
         word_matched = matched[pos:end]
         pos = end
         if not any(word_matched):
+            if (
+                word == "×"
+                and 0 < wi < len(pdf_words) - 1
+                and pdf_words[wi - 1][-1].isdigit()
+                and pdf_words[wi + 1][0].isalnum()
+            ):
+                continue
             return parser_text
         word_missing = word_matched.count(False)
         if not word_missing:
             continue
-        # 新增的逗号/句号只允许出现在词尾，禁止在词内插入标点。
-        if any(
-            not ok and ch in ",." and idx < len(word) - 1
-            for idx, (ch, ok) in enumerate(zip(word, word_matched, strict=True))
-        ):
-            return parser_text
-        letters = sum(bool(_LETTER.fullmatch(ch)) for ch in word)
-        matched_letters = sum(bool(_LETTER.fullmatch(ch)) and ok for ch, ok in zip(word, word_matched, strict=True))
-        if letters < 3 or matched_letters < 1 or word_missing > max(2, letters // 2):
-            return parser_text
+        letter_missing = 0
+        for idx, (ch, ok) in enumerate(zip(word, word_matched, strict=True)):
+            if ok:
+                continue
+            if ch in ",.":
+                # 新增的逗号/句号只允许出现在词尾（可紧跟闭合括号/标点），禁止在词内插入标点。
+                tail = word[idx + 1 :]
+                if tail and any(c.isalnum() for c in tail):
+                    return parser_text
+            elif ch == "×":
+                between = 0 < idx < len(word) - 1 and (
+                    (word[idx - 1].isdigit() and word[idx + 1].isalnum())
+                    or (word[idx - 1].isalpha() and word[idx + 1].isdigit())
+                )
+                trailing = idx == len(word) - 1 and idx > 0 and word[idx - 1].isdigit()
+                if not (between or trailing):
+                    return parser_text
+            elif ch == "−":
+                between = 0 < idx < len(word) - 1 and word[idx - 1].isalnum() and word[idx + 1].isalnum()
+                neg_num = idx + 1 < len(word) and word[idx + 1].isdigit() and (idx == 0 or word[idx - 1] in "([{")
+                if not (between or neg_num):
+                    return parser_text
+            elif ch == "_":
+                between = 0 < idx < len(word) - 1 and word[idx - 1].isalnum() and word[idx + 1].isalnum()
+                trailing = idx == len(word) - 1 and idx >= 2 and word[idx - 1].isalnum()
+                if not (between or trailing):
+                    return parser_text
+            elif ch in "{}[]()":
+                # 括号允许位于词首/词尾/括号或数字边界，禁止将普通英文字母单词从中间劈开。
+                if 0 < idx < len(word) - 1 and word[idx - 1].isalpha() and word[idx + 1].isalpha():
+                    return parser_text
+            elif ch.isdigit():
+                if not _valid_inserted_digit(word, word_matched, idx):
+                    return parser_text
+            elif _LETTER.fullmatch(ch):
+                letter_missing += 1
+            else:
+                return parser_text
+        if letter_missing:
+            letters = sum(bool(_LETTER.fullmatch(ch)) for ch in word)
+            matched_letters = sum(bool(_LETTER.fullmatch(ch)) and ok for ch, ok in zip(word, word_matched, strict=True))
+            if letters < 3 or matched_letters < 1 or letter_missing > max(2, letters // 2):
+                return parser_text
     return _restore_tags(parser_text, pdf_text)
+
+
+def _glyph_superscript_flags(chars: Sequence[Char]) -> tuple[list[bool], list[int]]:
+    """按视觉行判定每个非空字符是否为严格上标（字号显著缩小且基线上抬），并返回行分组号。"""
+    by_line: dict[int, list[int]] = {}
+    for idx, ch in enumerate(chars):
+        by_line.setdefault(ch.line, []).append(idx)
+    groups: list[list[int]] = []
+    line_items = sorted(by_line.values(), key=lambda ids: statistics.median(chars[i].bbox.center[1] for i in ids))
+    for ids in line_items:
+        sz = statistics.median(chars[i].size for i in ids)
+        cy = statistics.median(chars[i].bbox.center[1] for i in ids)
+        for g in reversed(groups):
+            g_sz = statistics.median(chars[i].size for i in g)
+            g_cy = statistics.median(chars[i].bbox.center[1] for i in g)
+            if abs(cy - g_cy) < 0.6 * max(sz, g_sz):
+                g.extend(ids)
+                break
+        else:
+            groups.append(list(ids))
+    is_sup = [False] * len(chars)
+    row_id = [0] * len(chars)
+    for rno, g in enumerate(groups):
+        row_chars = [chars[i] for i in g]
+        size, baseline = main_metrics(row_chars)
+        normal_cys = [c.bbox.center[1] for c in row_chars if 0.88 * size < c.size <= 1.14 * size]
+        main_cy = (
+            statistics.median(normal_cys) if normal_cys else statistics.median(c.bbox.center[1] for c in row_chars)
+        )
+        for i in g:
+            row_id[i] = rno
+            ch = chars[i]
+            if not script_glyph(ch, size, baseline) or ch.size > 0.88 * size:
+                continue
+            if baseline is not None and ch.origin_y is not None:
+                is_sup[i] = baseline - ch.origin_y >= 0.15 * size
+            else:
+                is_sup[i] = main_cy - ch.bbox.center[1] >= 0.12 * size
+    return is_sup, row_id
+
+
+def restore_citation_superscripts(parser_text: str, span_chars: Sequence[Char]) -> str:
+    """原生页补回被解析器漏标 <sup> 的词尾/标点后上标数字引文（如 studies.11–13 → studies.<sup>11–13</sup>）。"""
+    if not parser_text.strip() or not span_chars or not re.search(r"\d", parser_text):
+        return parser_text
+    chars = sorted((c for c in span_chars if not c.c.isspace()), key=lambda c: (c.line, c.bbox.x0))
+    if not chars:
+        return parser_text
+    char_sup, char_row = _glyph_superscript_flags(chars)
+    if not any(char_sup):
+        return parser_text
+    glyph_sup = [flag for ch, flag in zip(chars, char_sup, strict=True) for _ in _visible(ch.c)]
+    glyph_row = [rno for ch, rno in zip(chars, char_row, strict=True) for _ in _visible(ch.c)]
+    plain = _visible(RICH_TAG.sub("", parser_text))
+    pdf = "".join(_visible(c.c) for c in chars)
+    mapping: dict[int, int] = {}
+    for a, b, count in difflib.SequenceMatcher(None, plain, pdf, autojunk=False).get_matching_blocks():
+        for i in range(count):
+            mapping[a + i] = b + i
+
+    # 记录现有 <sup>/<sub> 覆盖区间，避免嵌套标签。
+    script_spans: list[tuple[int, int]] = [(m.start(), m.end()) for m in _SCRIPT.finditer(parser_text)]
+
+    def in_script(start: int, end: int) -> bool:
+        return any(lo < end and start < hi for lo, hi in script_spans)
+
+    replacements: list[tuple[int, int, str]] = []
+    for match in _CITE_SUP_CANDIDATE.finditer(parser_text):
+        lo, hi = match.start("nums"), match.end("nums")
+        if in_script(lo, hi):
+            continue
+        if match.group("punct") == ".":
+            prefix_plain = RICH_TAG.sub("", parser_text[: match.start("punct")])
+            if _NO_CITE_DOT_PREFIX.search(prefix_plain):
+                continue
+        nums = match.group("nums")
+        nums_vis = _visible(nums)
+        if not nums_vis:
+            continue
+        vis_start = len(_visible(RICH_TAG.sub("", parser_text[:lo])))
+        mapped = [mapping.get(i) for i in range(vis_start, vis_start + len(nums_vis))]
+        if any(idx is None for idx in mapped):
+            continue
+        glyph_idxs = [idx for idx in mapped if idx is not None]
+        # 紧邻前导字符本身若也是上标（例如复杂上标片段的一部分），避免切碎。
+        if vis_start > 0 and (prev_idx := mapping.get(vis_start - 1)) is not None and glyph_sup[prev_idx]:
+            continue
+        rows = {glyph_row[idx] for idx in glyph_idxs}
+        if len(rows) != 1:
+            continue
+        # 所有数字字符必须严格满足上标几何，标点连接符（–、,、-）也须处于上标或同行小字。
+        if not all(glyph_sup[idx] for ch, idx in zip(nums_vis, glyph_idxs, strict=True) if ch.isdigit()):
+            continue
+        replacements.append((lo, hi, f"<sup>{nums}</sup>"))
+    if not replacements:
+        return parser_text
+    out = parser_text
+    for lo, hi, rep in reversed(replacements):
+        out = out[:lo] + rep + out[hi:]
+    return out
 
 
 def _restore_tags(original: str, replacement: str) -> str:

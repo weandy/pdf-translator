@@ -90,7 +90,25 @@ class TranslateReport(BaseModel):
     attempts: dict[str, int] = Field(default_factory=dict)
 
 
-def _target_problems(source: str, target: str) -> list[str]:
+_PROTOCOL_TAG = re.compile(r"</?translations\b[^>]*>", re.I)
+_MALFORMED_FORMULA_TAG = re.compile(r"</m\d+\s*>|<m\d+(?:\s[^<>]*?)?(?<!/)>", re.I)
+_HIGH_FORMULA_THRESHOLD = 4
+
+
+def _protocol_tag_problems(source: str, target: str) -> list[str]:
+    problems: list[str] = []
+    if any(m[0] not in source for m in _PROTOCOL_TAG.finditer(target)):
+        problems.append("译文包含协议标签（如 </translations>），请移除后重新输出")
+    bad_formulas = [m[0] for m in _MALFORMED_FORMULA_TAG.finditer(target) if m[0] not in source]
+    if bad_formulas:
+        sample = "、".join(dict.fromkeys(bad_formulas))
+        problems.append(f"公式标签格式错误（{sample}），请使用自闭合占位符如 <m1/>")
+    return problems
+
+
+def _target_problems(source: str, target: str, *, translated_terms: dict[str, str] | None = None) -> list[str]:
+    if problems := _protocol_tag_problems(source, target):
+        return problems
     if problems := placeholder_problems(source, target):
         return ["公式占位符不一致：" + "；".join(problems)]
     errors: list[str] = []
@@ -104,7 +122,7 @@ def _target_problems(source: str, target: str) -> list[str]:
     if structure := errors or rich_text_problems(target):
         return structure
     anchors = citation_problems(source, target) + script_value_problems(source, target)
-    return anchors or prose_problems(source, target)
+    return anchors or prose_problems(source, target, translated_terms=translated_terms)
 
 
 _BLOCK_PAGE = re.compile(r"p([0-9]{1,12})-b[0-9]+")
@@ -217,6 +235,23 @@ class _Unit(BaseModel):
         )
 
 
+def _is_high_formula(unit: _Unit) -> bool:
+    return len(unit.formulas) >= _HIGH_FORMULA_THRESHOLD
+
+
+def _split_high_formula_batches(batches: list[list[_Unit]]) -> list[list[_Unit]]:
+    """将普通段与高公式密度段拆开，避免少量公式段拖累整批开启思考。"""
+    result: list[list[_Unit]] = []
+    for batch in batches:
+        high = [u for u in batch if _is_high_formula(u)]
+        if not high or len(high) == len(batch):
+            result.append(batch)
+            continue
+        result.append([u for u in batch if not _is_high_formula(u)])
+        result.append(high)
+    return result
+
+
 async def translate(
     segments: Sequence[Segment],
     *,
@@ -274,7 +309,12 @@ async def translate(
             prev_context=prev_context,
             user_terms=user_hits,
         )
-        if o.use_cache and (hit := cache.get(key)) and not _target_problems(seg.source, hit):
+        active_terms = ctx.terms | user_hits if user_hits else ctx.terms
+        if (
+            o.use_cache
+            and (hit := cache.get(key))
+            and not _target_problems(seg.source, hit, translated_terms=active_terms)
+        ):
             seg.target, seg.status = normalize_cjk_spacing(hit), SegmentStatus.DONE
             report.cached += 1
             continue
@@ -354,8 +394,15 @@ async def translate(
                     report.attempts[out[i].id] += 1
             report.requests += 1
             log.debug("翻译请求段数=%d，估算输入 token=%d", len(batch), system_tokens + estimate_tokens(user))
+            call_opts = (
+                opts_.model_copy(update={"thinking": "low"})
+                if opts_.thinking == "off" and any(_is_high_formula(u) for u in batch)
+                else opts_
+            )
             try:
-                result = await asyncio.wait_for(chat.complete(system, user, opts_), min(o.request_timeout_s, remaining))
+                result = await asyncio.wait_for(
+                    chat.complete(system, user, call_opts), min(o.request_timeout_s, remaining)
+                )
             except TimeoutError:
                 if deadline is not None and remaining <= o.request_timeout_s:
                     # 事件循环的计时器可能略早于单调时钟触发，不再用几毫秒余量另起一轮。
@@ -387,7 +434,8 @@ async def translate(
         retry = []
         for n, u in enumerate(batch, start=1):
             target = got.get(n, "")
-            errors = _target_problems(u.source, target) if target else []
+            active_terms = ctx.terms | u.user_terms if u.user_terms else ctx.terms
+            errors = _target_problems(u.source, target, translated_terms=active_terms) if target else []
             if target and not errors:
                 target = normalize_cjk_spacing(target)
                 if o.use_cache and not result.compatibility_fallback:
@@ -429,6 +477,8 @@ async def translate(
     batches = make_batches(
         pending, sizes, o.batch_tokens, sections=[u.section for u in pending], roles=[u.role for u in pending]
     )
+    if chat_opts.thinking == "off":
+        batches = _split_high_formula_batches(batches)
     failed = await run_all(batches, chat_opts)
     retry_deadline = loop.time() + o.retry_timeout_s
     for attempt in range(2, o.max_attempts + 1):

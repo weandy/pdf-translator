@@ -54,8 +54,8 @@ def test_citation_anchor_rejects_renumbering_loss_or_addition(source, target):
         ("See [1–32].", "见［1—32］。"),
         ("See Refs. [1000–1002].", "参考文献［1000，1001，1002］。"),
         ("We use ResNet [12].", "我们使用ResNet [12]。"),
-        ("A[12] and [12] appear.", "存在两项，也可单独引用。"),
-        ("Range [0, 2] and [2, 5].", "范围改写，见[5]。"),
+        ("A[12] and [12] appear.", "A[12]与[12]均出现。"),
+        ("Range [0, 2] and [2, 5].", "范围[0, 2]改写，见[2, 5]。"),
         ("See https://example.test/[12] and www.example.test/[14].", "请访问网页。"),
         ("See [12](https://example.test) and [13] (http://example.test).", "见两个链接。"),
         ("See <m1/> and [2<m2/>3].", "请参阅<m1/>和<m2/>。"),
@@ -64,7 +64,7 @@ def test_citation_anchor_rejects_renumbering_loss_or_addition(source, target):
         ("See [-2] and [2.5] and [7–5].", "对应数值。"),
         ("See [" + " " * 59 + "1].", "见[1]。"),
         ("See [" + " " * 60 + "1].", "见相关条目。"),
-        ("See [2].", "见[2]，区间［3］，范围［4］，向量［5］，矩阵［6］。"),
+        ("See [2].", "见[2]，区间［1, 3］，范围［1, 4］，向量［1, 5］，矩阵［1, 6］。"),
         ("See [2].", "见[2]及网址https://example.test/[3]"),
         ("See [2].", "见[2]和混合括号［3]。"),
     ],
@@ -430,7 +430,7 @@ def test_cache_key_is_deterministic_and_covers_semantic_inputs():
     seg = _segment(1, "A paragraph.")
     version = cache_key(seg, "m", {"b": "乙", "a": "甲"}, "default", reference_terms={"y": "乙", "x": "甲"})
     assert version == cache_key(seg, "m", {"a": "甲", "b": "乙"}, "default", reference_terms={"x": "甲", "y": "乙"})
-    assert VALIDATION_VERSION == 2
+    assert VALIDATION_VERSION == 3
     default = cache_key(seg, "m", {}, "default")
     keys = [
         default,

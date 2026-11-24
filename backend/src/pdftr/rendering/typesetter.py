@@ -351,6 +351,59 @@ class Typesetter:
                 lines[-2:] = [Line(left, previous_glue), Line(right, glue, last=True)]
                 return
 
+    def _line_metrics(self, lines: list[Line], size: float, line_height: float) -> tuple[list[float], float]:
+        baselines: list[float] = []
+        y = 0.0
+        for line in lines:
+            img = max((t.height for t in line.tokens if t.kind == "image"), default=0.0)
+            pitch = max(size * line_height, img + size * (line_height - 1))
+            ascent = size * 0.88 + (pitch - size * line_height) + (line_height - 1) * size / 2
+            baselines.append(y + ascent)
+            y += pitch
+        return baselines, y
+
+    @staticmethod
+    def _is_orphan_cjk_line(line: Line, size: float) -> bool:
+        han = sum(bool(_HAN.fullmatch(token.char)) for token in line.tokens)
+        return 1 <= han <= 2 and not any(
+            token.kind == "image" or not token.track_links or (token.kind == "word" and token.width > 2 * size)
+            for token in line.tokens
+        )
+
+    def _balance_caption(
+        self,
+        lines: list[Line],
+        tokens: list[Token],
+        width: float,
+        size: float,
+        line_height: float,
+        indent: float,
+    ) -> list[Line]:
+        """图注末行仅剩 1-2 个汉字孤字时，先尝试末两行挪字，再温和微调断行宽度，绝不增加行数或导致溢出。"""
+        if len(lines) < 2 or not self._is_orphan_cjk_line(lines[-1], size):
+            return lines
+        self._balance_heading(lines, width, size, indent)
+        if not self._is_orphan_cjk_line(lines[-1], size):
+            return lines
+        _, base_height = self._line_metrics(lines, size, line_height)
+        for factor in (0.96, 0.93, 0.90):
+            cand = self.break_lines(tokens, width * factor, size, indent)
+            if len(cand) != len(lines) or self._is_orphan_cjk_line(cand[-1], size):
+                continue
+            _, cand_height = self._line_metrics(cand, size, line_height)
+            if cand_height > base_height + 0.01:
+                continue
+            max_line_w = max(
+                (
+                    (indent if idx == 0 else 0.0) + sum(line.glue) + sum(t.width for t in line.tokens)
+                    for idx, line in enumerate(cand)
+                ),
+                default=0.0,
+            )
+            if max_line_w <= width + 0.01:
+                return cand
+        return lines
+
     # ---- 排版与绘制 ----
     def layout(
         self,
@@ -361,19 +414,16 @@ class Typesetter:
         indent: bool,
         *,
         balance_heading: bool = False,
+        balance_caption: bool = False,
     ) -> tuple[list[Line], list[float], float]:
         """返回（行，各行基线位置，总高度）。行高取 line_height 倍字号与本行最高的公式图中较大者。"""
-        lines = self.break_lines(tokens, width, size, 2 * size if indent else 0.0)
+        lead_indent = 2 * size if indent else 0.0
+        lines = self.break_lines(tokens, width, size, lead_indent)
         if balance_heading:
-            self._balance_heading(lines, width, size, 2 * size if indent else 0.0)
-        baselines: list[float] = []
-        y = 0.0
-        for line in lines:
-            img = max((t.height for t in line.tokens if t.kind == "image"), default=0.0)
-            pitch = max(size * line_height, img + size * (line_height - 1))
-            ascent = size * 0.88 + (pitch - size * line_height) + (line_height - 1) * size / 2
-            baselines.append(y + ascent)
-            y += pitch
+            self._balance_heading(lines, width, size, lead_indent)
+        elif balance_caption:
+            lines = self._balance_caption(lines, tokens, width, size, line_height, lead_indent)
+        baselines, y = self._line_metrics(lines, size, line_height)
         return lines, baselines, y
 
     def draw(

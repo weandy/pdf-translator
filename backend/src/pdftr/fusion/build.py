@@ -41,6 +41,7 @@ from pdftr.fusion.text_fix import (
     is_broken,
     main_metrics,
     recover_dropped_chars,
+    restore_citation_superscripts,
     script_glyph,
     strip_fake_scripts,
     text_of,
@@ -50,9 +51,21 @@ ORPHAN_MIN_LETTERS = 6
 LABEL_GAP = 1.5  # 同一行里相距超过 1.5 个字高的文字（如横排的图例）拆成不同标签
 _LABEL_WORD = re.compile(r"[A-Za-z]{3,}")  # 至少有一个 3 个字母以上的词才翻译；纯数字、L1 这类编号保留原样
 _CHAIN_BARRIERS = {BlockType.TITLE, BlockType.FOOTNOTE, BlockType.REFERENCE}
+_COLUMN_TOP_BLOCKERS = {BlockType.TEXT, BlockType.TITLE, BlockType.FOOTNOTE, BlockType.REFERENCE}
 _SENTENCE_END = re.compile(r"""[.?!:;。？！：；](?:\s*['"’”»）)\]}])*$""")
 _CONTINUATION_START = re.compile(r"^[a-z,;:)\]，、；：）]")
-_UNFINISHED = re.compile(r"\b(?:a|an|the|to|of|for|in|on|at|by|with|without|from|under|and|or|as|that|which)$", re.I)
+_UNFINISHED = re.compile(
+    r"\b(?:a|an|the|to|of|for|in|on|at|by|with|without|from|under|into|via|between|than|and|or|as|that|which|whose|its|their|our)$",
+    re.I,
+)
+_STANDALONE_HEAD = re.compile(
+    r"^(?:(?:abstract|key\s*words?|index\s+terms|background|objectives?|purpose|aims?|methods?|methodology|"
+    r"results?|findings?|conclusions?|significance|summary|proof|remark|note|theorem|lemma|corollary|proposition|"
+    r"definition|example|assumption)\b(?:\s+\d+)?\s*[.:：—–\-]|"
+    r"(?:fig(?:ure)?|table|algorithm|scheme)\s+\d+(?:\.\d+)*\s*[:.]\s+\S|"
+    r"[•·▪◦‣]|\(\d+\)\s|\d+[.)]\s)",
+    re.I,
+)
 _ACRONYM_TAIL = re.compile(
     r"(?!(?:FIG(?:URE)?|TABLE|ALGORITHM|SCHEME|EQ|SEC(?:TION)?|CHAPTER|APPENDIX)\b)"
     r"[A-Z]{2,}(?:\s+[a-z]+(?:[-'][a-z]+)*){1,3}\."
@@ -161,6 +174,7 @@ def fuse(
             inserted += len(pieces) - 1
         if kept_on_background:
             orphans = [c for c in orphans if id(c) not in kept_on_background]
+        _reorder_displaced_titles(blocks)
         protected_captions = _protect_layout_scope(blocks)
         start = max((b.order for b in blocks), default=-1) + 1
         if cp.kind is PageKind.NATIVE:
@@ -191,6 +205,50 @@ def fuse(
     return doc, report
 
 
+def _is_short_title(block: Block) -> bool:
+    if block.type is not BlockType.TITLE or not block.translatable:
+        return False
+    if len({s.line for s in block.spans}) > 2:
+        return False
+    plain = RICH_TAG.sub("", _plain(block)).strip()
+    return 0 < len(plain) <= 120 and len(plain.split()) <= 15
+
+
+def _reorder_displaced_titles(blocks: list[Block]) -> None:
+    """轻量同栏几何纠序：短 TITLE 位于同栏 TEXT 正上方但在阅读序中排在其后时，前移至紧邻其下方的 TEXT 之前。"""
+    if len(blocks) < 2:
+        return
+    orders = sorted(b.order for b in blocks)
+    moved = False
+    for title in [b for b in blocks if _is_short_title(b)]:
+        idx = blocks.index(title)
+        tbox = title.bbox
+        below: list[tuple[int, Block]] = []
+        for j in range(idx):
+            cand = blocks[j]
+            if cand.type is not BlockType.TEXT:
+                continue
+            cbox = cand.bbox
+            min_w = min(tbox.width, cbox.width)
+            if min_w <= 0:
+                continue
+            h_ov = min(tbox.x1, cbox.x1) - max(tbox.x0, cbox.x0)
+            if h_ov >= 0.5 * min_w and cbox.y0 >= tbox.y1 - 5.0 and cbox.center[1] > tbox.center[1]:
+                below.append((j, cand))
+        if not below:
+            continue
+        top_below = min((cand for _, cand in below), key=lambda b: b.bbox.y0)
+        if not -5.0 <= top_below.bbox.y0 - tbox.y1 <= 30.0:
+            continue
+        target = min(j for j, _ in below)
+        blocks.pop(idx)
+        blocks.insert(target, title)
+        moved = True
+    if moved:
+        for block, order in zip(blocks, orders, strict=True):
+            block.order = order
+
+
 def _column(block: Block, page: Page) -> int:
     mid = page.width / 2
     if block.bbox.x0 >= mid - block.style.font_size:
@@ -209,11 +267,53 @@ def _indented(block: Block, peers: Sequence[Block]) -> bool:
     return first - margin > 0.8 * block.style.font_size
 
 
+def _is_column_top(nxt: Block, page: Page) -> bool:
+    """页顶或在当前栏内上方无更早正文/标题/脚注/参考文献块（上方仅有浮动图表/图注/页眉）时，视作栏顶首块。"""
+    if nxt.bbox.y0 <= _TOP_FRACTION * page.height:
+        return True
+    for other in page.blocks:
+        if other.id == nxt.id or other.type not in _COLUMN_TOP_BLOCKERS:
+            continue
+        if (
+            other.bbox.x0 < nxt.bbox.x1
+            and nxt.bbox.x0 < other.bbox.x1
+            and (other.bbox.y1 <= nxt.bbox.y0 + 2.0 or other.bbox.center[1] < nxt.bbox.y0)
+        ):
+            return False
+    return True
+
+
+def _strong_unfinished(tail_plain: str) -> bool:
+    return bool(
+        _UNFINISHED.search(tail_plain)
+        or tail_plain.endswith(("-", "\u00ad", "_", "–", "—", ","))
+        or tail_plain.count("(") > tail_plain.count(")")
+        or tail_plain.count("[") > tail_plain.count("]")
+    )
+
+
+def _has_same_column_barrier(page: Page, prev: Block, nxt: Block) -> bool:
+    lo_x = min(prev.bbox.x0, nxt.bbox.x0)
+    hi_x = max(prev.bbox.x1, nxt.bbox.x1)
+    lo_y = prev.bbox.y1 - 2.0
+    hi_y = nxt.bbox.y0 + 2.0
+    for other in page.blocks:
+        if other.id in {prev.id, nxt.id}:
+            continue
+        if other.bbox.x0 < hi_x and other.bbox.x1 > lo_x and lo_y < other.bbox.center[1] < hi_y:
+            return True
+    return False
+
+
 def _supplement_continuations(pages: list[Page]) -> int:
-    """补上缺少占位块的续接，每个块最多一个后继，标题和脚注截断搜索。"""
+    """补上缺少占位块的续接（跨页、跨栏、绕图与同栏相邻块），每个块最多一个后继，标题和脚注截断搜索。"""
     blocks = {b.id: b for p in pages for b in p.blocks}
     used = {b.continues_from for b in blocks.values() if b.continues_from is not None}
-    text = {b.id: _plain(b) for b in blocks.values() if b.type is BlockType.TEXT and b.translatable and not b.orphan}
+    text = {
+        b.id: RICH_TAG.sub("", _plain(b)).strip()
+        for b in blocks.values()
+        if b.type is BlockType.TEXT and b.translatable and not b.orphan
+    }
     groups: dict[str, int] = {}
     page_of = {p.index: p for p in pages}
     formulas = {p.index: [b for b in p.blocks if b.type is BlockType.FORMULA and b.orphan] for p in pages}
@@ -235,7 +335,7 @@ def _supplement_continuations(pages: list[Page]) -> int:
         return (
             prev.id not in used
             and bool(text[prev.id])
-            and not (prev.list_item and PUBLICATION_DATE.match(RICH_TAG.sub("", text[prev.id])))
+            and not (prev.list_item and PUBLICATION_DATE.match(text[prev.id]))
             and not _SENTENCE_END.search(text[prev.id])
             and abs(prev.style.font_size - nxt.style.font_size) <= _MAX_SIZE_GAP
             and not (across and (prev_barrier or next_barrier))
@@ -262,13 +362,20 @@ def _supplement_continuations(pages: list[Page]) -> int:
         right = [b for b in body if _column(b, page) == 1]
         first_column = [b for b in body if _column(b, page) != 1]
         first = min(first_column, key=lambda b: b.bbox.y0, default=None)
-        first_peers = left if first is not None and _column(first, page) == 0 else first_column
+        if first is None and right:
+            first = min(right, key=lambda b: b.bbox.y0)
+            first_peers = right
+        else:
+            first_peers = left if first is not None and _column(first, page) == 0 else first_column
         right_top = min(right, key=lambda b: b.bbox.y0, default=None) if left else None
         for nxt, peers in ((first, first_peers), (right_top, right)):
             if (
-                nxt is None or nxt.list_item or nxt.continues_from
-                or nxt.bbox.y0 > _TOP_FRACTION * page.height or _indented(nxt, peers)
-            ):  # fmt: skip
+                nxt is None
+                or nxt.list_item
+                or nxt.continues_from
+                or not _is_column_top(nxt, page)
+                or _indented(nxt, peers)
+            ):
                 continue
             if nxt is first:
                 prev = previous if previous is not None and previous.page + 1 == page.index else None
@@ -278,12 +385,9 @@ def _supplement_continuations(pages: list[Page]) -> int:
                     prev = None
             tail = text[prev.id] if prev is not None else ""
             head = text[nxt.id]
-            unfinished = (
-                _UNFINISHED.search(tail) or tail.count("(") > tail.count(")") or tail.count("[") > tail.count("]")
-            )
             continuation = (
                 _CONTINUATION_START.match(head)
-                or (unfinished and len(head.split()) <= 6)
+                or (_strong_unfinished(tail) and not _STANDALONE_HEAD.match(head))
                 or _ACRONYM_TAIL.fullmatch(head)
             )
             if (
@@ -301,6 +405,45 @@ def _supplement_continuations(pages: list[Page]) -> int:
                 ]
                 if len(candidates) == 1 and link(candidates[0], nxt):
                     count += 1
+
+        # 同栏紧邻两 TEXT 块续接：无阻隔、间距正常、前块未收尾且后块无首行缩进、非列表项。
+        by_col: dict[int, list[Block]] = defaultdict(list)
+        for b in body:
+            by_col[_column(b, page)].append(b)
+        for col_blocks in by_col.values():
+            col_blocks.sort(key=lambda b: (b.bbox.y0, b.order))
+            for prev, nxt in pairwise(col_blocks):
+                if (
+                    prev.order >= nxt.order
+                    or nxt.list_item
+                    or nxt.continues_from is not None
+                    or groups[prev.id] != groups[nxt.id]
+                ):
+                    continue
+                min_w = min(prev.bbox.width, nxt.bbox.width)
+                h_ov = min(prev.bbox.x1, nxt.bbox.x1) - max(prev.bbox.x0, nxt.bbox.x0)
+                max_size = max(prev.style.font_size, nxt.style.font_size)
+                v_gap = nxt.bbox.y0 - prev.bbox.y1
+                if (
+                    min_w <= 0
+                    or h_ov < 0.3 * min_w
+                    or not -0.5 * max_size <= v_gap <= 2.5 * max_size
+                    or nxt.bbox.x0 - prev.bbox.x0 > 0.8 * prev.style.font_size
+                    or _indented(nxt, col_blocks)
+                    or _has_same_column_barrier(page, prev, nxt)
+                    or not eligible(prev, nxt)
+                ):
+                    continue
+                tail = text[prev.id]
+                head = text[nxt.id]
+                if _STANDALONE_HEAD.match(head):
+                    continue
+                same_col_cont = _strong_unfinished(tail) or (
+                    bool(_CONTINUATION_START.match(head)) and len(tail.split()) >= 3
+                )
+                if same_col_cont and link(prev, nxt):
+                    count += 1
+
         previous = body[-1] if body else None
     return count
 
@@ -454,6 +597,11 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], report: FusionRepor
             stripped = strip_fake_scripts(s.content, span_chars)
             recovered = recover_dropped_chars(stripped, pdf_text)
             text, replaced = choose(recovered, pdf_text)
+            if cp.kind is PageKind.NATIVE and span_chars:
+                restored_sup = restore_citation_superscripts(text, span_chars)
+                if restored_sup != text:
+                    text = restored_sup
+                    replaced = True
             report.text_replaced += replaced or recovered != stripped
             fragments = [(text, span_chars, False)]
             if _PUA_RUN.search(text):

@@ -17,10 +17,11 @@ from pydantic import BaseModel
 from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import Document
 
-VERSION = 2  # 提取规则变了就加一，让缓存的原文链接（links.v{VERSION}.json）重新提取
+VERSION = 3  # 提取规则变了就加一，让缓存的原文链接（links.v{VERSION}.json）重新提取
 _PLACEHOLDER = re.compile(r"<m\d+/>|</?(?:sup|sub|b|i)>")
+_COMPACT_TOKEN = re.compile(r"<m\d+/>|<(/?)(sup)>|</?(?:sub|b|i)>|\s+|[\s\S]")
 _SPACE = re.compile(r"\s+")
-_EDGE = " \t\n[]()（）【】,，;；:：."
+_EDGE = " \t\n[]()（）【】,，;；:：.–—-−∗*†‡\u200b\ufeff"
 _NUMBER = re.compile(r"\d+(?:[.\-–]\d+)*[a-z]?")
 _LABELS = "图表节式算法附录定理引理推论定义章例"  # 中文译文里图表、章节编号前面的字
 SKIP_DESTS = ("Hfootnote", "footnote", "page")  # 脚注、页码跳转：编号很短，译文里容易配错，不加
@@ -51,12 +52,60 @@ def compact(text: str) -> str:
     return _SPACE.sub("", _PLACEHOLDER.sub("", text))
 
 
+def _compact_with_sup(text: str) -> tuple[str, list[tuple[int, int]]]:
+    """返回紧凑文本以及各 <sup>...</sup> 映射到紧凑文本上的 [lo, hi) 区间列表。"""
+    out: list[str] = []
+    sup_ranges: list[tuple[int, int]] = []
+    depth = 0
+    sup_start: int | None = None
+    for match in _COMPACT_TOKEN.finditer(text):
+        token = match[0]
+        if match[2] == "sup":
+            if match[1]:
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and sup_start is not None:
+                        if len(out) > sup_start:
+                            sup_ranges.append((sup_start, len(out)))
+                        sup_start = None
+            else:
+                if depth == 0:
+                    sup_start = len(out)
+                depth += 1
+        elif (token.startswith("<") and token.endswith(">")) or token.isspace():
+            continue
+        else:
+            out.append(token)
+    if depth > 0 and sup_start is not None and len(out) > sup_start:
+        sup_ranges.append((sup_start, len(out)))
+    return "".join(out), sup_ranges
+
+
 _Box = tuple[float, float, float, float]
 _TextLine = tuple[_Box, list[tuple[_Box, str]]]
 
 
 def _overlaps(a: _Box, b: _Box) -> bool:
     return a[0] < b[2] and a[1] < b[3] and a[2] > b[0] and a[3] > b[1]
+
+
+def _char_overlap(area: _Box, box: _Box) -> tuple[bool, float, float]:
+    """扁框自适应垂直重叠：保护 1pt 高上标注释框，同时剔除正常高链接框擦到的邻行字符。"""
+    if not _overlaps(area, box):
+        return False, 0.0, 0.0
+    v_ov = min(area[3], box[3]) - max(area[1], box[1])
+    if v_ov <= 0:
+        return False, 0.0, 0.0
+    rect_h = area[3] - area[1]
+    char_h = box[3] - box[1]
+    if rect_h <= 0 or char_h <= 0:
+        return True, 1.0, v_ov
+    min_h = min(char_h, rect_h)
+    if v_ov < 0.35 * min_h:
+        return False, 0.0, 0.0
+    if rect_h >= 0.5 * char_h and v_ov < 0.35 * char_h:
+        return False, 0.0, 0.0
+    return True, v_ov / min_h, v_ov
 
 
 def _overlap_area(a: pymupdf.Rect, b: Rect) -> float:
@@ -86,14 +135,67 @@ def _text_lines(textpage: pymupdf.TextPage) -> list[_TextLine]:
 
 
 def _link_anchor(lines: list[_TextLine], rect: pymupdf.Rect) -> str:
-    """与 get_textbox 一致：字符框严格相交即选中，命中的原始行之间补换行。"""
+    """按自适应垂直重叠选字，并在单行链接框跨视觉行擦边时只保留重叠率最高的主视觉行。"""
     area = (rect.x0, rect.y0, rect.x1, rect.y1)
-    selected = (
-        "".join(text for box, text in chars if _overlaps(area, box))
-        for bounds, chars in lines
-        if _overlaps(area, bounds)
-    )
-    return "\n".join(text for text in selected if text).strip()
+    rect_h = area[3] - area[1]
+    rows: list[tuple[str, float, float, float, float]] = []  # (text, y0, y1, avg_ratio, max_v_ov)
+    for bounds, chars in lines:
+        if not _overlaps(area, bounds):
+            continue
+        hits: list[tuple[_Box, str, float, float]] = []
+        for box, ch in chars:
+            ok, ratio, v_ov = _char_overlap(area, box)
+            if ok:
+                hits.append((box, ch, ratio, v_ov))
+        if not hits:
+            continue
+        text = "".join(ch for _, ch, _, _ in hits)
+        if not text:
+            continue
+        visible = [h for h in hits if not h[1].isspace()] or hits
+        y0 = min(b[1] for b, _, _, _ in visible)
+        y1 = max(b[3] for b, _, _, _ in visible)
+        avg_ratio = sum(r for _, _, r, _ in visible) / len(visible)
+        max_v_ov = max(v for _, _, _, v in visible)
+        rows.append((text, y0, y1, avg_ratio, max_v_ov))
+    if not rows:
+        return ""
+    if len(rows) == 1:
+        return rows[0][0].strip()
+
+    # 将垂直中心接近的原始行（如同视觉行里的正文与上标）归为同一视觉行组。
+    groups: list[list[tuple[str, float, float, float, float]]] = []
+    for row in rows:
+        _, y0, y1, _, _ = row
+        cy, h = (y0 + y1) / 2, max(y1 - y0, 1e-6)
+        for group in groups:
+            gy0 = min(item[1] for item in group)
+            gy1 = max(item[2] for item in group)
+            gcy, gh = (gy0 + gy1) / 2, max(gy1 - gy0, 1e-6)
+            if abs(cy - gcy) < 0.6 * max(h, gh):
+                group.append(row)
+                break
+        else:
+            groups.append([row])
+
+    if len(groups) == 1:
+        return "\n".join(item[0] for item in groups[0]).strip()
+
+    stats = [
+        (
+            sum(item[3] for item in group) / len(group),
+            max(item[4] for item in group),
+            max(item[2] for item in group) - min(item[1] for item in group),
+            group,
+        )
+        for group in groups
+    ]
+    best_ratio, _, best_h, best_group = max(stats, key=lambda s: (s[0], s[1]))
+    if rect_h <= 1.6 * max(best_h, 1e-6):
+        chosen = [best_group]
+    else:
+        chosen = [group for ratio, _, _, group in stats if ratio >= 0.6 * best_ratio]
+    return "\n".join(item[0] for group in chosen for item in group).strip()
 
 
 def extract_links(pdf: Path, doc: Document, translated: Iterable[str]) -> list[PdfLink]:
@@ -162,7 +264,13 @@ def _in_brackets(text: str, pos: int) -> bool:
     return False
 
 
-def _candidates(link: PdfLink, text: str) -> tuple[str, list[int]]:
+def _in_sup(sup_ranges: Sequence[tuple[int, int]], pos: int, length: int) -> bool:
+    """pos..pos+length 是否完整落在某个 <sup>...</sup> 上标区间内。"""
+    end = pos + length
+    return any(lo <= pos and end <= hi for lo, hi in sup_ranges)
+
+
+def _candidates(link: PdfLink, text: str, sup_ranges: Sequence[tuple[int, int]] = ()) -> tuple[str, list[int]]:
     """（要加链接的文字, 它在 text 里可能的位置）。"""
     if link.uri:  # 先找完整网址（链接文字可能被换行截断、带着脚注编号或句末标点），再找去掉协议的网址、链接文字
         for core in (link.uri, re.sub(r"^(?:https?://|mailto:)", "", link.uri), compact(link.anchor).rstrip(".,;)）")):
@@ -176,10 +284,15 @@ def _candidates(link: PdfLink, text: str) -> tuple[str, list[int]]:
         core = core[:-1]
     if _NUMBER.fullmatch(core):
         spots = _numbers(text, core)
-        if link.kind == "cite":  # 引用编号、年份只在括号里找，不配到正文里的数字
-            return core, [p for p in spots if _in_brackets(text, p)]
+        if link.kind == "cite":  # 引用编号、年份只在括号或上标里找，不配到正文里的数字
+            return core, [p for p in spots if _in_brackets(text, p) or _in_sup(sup_ranges, p, len(core))]
         labelled = [p for p in spots if any(c in _LABELS for c in text[max(p - 3, 0) : p])]
         return core, labelled or spots
+    if link.kind == "cite" and (sup_tail := re.fullmatch(r"[A-Za-z](\d{1,3})", core)):
+        # APS/REVTeX 等 1pt 扁平上标链接框常擦到前一个词尾字母（如 s37、O2），仅在上标区间内回退匹配数字。
+        num = sup_tail[1]
+        if sup_spots := [p for p in _numbers(text, num) if _in_sup(sup_ranges, p, len(num))]:
+            return num, sup_spots
     spots = _occurrences(text, core)
     if not spots and link.kind == "cite":  # 作者-年份引用：“et al.”可能被译成“等”，退而找姓氏
         surname = re.match(r"[A-Za-z][A-Za-z'\-]{2,}", core)
@@ -199,10 +312,11 @@ def locate(
     out = [link.model_copy() for link in links]
     used: dict[str, set[tuple[int, int]]] = {}
     last: dict[str, int] = {}
+    prepared = {bid: _compact_with_sup(raw) for bid, raw in pieces.items()}
 
     def take(link: PdfLink, block_id: str) -> bool:
-        text = compact(pieces.get(block_id, ""))
-        needle, spots = _candidates(link, text)
+        text, sup_ranges = prepared.get(block_id, ("", []))
+        needle, spots = _candidates(link, text, sup_ranges)
         if not spots and link.whole and block_id == link.block_id and text:  # 整块链接（如译成中文的按钮）
             needle, spots = text, [0]
         taken = used.setdefault(block_id, set())

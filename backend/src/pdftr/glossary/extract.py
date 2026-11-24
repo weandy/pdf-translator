@@ -24,6 +24,7 @@ _GATE_VALUE = re.compile(r"(启用|停用)(?:\s*(?:\([^（）()\r\n]*\)|（[^（
 _MAX_CANDIDATES = 60
 _MAX_CANDIDATE_CHARS = 1200
 _MAX_TERM_LENGTH = 80
+_MAX_EXTRACTED_TERMS = 45
 _STOP_WORDS = frozenset({
     "about", "above", "across", "after", "again", "against", "all", "also", "am", "among", "an", "and", "any",
     "are", "around", "as", "at", "be", "been", "before", "behind", "being", "below", "between", "both",
@@ -42,6 +43,14 @@ _STOP_WORDS = frozenset({
     "section", "sections", "figure", "figures", "fig", "table", "tables", "method", "methods", "result",
     "results", "proposed", "based", "using", "use", "uses", "used", "shown", "shows", "show", "however",
     "therefore", "thus", "example", "examples", "respectively", "moreover", "furthermore", "additionally",
+    "work", "works", "approach", "approaches", "different", "large", "small", "high", "low", "term", "terms",
+    "element", "elements", "description", "descriptions",
+})  # fmt: skip
+# 高频通用学术单词：不当作孤立单词候选（避免淹没配额），但仍允许参与构成多词专业术语（如 residual network）。
+_GENERIC_UNIGRAM_WORDS = frozenset({
+    "model", "models", "network", "networks", "net", "nets", "layer", "layers", "deep", "deeper", "depth",
+    "training", "learning", "function", "functions", "problem", "problems", "error", "errors", "accuracy",
+    "complexity", "plain", "optimize", "optimization", "performance", "communication", "dataset", "datasets",
 })  # fmt: skip
 
 PROMPT = """阅读下面的论文信息，按顺序输出：
@@ -55,6 +64,10 @@ PROMPT = """阅读下面的论文信息，按顺序输出：
      不收章节名和与本文领域无关的普通词汇。
    - 按术语在摘要或正文中的写法输出，避免沿用标题的大写格式。
    - 模型、架构（如 Transformer、BERT、ResNet）及应保留原文的方法和数据集名，输出「英文=英文」。
+   - Linux/系统领域中的 root、sudo、系统调用与命令行标识符在中文里保留英文原名
+     （如 root privileges=root 权限、root user=root 用户），不要直译为「根权限」「根用户」。
+   - 常规临床/医学名词（如 Blood Pressure、Uterine contractions）应译为规范中文而非保留英文。
+   - 严禁输出不伦不类的半中半英目标译法（如 Text信息片段）。
    - 使用中文学界通行译法。
 不要输出其他内容。
 
@@ -97,7 +110,7 @@ def frequent_candidates(texts: Sequence[str]) -> tuple[str, ...]:
     ranked.sort(key=lambda item: -item[1])
 
     # 先为末章的低频技术词扣除预算，最终展示仍按全文频次排序。
-    quotas = {"word": 20, "technical": 10, "phrase": 25, "rare": 5}
+    quotas = {"word": 8, "technical": 15, "phrase": 32, "rare": 5}
     remaining = _MAX_CANDIDATE_CHARS + 1  # 第一条之前没有顿号。
     selected: set[str] = set()
     for written, _, group in sorted(ranked, key=lambda item: item[2] != "rare"):
@@ -130,6 +143,8 @@ def _candidate_group(keys: tuple[str, ...], written: str, count: int) -> str | N
         if count >= 2:
             return "technical"
         return "rare" if strong else None
+    if written.lower() in _GENERIC_UNIGRAM_WORDS or key.removeprefix("word:") in _GENERIC_UNIGRAM_WORDS:
+        return None
     return "word" if count >= 5 else None
 
 
@@ -153,7 +168,7 @@ def parse(text: str, *, truncated: bool = False) -> Extraction:
             use_library = value is not None and value.group(1) == "启用"
         elif "=" in line:
             k, v = (p.strip() for p in line.split("=", 1))
-            if k and v and len(k) <= _MAX_TERM_LENGTH:
+            if k and v and len(k) <= _MAX_TERM_LENGTH and (k in terms or len(terms) < _MAX_EXTRACTED_TERMS):
                 terms[k] = v
     return Extraction(domain=domain, terms=terms, use_library=use_library)
 

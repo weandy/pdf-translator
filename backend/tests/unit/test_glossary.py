@@ -160,10 +160,10 @@ def test_frequent_candidates_clean_and_merge_without_bridging_boundaries():
 
 
 def test_frequent_candidates_cap_ordinary_words_and_phrases():
-    words = [f"cell{chr(97 + i // 26)}{chr(97 + i % 26)}" for i in range(30)]
+    words = [f"cell{chr(97 + i // 26)}{chr(97 + i % 26)}" for i in range(35)]
     candidates = frequent_candidates([f"shell {word}" for i, word in enumerate(words) for _ in range(i + 5)])
-    assert len(candidates) == len(set(candidates)) == 45
-    assert "cellbd" in candidates and "shell cellbd" in candidates
+    assert len(candidates) == len(set(candidates)) == 40
+    assert "cellbi" in candidates and "shell cellbi" in candidates
     assert "cellaa" not in candidates and "shell cellaa" not in candidates
 
 

@@ -17,6 +17,7 @@ from pdftr.fusion.text_fix import main_metrics
 
 _MARKER = re.compile(r"\([0-9]{1,6}\)|[0-9]{1,6}[.)]|[a-z][.)]|[•·▪◦‣]")
 _PAGE_NUMBER = re.compile(r"[0-9]{1,6}")
+_KEYWORDS_LINE = re.compile(r"^(?:key\s*words?|index\s+terms)\s*[.:：—–\-]", re.I)
 _TRACK_TOL = 2.0
 
 
@@ -196,7 +197,8 @@ def split_layout(
     dates = [i for i, text in enumerate(texts) if PUBLICATION_DATE.match(text)] if not titles else []
     if block.bbox.width >= page_width * 0.45 or len(dates) < 2:
         dates = []
-    if (titles and len(texts) == 1) or (not titles and not dates and not marks):
+    keywords = [i for i, text in enumerate(texts[1:], start=1) if _KEYWORDS_LINE.match(text)] if not titles else []
+    if (titles and len(texts) == 1) or (not titles and not dates and not keywords and not marks):
         return [(block, chars, False)], set()
 
     rows: list[list[Char]] = [[] for _ in block.lines]
@@ -206,9 +208,9 @@ def split_layout(
         rows[i].append(char)
     levels = _heading_cuts(block, texts, rows) if titles else {}
     hanging = _hanging_marks(block, rows, marks) if not titles and not dates else {}
-    if not (levels or dates or hanging):
+    if not (levels or dates or keywords or hanging):
         return [(block, chars, False)], set()
-    boundaries = sorted({0, *levels, *dates, *hanging, len(block.lines)})
+    boundaries = sorted({0, *levels, *dates, *keywords, *hanging, len(block.lines)})
     pieces: list[tuple[LayoutBlock, list[Char], bool]] = []
     for start, end in pairwise(boundaries):
         lines = block.lines[start:end]

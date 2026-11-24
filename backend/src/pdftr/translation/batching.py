@@ -5,14 +5,14 @@ S7：约 1500 token 一批，比逐段请求或小批次省约 64% 输入；“�
 
 import re
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from difflib import SequenceMatcher
 
 from pdftr.domain.ir import BlockType
 from pdftr.domain.text import RICH_TAG
 
 BATCH_TOKENS = 1500
-VALIDATION_VERSION = 2
+VALIDATION_VERSION = 3
 _PLACEHOLDER = re.compile(r"<m\d+/>")
 _RICH_TAG = re.compile(r"<(/?)(b|i|sup|sub)>")
 
@@ -24,11 +24,31 @@ _MIXED_SPACE = re.compile(
     rf"({_HAN.pattern}{_FORMAT_TAGS})[ \t\u00a0](?={_FORMAT_TAGS}{_WESTERN})"
     rf"|({_WESTERN}{_FORMAT_TAGS})[ \t\u00a0](?={_FORMAT_TAGS}{_HAN.pattern})"
 )
+_LEADING_LABEL = re.compile(
+    rf"^([ \t\u00a0]*{_FORMAT_TAGS}"
+    rf"(?:(?:图|表|公式|算法|定理|引理|命题|推论|定义|注){_FORMAT_TAGS}[ \t\u00a0]*{_FORMAT_TAGS}[A-Z]?\.?\d+(?:\.\d+)*"
+    rf"|[1-9]\d?(?:\.\d+)*"
+    rf"|[A-Z](?:\.\d+)+"
+    rf"|[A-Z](?={_FORMAT_TAGS}[ \t\u00a0]+{_FORMAT_TAGS}附录))"
+    rf"{_FORMAT_TAGS})([ \t\u00a0])(?={_FORMAT_TAGS}{_HAN.pattern})"
+)
+
+
+def _strip_mixed_space(text: str) -> str:
+    return _MIXED_SPACE.sub(lambda match: match.group(1) or match.group(2), text)
 
 
 def normalize_cjk_spacing(text: str) -> str:
-    """移除汉字与西文、数字、公式间的单个横向空格，保留富文本标签。"""
-    return _MIXED_SPACE.sub(lambda match: match.group(1) or match.group(2), text)
+    """移除汉字与西文、数字、公式间的单个横向空格，保留富文本标签与行首章节/图表编号分隔空格。"""
+    if not text:
+        return text
+    out: list[str] = []
+    for line in text.splitlines(keepends=True):
+        if m := _LEADING_LABEL.match(line):
+            out.append(f"{_strip_mixed_space(m.group(1))}{m.group(2)}{_strip_mixed_space(line[m.end() :])}")
+        else:
+            out.append(_strip_mixed_space(line))
+    return "".join(out)
 
 
 def estimate_tokens(text: str) -> int:
@@ -75,6 +95,8 @@ class NumberedResponseError(ValueError):
 
 _NUMBERED = re.compile(r"^(\d+)\s*[|｜]\s*(.*)$")
 _PIPE_CONTINUATION = re.compile(r"^\d+\s+[|｜]\s+")
+_START_TRANSLATIONS = re.compile(r"^<translations\s*>\s*", re.I)
+_END_TRANSLATIONS = re.compile(r"</translations\s*>", re.I)
 
 
 def parse_numbered(text: str, *, batch_size: int | None = None, sources: Sequence[str] | None = None) -> dict[int, str]:
@@ -82,10 +104,14 @@ def parse_numbered(text: str, *, batch_size: int | None = None, sources: Sequenc
     out: dict[int, str] = {}
     last: int | None = None
     for raw in text.splitlines():
-        line = raw.strip()
-        if line == "</translations>":
-            break
+        line = _START_TRANSLATIONS.sub("", raw.strip())
+        end_match = _END_TRANSLATIONS.search(line)
+        stop = end_match is not None
+        if end_match is not None:
+            line = line[: end_match.start()].strip()
         if not line or line.startswith("```"):
+            if stop:
+                break
             continue
         match = _NUMBERED.match(line)
         if match:
@@ -111,11 +137,15 @@ def parse_numbered(text: str, *, batch_size: int | None = None, sources: Sequenc
                     raise NumberedResponseError(f"编号 {number} 乱序")
                 last = number
                 out[last] = match[2].strip()
+                if stop:
+                    break
                 continue
         if last is not None:
             previous = out[last]
             space = " " if re.search(r"[A-Za-z0-9]$", previous) and re.match(r"[A-Za-z0-9]", line) else ""
             out[last] = f"{previous}{space}{line}"
+        if stop:
+            break
     return out
 
 
@@ -236,6 +266,23 @@ _URL = r"(?i:https?://|www\.)\S+"
 _CITATION_BOUNDARY = re.compile(rf"{_URL}|{_PLACEHOLDER.pattern}")
 _SOURCE_BRACKETS = re.compile(r"\[([0-9０-９\s,;\-–—]{1,60})\]")
 _TARGET_BRACKETS = re.compile(r"\[([0-9０-９\s,;，、；\-–—]{1,60})\]|［([0-9０-９\s,;，、；\-–—]{1,60})］")
+_LOCATOR_EN = (
+    r"(?:Prop(?:osition)?|Thm|Theorem|Lem(?:ma)?|Cor(?:ollary)?|Def(?:inition)?|"
+    r"Eq(?:uation)?s?|Sec(?:tion)?s?|Chap(?:ter)?s?|Ch|App(?:endix)?|Fig(?:ure)?s?|"
+    r"Tab(?:le)?s?|Alg(?:orithm)?|Rem(?:ark)?|Ex(?:ample)?|Fact|Claim|Assumption|"
+    r"Condition|Property|Problem|Part|Step|Case|Note|Footnote|Pages?|pp?)(?![A-Za-z])\.?|§"
+)
+_LOCATOR_ZH = (
+    r"(?:命题|定理|引理|推论|定义|公式|方程|式|"
+    r"第\s*[0-9０-９一二三四五六七八九十A-Za-z]+\s*[章节页步部分]|"
+    r"节|章|附录|图|表|算法|注|例|事实|断言|假设|条件|性质|问题|脚注|页)"
+)
+_SOURCE_LOCATOR_BRACKET = re.compile(rf"\[(\s*[0-9０-９]{{1,4}})\s*[,;]\s*(?:{_LOCATOR_EN})[^\[\]]{{0,80}}\]", re.I)
+_TARGET_LOCATOR_BRACKET = re.compile(
+    rf"\[(\s*[0-9０-９]{{1,4}})\s*[,;，、；]\s*(?:{_LOCATOR_EN}|{_LOCATOR_ZH})[^\[\]［］]{{0,80}}\]|"
+    rf"［(\s*[0-9０-９]{{1,4}})\s*[,;，、；]\s*(?:{_LOCATOR_EN}|{_LOCATOR_ZH})[^\[\]［］]{{0,80}}］",
+    re.I,
+)
 _CITATION_SEPARATORS = re.compile(r"[,;，、；]")
 _CITATION_ITEM = re.compile(r"\s*([0-9]{1,4})(?:\s*[-–—]\s*([0-9]{1,4}))?\s*")
 _CITATION_PREFIX = re.compile(r"(?:(?<![A-Za-z])(?:Refs?\.|Citation)|参考文献|文献)$", re.I)
@@ -244,11 +291,21 @@ _INDEX_NAMES = {
     "layer",
 }  # fmt: skip
 _DATA_NAMES = {
-    "interval", "range", "vector", "list", "array", "matrix", "tuple", "shape", "size", "dims", "kernel", "stride",
+    "interval", "intervals", "range", "ranges", "vector", "vectors", "list", "lists", "array", "arrays",
+    "matrix", "matrices", "tuple", "tuples", "shape", "shapes", "size", "sizes", "dim", "dims",
+    "dimension", "dimensions", "kernel", "kernels", "stride", "strides",
 }  # fmt: skip
 _MATH_IN_SUBJECTS = {"value", "values", "lie", "lies", "lying", "fall", "falls", "falling", "sampled", "uniform"}
 _DATA_NAMES_ZH = ("区间", "范围", "数组", "向量", "矩阵")
+_ZH_INTERVAL_PREFIX = ("在", "位于", "落于", "落在", "处于", "属于")
+_ZH_INTERVAL_SUFFIX = re.compile(r"^(?:之?内|之间|区间|范围|中(?:随机|均匀|采样|抽样|取值|选取))")
 _ASCII_IDENTIFIER = re.compile(r"[A-Za-z0-9_]")
+_SUP_CITATION_TAG = re.compile(r"<sup>([^<>]{1,60})</sup>")
+_SUP_SOURCE_CONTENT = re.compile(r"^[0-9０-９\s,;\-–—]+$")
+_SUP_TARGET_CONTENT = re.compile(r"^[0-9０-９\s,;，、；\-–—]+$")
+_SUP_LEADING_SIGN = re.compile(r"^\s*[+\-−–—－]")
+_SUP_PUNCT_BEFORE = set(".,;:?!)'\"”’。，；：？！）》」』")
+_SUP_OP_BEFORE = set("=+-*/([<>\x00")
 
 type _Citation = int | tuple[int, int]
 
@@ -266,9 +323,35 @@ def _citation_numbers(content: str) -> list[tuple[int, int | None]]:
     return parsed
 
 
+def _is_call_result_before(text: str, pos: int) -> bool:
+    """仅当紧邻的半角闭括号对应开括号前紧贴 ASCII 标识符且括号内非纯自然语言短语时，判定为函数调用下标。"""
+    if text[pos] != ")":
+        return False
+    depth = 0
+    for idx in range(pos, -1, -1):
+        ch = text[idx]
+        if ch == ")":
+            depth += 1
+        elif ch == "(":
+            depth -= 1
+            if depth == 0:
+                if idx == 0 or _ASCII_IDENTIFIER.fullmatch(text[idx - 1]) is None:
+                    return False
+                inside = text[idx + 1 : pos].strip()
+                # 如 Linux(Seccomp Notify)[18]：去空格后括号内是空格分隔的自然语言词组而非代码参数。
+                return not (re.search(r"[A-Za-z]\s+[A-Za-z]", inside) and not re.search(r"[,=+\-*/<>.:()\[\]]", inside))
+    return False
+
+
 def _citation_context(
-    text: str, start: int, end: int, *, target: bool, interval_like: bool = False
-) -> tuple[bool, int]:
+    text: str,
+    start: int,
+    end: int,
+    *,
+    target: bool,
+    interval_like: bool = False,
+    single_positive: bool = False,
+) -> tuple[bool, bool, int]:
     left, right = start, end
     while left and text[left - 1].isspace():
         left -= 1
@@ -280,10 +363,15 @@ def _citation_context(
         word_start -= 1
     word = text[word_start:left]
     name = word.lower()
+    call_index = left == start and last in (")", "）") and _is_call_result_before(text, left - 1)
     index = (
-        bool(word and not word[0].isdigit())
-        and (len(word) == 1 or "_" in word or (left == start and any(c.isdigit() for c in word)))
-    ) or (left == start and (name in _INDEX_NAMES or last == ")"))
+        (
+            bool(word and not word[0].isdigit())
+            and (len(word) == 1 or "_" in word or (left == start and any(c.isdigit() for c in word)))
+        )
+        or (left == start and name in _INDEX_NAMES)
+        or call_index
+    )
     math_in = False
     if name == "in" and interval_like:
         prev_end = word_start
@@ -299,21 +387,53 @@ def _citation_context(
             math_in = bool(prev_word and not prev_word[0].isdigit()) and (
                 len(prev_word) == 1 or "_" in prev_word or prev_word.lower() in _MATH_IN_SUBJECTS
             )
-    data_context = name in _DATA_NAMES or math_in or (target and text.endswith(_DATA_NAMES_ZH, 0, left))
-    # 左括号也会排除替换 URL 后留下的 Markdown 链接目标。
-    excluded = (
-        index or data_context or first in ("=", "[", "［", "(") or last in ("=", "+", "-", "*", "/", "∈", "⊂", "⊆")
+    data_name = not single_positive and name in _DATA_NAMES
+    zh_data_name = target and not single_positive and text.endswith(_DATA_NAMES_ZH, 0, left)
+    zh_interval = (
+        target
+        and interval_like
+        and text.endswith(_ZH_INTERVAL_PREFIX, 0, left)
+        and (text.endswith("属于", 0, left) or _ZH_INTERVAL_SUFFIX.match(text, right) is not None)
     )
+    # 左括号也会排除替换 URL 后留下的 Markdown 链接目标。
+    hard_excluded = (
+        index
+        or data_name
+        or math_in
+        or first in ("=", "[", "［", "(")
+        or last in ("=", "+", "-", "*", "/", "∈", "⊂", "⊆")
+    )
+    soft_zh_excluded = zh_data_name or zh_interval
     explicit = _CITATION_PREFIX.search(text, max(0, left - 12), left) is not None
-    return excluded, 9999 if explicit else 999
+    return hard_excluded, soft_zh_excluded, 9999 if explicit else 999
 
 
-def _citation_anchors(text: str, *, target: bool = False) -> tuple[Counter[_Citation], set[_Citation]]:
+def _expand_citation_items(numbers: Sequence[tuple[int, int | None]]) -> list[_Citation]:
+    anchors: list[_Citation] = []
+    for a, b in numbers:
+        if b is None:
+            anchors.append(a)
+        elif b - a <= 30:
+            anchors.extend(range(a, b + 1))
+        else:
+            anchors.append((a, b))
+    return anchors
+
+
+def _citation_anchors(
+    text: str, *, target: bool = False, expected: Mapping[_Citation, int] | None = None
+) -> tuple[Counter[_Citation], Counter[_Citation]]:
     view = _CITATION_BOUNDARY.sub("\x00", RICH_TAG.sub("", text))
     pattern = _TARGET_BRACKETS if target else _SOURCE_BRACKETS
+    locator_pattern = _TARGET_LOCATOR_BRACKET if target else _SOURCE_LOCATOR_BRACKET
     groups = [(m.start(), m.end(), _citation_numbers(m[1] or m[2])) for m in pattern.finditer(view)]
+    groups.extend(
+        (m.start(), m.end(), _citation_numbers(m[1] or (m[2] if m.lastindex and m.lastindex >= 2 else "")))
+        for m in locator_pattern.finditer(view)
+    )
+    groups.sort(key=lambda item: item[0])
     confirmed: Counter[_Citation] = Counter()
-    excluded: set[_Citation] = set()
+    excluded: Counter[_Citation] = Counter()
     i = 0
     while i < len(groups):
         start, end, numbers = groups[i]
@@ -333,37 +453,98 @@ def _citation_anchors(text: str, *, target: bool = False) -> tuple[Counter[_Cita
             and chain[0][1][1] is None
             and chain[0][0][0] < chain[0][1][0]
         )
-        blocked, upper = _citation_context(view, start, end, target=target, interval_like=interval_like)
+        single_positive = len(chain) == 1 and len(chain[0]) == 1 and chain[0][0][1] is None and chain[0][0][0] >= 1
+        hard_blocked, soft_zh_blocked, upper = _citation_context(
+            view, start, end, target=target, interval_like=interval_like, single_positive=single_positive
+        )
         for numbers in chain:
+            anchors = _expand_citation_items(numbers)
+            blocked = hard_blocked or (
+                soft_zh_blocked and not (expected is not None and anchors and all(a in expected for a in anchors))
+            )
             valid = not blocked and all(1 <= a <= (b if b is not None else a) <= upper for a, b in numbers)
-            for a, b in numbers:
-                if b is None:
-                    anchors: Sequence[_Citation] = (a,)
-                elif b - a <= 30:
-                    anchors = range(a, b + 1)
-                else:
-                    anchors = ((a, b),)
-                if valid:
-                    confirmed.update(anchors)
-                else:
-                    excluded.update(anchors)
+            if valid:
+                confirmed.update(anchors)
+            else:
+                excluded.update(anchors)
     return confirmed, excluded
 
 
+def _sup_citation_anchors(text: str, *, target: bool = False) -> Counter[_Citation]:
+    """提取紧贴标点或词尾的无括号上标数字引文（排除数字/单位/单字母幂次与电荷）。"""
+    view = _CITATION_BOUNDARY.sub("\x00", _SCRIPT_STYLES.sub("", text))
+    content_re = _SUP_TARGET_CONTENT if target else _SUP_SOURCE_CONTENT
+    anchors: Counter[_Citation] = Counter()
+    for match in _SUP_CITATION_TAG.finditer(view):
+        raw = match[1].strip()
+        if not raw or _SUP_LEADING_SIGN.match(raw) or not content_re.fullmatch(raw):
+            continue
+        numbers = _citation_numbers(raw)
+        if not numbers or not all(1 <= a <= (b if b is not None else a) <= 999 for a, b in numbers):
+            continue
+        left = match.start()
+        if left > 0 and view[left - 1] in (" ", "\t", "\u00a0"):
+            left -= 1
+        if left == 0:
+            continue
+        prev_ch = view[left - 1]
+        if prev_ch in _SUP_OP_BEFORE or prev_ch.isdigit():
+            continue
+        single_val = len(numbers) == 1 and numbers[0][1] is None
+        if prev_ch in _SUP_PUNCT_BEFORE or _HAN.fullmatch(prev_ch):
+            accepted = True
+        elif _ASCII_IDENTIFIER.fullmatch(prev_ch):
+            word_start = left
+            while word_start and _ASCII_IDENTIFIER.fullmatch(view[word_start - 1]):
+                word_start -= 1
+            word = view[word_start:left]
+            if not single_val:
+                accepted = bool(word and not word[0].isdigit())
+            else:
+                accepted = (
+                    len(word) >= 2 and not word[0].isdigit() and _SUP_BASE.search(view, max(0, left - 5), left) is None
+                )
+        else:
+            accepted = False
+        if accepted:
+            anchors.update(_expand_citation_items(numbers))
+    return anchors
+
+
+def _citation_sort_key(anchor: _Citation) -> tuple[int, int]:
+    return anchor if isinstance(anchor, tuple) else (anchor, anchor)
+
+
+def _format_citation(anchor: _Citation) -> str:
+    return f"{anchor[0]}–{anchor[1]}" if isinstance(anchor, tuple) else str(anchor)
+
+
 def citation_problems(source: str, target: str) -> list[str]:
-    """只比对原文可确认引文的编号多重集，排除与数学或代码共用的歧义编号。"""
-    want, ambiguous = _citation_anchors(source)
-    if not want:
-        return []
-    got, _ = _citation_anchors(target, target=True)
-    for anchor in ambiguous & want.keys():
-        del want[anchor]
-        got.pop(anchor, None)
-    problems = []
-    for counts, detail in ((want - got, "缺少"), (got - want, "多出")):
-        for anchor, count in counts.items():
-            label = f"{anchor[0]}–{anchor[1]}" if isinstance(anchor, tuple) else str(anchor)
-            problems.append(f"{detail}引文 [{label}]（{count} 次）")
+    """比对原文可确认引文（方括号、混合定位及上标数字引文），并处理与数学/代码共用的歧义编号。"""
+    problems: list[str] = []
+    want, excluded = _citation_anchors(source)
+    if want:
+        got, _ = _citation_anchors(target, target=True, expected=want)
+        for anchor in excluded.keys() - want.keys():
+            got.pop(anchor, None)
+        for anchor in sorted(want.keys() | got.keys(), key=_citation_sort_key):
+            low = want[anchor]
+            high = low + excluded[anchor] if low else 0
+            actual = got[anchor]
+            if actual < low:
+                problems.append(f"缺少引文 [{_format_citation(anchor)}]（{low - actual} 次）")
+            elif actual > high:
+                problems.append(f"多出引文 [{_format_citation(anchor)}]（{actual - high} 次）")
+
+    sup_want = _sup_citation_anchors(source)
+    if sup_want:
+        sup_got = _sup_citation_anchors(target, target=True)
+        quant_sups = {int(value) for tag, _base, value in _script_values(source) if tag == "sup" and value.isdigit()}
+        for num in quant_sups - sup_want.keys():
+            sup_got.pop(num, None)
+        for counts, detail in ((sup_want - sup_got, "缺少"), (sup_got - sup_want, "多出")):
+            for anchor, count in counts.items():
+                problems.append(f"{detail}上标引文 <sup>{_format_citation(anchor)}</sup>（{count} 次）")
     return problems
 
 
@@ -425,24 +606,76 @@ _NON_PROSE = re.compile(
     r"\([A-Z][A-Za-z'’.-]+(?:\s+(?:et al\.|and [A-Z][A-Za-z'’.-]+)|\s*&\s*[A-Z][A-Za-z'’.-]+)?"
     r",?\s+(?:19|20)\d{2}[a-z]?\)"
 )
+_LEAKED_COMMON_WORDS = frozenset({
+    "algorithms", "approaches", "architectures", "datasets", "equations", "experiments",
+    "layers", "lemmas", "methods", "models", "networks", "problems", "properties",
+    "representations", "results", "strategies", "structures", "systems", "techniques", "theorems",
+})  # fmt: skip
+_PROTECTED_ENGLISH_SPAN = re.compile(
+    r"`[^`\r\n]+`|（[^（）\r\n]{1,120}）|\([^()\r\n]{1,120}\)|\[[^\[\]\r\n]{1,120}\]|"
+    r"“[^“”\r\n]{1,120}”|\"[^\"\r\n]{1,120}\"|‘[^‘’\r\n]{1,120}’|「[^「」\r\n]{1,120}」|『[^『』\r\n]{1,120}』"
+)
+_LEAKED_WORD_CANDIDATE = re.compile(
+    r"(?<![A-Za-z0-9_/\\-])(?<![A-Za-z0-9_]\.)([a-z]{5,})(?![A-Za-z0-9_/\\-])(?!\.[A-Za-z0-9_])"
+)
+_CHINESE_BOUNDARY_PUNCT = set("，。、；：？！—–….,;:?!")
 
 
 def _plain_prose(text: str) -> str:
     return _NON_PROSE.sub(" ", _RICH_TAG.sub("", _PLACEHOLDER.sub(" ", text)))
 
 
-def prose_problems(source: str, target: str) -> list[str]:
+def _leaked_watch_words(translated_terms: Mapping[str, str] | None) -> frozenset[str]:
+    del translated_terms
+    return _LEAKED_COMMON_WORDS
+
+
+def _leaked_english_words(
+    original: str, translated: str, *, translated_terms: Mapping[str, str] | None = None
+) -> list[str]:
+    """检测孤立夹杂在中文句子中的纯小写普通英文漏译词（对专名/代码/缩写/括号注释保持 0 误报）。"""
+    if len(_HAN.findall(translated)) < 4:
+        return []
+    source_lower_words = set(_LEAKED_WORD_CANDIDATE.findall(original))
+    watch = _leaked_watch_words(translated_terms) & source_lower_words
+    if not watch:
+        return []
+    cleaned = _PROTECTED_ENGLISH_SPAN.sub(" ", translated)
+    leaked: list[str] = []
+    for match in _LEAKED_WORD_CANDIDATE.finditer(cleaned):
+        word = match.group(1)
+        if word not in watch:
+            continue
+        left = match.start()
+        if left > 0 and cleaned[left - 1] in (" ", "\t", "\u00a0"):
+            left -= 1
+        right = match.end()
+        if right < len(cleaned) and cleaned[right] in (" ", "\t", "\u00a0"):
+            right += 1
+        before = cleaned[left - 1] if left > 0 else ""
+        after = cleaned[right] if right < len(cleaned) else ""
+        before_han = bool(before and _HAN.fullmatch(before))
+        after_han = bool(after and _HAN.fullmatch(after))
+        before_ok = before_han or not before or before in _CHINESE_BOUNDARY_PUNCT
+        after_ok = after_han or not after or after in _CHINESE_BOUNDARY_PUNCT
+        if (before_han or after_han) and before_ok and after_ok and word not in leaked:
+            leaked.append(word)
+    return leaked
+
+
+def prose_problems(source: str, target: str, *, translated_terms: Mapping[str, str] | None = None) -> list[str]:
     """只对足够明确的英文正文应用低误报筛查。"""
     original = _plain_prose(source)
     tokens = _ENGLISH_WORD.findall(original)
     words = [word.lower() for word in tokens]
     letters = sum(map(len, words))
-    if (
-        len(words) < 8
-        or letters < 35
-        or len(_HAN.findall(original)) * 5 >= len(words)
-        or len(_PROSE_WORDS.intersection(words)) < 2
+    source_han = len(_HAN.findall(original))
+    translated = _plain_prose(target)
+    if source_han * 5 < max(len(words), 1) and (
+        leaked := _leaked_english_words(original, translated, translated_terms=translated_terms)
     ):
+        return [f"译文夹杂未翻译的英文普通词：{', '.join(leaked)}，请译为中文"]
+    if len(words) < 8 or letters < 35 or source_han * 5 >= len(words) or len(_PROSE_WORDS.intersection(words)) < 2:
         return []
     # 短标题常用实词首字母大写，配置名与这类标题都可能沿用原文。
     content_words = [word for word in tokens if word.lower() not in _PROSE_WORDS]
@@ -452,7 +685,6 @@ def prose_problems(source: str, target: str) -> list[str]:
         and sum(word[0].isupper() for word in content_words) * 4 >= len(content_words) * 3
     ):
         return []
-    translated = _plain_prose(target)
     han = len(_HAN.findall(translated))
     english = _ENGLISH_WORD.findall(translated.lower())
     if han <= max(2, len(words) // 10):

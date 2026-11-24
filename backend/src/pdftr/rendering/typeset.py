@@ -28,11 +28,31 @@ _MIXED_SPACE = re.compile(
     rf"({_HAN.pattern}{_FORMAT_TAGS})[ \t\u00a0](?={_FORMAT_TAGS}{_WESTERN})"
     rf"|({_WESTERN}{_FORMAT_TAGS})[ \t\u00a0](?={_FORMAT_TAGS}{_HAN.pattern})"
 )
+_LEADING_LABEL = re.compile(
+    rf"^([ \t\u00a0]*{_FORMAT_TAGS}"
+    rf"(?:(?:图|表|公式|算法|定理|引理|命题|推论|定义|注){_FORMAT_TAGS}[ \t\u00a0]*{_FORMAT_TAGS}[A-Z]?\.?\d+(?:\.\d+)*"
+    rf"|[1-9]\d?(?:\.\d+)*"
+    rf"|[A-Z](?:\.\d+)+"
+    rf"|[A-Z](?={_FORMAT_TAGS}[ \t\u00a0]+{_FORMAT_TAGS}附录))"
+    rf"{_FORMAT_TAGS})([ \t\u00a0])(?={_FORMAT_TAGS}{_HAN.pattern})"
+)
+
+
+def _strip_mixed_space(text: str) -> str:
+    return _MIXED_SPACE.sub(lambda match: match.group(1) or match.group(2), text)
 
 
 def normalize_cjk_spacing(text: str) -> str:
-    """移除汉字与西文、数字、公式间的单个横向空格，保留富文本标签。"""
-    return _MIXED_SPACE.sub(lambda match: match.group(1) or match.group(2), text)
+    """移除汉字与西文、数字、公式间的单个横向空格，保留富文本标签与行首章节/图表编号分隔空格。"""
+    if not text:
+        return text
+    out: list[str] = []
+    for line in text.splitlines(keepends=True):
+        if m := _LEADING_LABEL.match(line):
+            out.append(f"{_strip_mixed_space(m.group(1))}{m.group(2)}{_strip_mixed_space(line[m.end() :])}")
+        else:
+            out.append(_strip_mixed_space(line))
+    return "".join(out)
 
 
 def drop_fake_scripts(text: str) -> str:

@@ -60,6 +60,11 @@ _UNIT = re.compile(
     r"(?P<wrapped>\{)?\\(?:mathrm|mathbf)\{(?P<symbol>s|ms|ns|us|min|h|Hz|kHz|MHz|GHz|m|cm|mm|km|kg|g|mg|K|Pa|kPa)"
     r"\}(?(wrapped)\})(?P<mark>[,;:.]?)"
 )
+_LATIN_TEXT_MACRO = re.compile(r"\\(?:operatorname|mathrm|text|textrm|textit|emph)\{([^{}]+)\}")
+_LATIN_ABBR_FORMULA = re.compile(r"^(?P<open>\()?((?:e\.g\.|i\.e\.))(?P<comma>,)?$", re.I)
+_ET_AL_SUP = re.compile(
+    r"^al\.\^(?:\{(?P<braced>\d{1,3}(?:(?:--|[,–—\-−])\d{1,3})*)\}|(?P<bare>\d{1,3}))(?P<mark>[,;:.]?)$"
+)
 
 
 def _merge_bold(text: str) -> str:
@@ -184,6 +189,18 @@ def _span_source(span: Span, *, inline_bold: bool, inline_italic: bool) -> str:
     return "".join(pieces)
 
 
+def _unwrap_text_macros(compact: str) -> str:
+    text = compact
+    for _ in range(3):
+        updated = _LATIN_TEXT_MACRO.sub(r"\1", text)
+        if updated.startswith("{") and updated.endswith("}") and "{" not in updated[1:-1]:
+            updated = updated[1:-1]
+        if updated == text:
+            break
+        text = updated
+    return text
+
+
 def textual_formula(latex: str, before: str = "", after: str = "") -> str | None:
     """回收有明确文本语法的误标，正体或粗体单位还要求前面有数值。"""
     compact = "".join(latex.split())
@@ -200,6 +217,13 @@ def textual_formula(latex: str, before: str = "", after: str = "") -> str | None
             return plain
     if number := _NUMBER_MARK.fullmatch(compact):
         return number.group(1) or number.group(2)
+    unwrapped = _REFERENCE_DELIMITERS.sub("", _unwrap_text_macros(compact))
+    if abbr := _LATIN_ABBR_FORMULA.fullmatch(unwrapped):
+        return f"{abbr['open'] or ''}{abbr[2]}{abbr['comma'] or ''}"
+    et_al_norm = re.sub(r"\{al\.\}", "al.", unwrapped)
+    if et_al := _ET_AL_SUP.fullmatch(et_al_norm):
+        sup = (et_al["braced"] or et_al["bare"]).replace("--", "–")
+        return f"al.<sup>{sup}</sup>{et_al['mark']}"
     reference = _REFERENCE_DELIMITERS.sub("", _TEXT_MACRO.sub(r"\1", compact))
     if ref := _CROSS_REFERENCE.fullmatch(reference):
         return f"{ref.group(1)} {ref.group(2)}{ref.group(3)}"

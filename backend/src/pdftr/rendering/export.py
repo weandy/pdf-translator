@@ -293,6 +293,26 @@ def _line_bottom(line: Line, base: float, size: float) -> float:
     )  # fmt: skip
 
 
+_SECTION_HEADING_PREFIX = re.compile(r"^(?:\d+(?:\.\d+)*[.)]?|[IVXLCDM]+\.|[A-Z]\.)\s+\S")
+
+
+def _heading_align(block: Block, page_width: float) -> str:
+    """单栏居中主标题或对称居中大标题自动居中，栏内偏左小标题保持左对齐。"""
+    if block.type is not BlockType.TITLE or page_width <= 0:
+        return "left"
+    x0, x1 = block.bbox.x0, block.bbox.x1
+    left_margin, right_margin = x0, page_width - x1
+    if abs((x0 + x1) / 2 - page_width / 2) > 0.05 * page_width:
+        return "left"
+    if left_margin >= 0.14 * page_width and right_margin >= 0.14 * page_width:
+        return "center"
+    if left_margin >= 0.06 * page_width and right_margin >= 0.06 * page_width:
+        plain = RICH_TAG.sub("", " ".join(s.text for s in block.spans if s.kind == "text")).strip()
+        if not _SECTION_HEADING_PREFIX.match(plain):
+            return "center"
+    return "left"
+
+
 def _place(
     ts: Typesetter,
     page: pymupdf.Page,
@@ -314,7 +334,7 @@ def _place(
     overflow = False
     size = block.style.font_size
     r = role(block, translated=translated)
-    align = {"label": "center", "heading": "left"}.get(r, "justify")
+    align = _heading_align(block, page.rect.width) if r == "heading" else "center" if r == "label" else "justify"
     box_limit = box.height + 0.5
 
     def layout(scale: float, pitch: float) -> tuple[list[Line], list[float], float]:
@@ -325,6 +345,7 @@ def _place(
             pitch,
             indent,
             balance_heading=r == "heading" and block.type is BlockType.TITLE,
+            balance_caption=r == "caption" and block.type is BlockType.CAPTION,
         )
         return lines, bases, height * scale
 

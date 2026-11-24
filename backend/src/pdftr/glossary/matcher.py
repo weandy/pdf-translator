@@ -119,6 +119,31 @@ class TermMatcher:
         return {m.term: m.target for m in self._match_spans(*_visible_text(text), accept=accept)}
 
 
+def _key_tokens(term: str) -> tuple[str, ...]:
+    """将术语拆分为带类别的规范词元序列，用于检测复合词是否包含更短的用户术语。"""
+    tokens: list[str] = []
+    for match in TERM_TOKEN.finditer(term):
+        key = normalize_term_key(match[0])
+        if not key:
+            continue
+        if key.startswith("word:"):
+            tokens.extend(f"word:{part}" for part in key.removeprefix("word:").split())
+        else:
+            tokens.append(key)
+    return tuple(tokens)
+
+
+def _has_strict_subsequence(seq: tuple[str, ...], sub: tuple[str, ...]) -> bool:
+    if not sub or len(sub) >= len(seq):
+        return False
+    width = len(sub)
+    return any(seq[i : i + width] == sub for i in range(len(seq) - width + 1))
+
+
+def _compact_target(text: str) -> str:
+    return "".join(text.split())
+
+
 class TermSelection:
     """翻译与术语面板共用的三级术语选择。"""
 
@@ -126,14 +151,31 @@ class TermSelection:
         self, found: Extraction, user_terms: Mapping[str, str], load_library: Callable[[], TermMatcher | None]
     ) -> None:
         user_by_key: dict[str, str] = {}
+        user_sub_rules: list[tuple[tuple[str, ...], str]] = []
         for term, target in user_terms.items():
             if key := normalize_term_key(term):
                 user_by_key.setdefault(key, target)
-        self.paper = {
-            term: user_terms.get(term, user_by_key.get(key, target))
-            for term, target in found.terms.items()
-            if (key := normalize_term_key(term))
-        }
+            if (tokens := _key_tokens(term)) and (compact := _compact_target(target)):
+                user_sub_rules.append((tokens, compact))
+
+        paper: dict[str, str] = {}
+        for term, target in found.terms.items():
+            key = normalize_term_key(term)
+            if not key:
+                continue
+            if key in user_by_key:
+                paper[term] = user_terms.get(term, user_by_key[key])
+                continue
+            paper_tokens = _key_tokens(term)
+            compact_target = _compact_target(target)
+            if any(
+                _has_strict_subsequence(paper_tokens, user_tokens) and user_target not in compact_target
+                for user_tokens, user_target in user_sub_rules
+            ):
+                continue
+            paper[term] = target
+
+        self.paper = paper
         self._user = TermMatcher(user_terms, min_length=2)
         self._paper = TermMatcher(self.paper, min_length=2)
         self._library = load_library() if found.use_library else None

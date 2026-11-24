@@ -27,18 +27,47 @@ _NORMAL_GLYPH_HEIGHT = 2.0  # Elsevier 正文和下标的字框约为字号的 1
 
 
 _CONNECTIVE = r"(?:If|When|Where|Then|And|Or|For|With|Let)"
-_LEADING_TEXT = re.compile(rf"^(?:\\(?:mathrm|text)\s*\{{([A-Za-z\s]+)\}}|({_CONNECTIVE})(?=\s|$))\s*")
+_LEADING_TEXT = re.compile(
+    rf"^(?:\\(?:mathrm|text|textrm|operatorname)\s*\{{([A-Za-z\s]+)\}}|({_CONNECTIVE})(?=\s|$))\s*"
+)
 _SPLIT_WORD = re.compile(
     r"^(?:\\(?:mathrm|text)\s*\{\s*(\{\s*[A-Za-z]\s*\}|[A-Za-z])\s*\}|([A-Za-z]))"
     r"\s*(?:\{\s*:\s*\}|:|\\colon(?![A-Za-z]))\s*"
 )
 _TRAILING_MARK = re.compile(r"(?<![\\.,;:])(?:\\colon|(?:\\(?:mathrm|text)\s*)?\{\s*:\s*\}|([,;:.]))$")
 _TRAILING_FRAGMENT = re.compile(r"\b[A-Za-z]*[a-z][A-Z][A-Za-z]*$")
+_LATIN_ABBR = r"(?:i\s*\.\s*e\s*\.|e\s*\.\s*g\s*\.)"
 _LEADING_PROSE = re.compile(
-    r"^(?:\\(?:mathrm|text)\s*\{\s*(?P<latin>(?:i\s*\.\s*e\s*\.|e\s*\.\s*g\s*\.)\s*,)\s*\}|"
+    rf"^(?:(?P<open>(?:\\left\s*)?\(\s*)?"
+    rf"(?:\\(?:mathrm|text|textrm|operatorname)\s*\{{\s*(?P<wrapped_latin>{_LATIN_ABBR})(?P<in_comma>\s*,)?\s*\}}"
+    rf"(?P<out_comma>\s*,)?|(?P<bare_latin>{_LATIN_ABBR})(?P<bare_comma>\s*,)?)(?P<sep>\s*)|"
     r"(?P<reference>(?:E\s*q\s*\.|\\(?:mathrm|text|operatorname)\s*\{\s*E\s*q\s*\.\s*\})"
-    r"\s*(?:\\left\s*)?\(\s*\d+(?:\s*[a-z])?\s*(?:\\right\s*)?\)\s*,))\s*"
+    r"\s*(?:\\left\s*)?\(\s*\d+(?:\s*[a-z])?\s*(?:\\right\s*)?\)\s*,)\s*)"
 )
+_INNER_CONDITION = re.compile(
+    r"(?<![A-Za-z\\])"
+    r"(?:\\(?:mathrm|text|textrm|operatorname)\s*\{\s*(?P<w>i\s*f|w\s*h\s*e\s*n|w\s*h\s*e\s*r\s*e)\s*"
+    r"(?P<ic>:|\\colon)?\s*\}\s*(?P<oc>:|\\colon)?|"
+    r"(?P<bw>i\s*f|w\s*h\s*e\s*n|w\s*h\s*e\s*r\s*e)\s*(?P<bc>:|\\colon))\s*",
+    re.I,
+)
+_TRAILING_RELATION = re.compile(
+    r"(?<![=<>!:\\])(?P<op>=|\\geq(?![A-Za-z])|\\ge(?![A-Za-z])|≥|\\leq(?![A-Za-z])|\\le(?![A-Za-z])|≤|>|<)$"
+)
+_SCALAR_START = re.compile(r"^\s*[+-−]?\d+(?:\.\d+)?%?(?![A-Za-z])")
+_RELATION_TEXT = {
+    "=": "=",
+    r"\geq": "≥",
+    r"\ge": "≥",
+    "≥": "≥",
+    r"\leq": "≤",
+    r"\le": "≤",
+    "≤": "≤",
+    ">": ">",
+    "<": "<",
+}
+_RELATION_CHARS = ("=", "≥", "≤", ">", "<")
+_HAS_MATH_ATOM = re.compile(r"[A-Za-z0-9\\α-ωΑ-Ω]")
 _TAIL_SCRIPT = re.compile(r";\s*(?:\{\s*\^\s*(?:\{(\d+)\}|(\d+))\s*\}|\^\s*\{(\d+)\}|\(\s*(\d+)\s*\))$")
 _TAIL_POSSESSIVE = re.compile(r"(?:'|\{\s*'\s*\}|\\prime|\^\s*\{\s*\\prime\s*\})\s*s$")
 _TAIL_WORD = re.compile(r"\\(?:mathrm|text)\s*\{\s*([a-z](?:\s*[a-z]){2,})\s*\}$")
@@ -100,17 +129,45 @@ def _independent(latex: str) -> bool:
     return bool(re.search(r"\d|[=<>_^+*/−-]|\\[A-Za-z]+|[()[\]]", latex) or re.fullmatch(r"[A-Za-zα-ωΑ-Ω]", latex))
 
 
+def _split_inner_condition(latex: str) -> list[str]:
+    """拆分公式内部吞入的条件词+冒号（如 H_0 if: F \\geq），仅作用于外层且左右括号分别完整。"""
+    surface, _ = _delimiters(latex)
+    for match in _INNER_CONDITION.finditer(latex):
+        if match.start() not in surface or not (match["ic"] or match["oc"] or match["bc"]):
+            continue
+        left = latex[: match.start()].rstrip()
+        right = latex[match.end() :].lstrip()
+        if (
+            not left
+            or not right
+            or left.endswith(("_", "^", "{", "\\"))
+            or not _HAS_MATH_ATOM.search(left)
+            or not _HAS_MATH_ATOM.search(right)
+            or _delimiters(left)[1]
+            or _delimiters(right)[1]
+        ):
+            continue
+        word = "".join((match["w"] or match["bw"]).split())
+        return [left, f" {word}: ", *_split_inner_condition(right)]
+    return [latex]
+
+
 def _boundary_parts(latex: str) -> tuple[str, list[str], str]:
     prefix = suffix = ""
     if (lead := _LEADING_PROSE.match(latex)) and lead.end() < len(latex):
-        if lead["latin"]:
-            prefix = "".join(lead["latin"].split()) + " "
+        if lead["wrapped_latin"] or lead["bare_latin"]:
+            has_comma = bool(lead["in_comma"] or lead["out_comma"] or lead["bare_comma"])
+            rest = latex[lead.end() :]
+            if (has_comma or bool(lead["sep"])) and _HAS_MATH_ATOM.search(rest):
+                latin = "".join((lead["wrapped_latin"] or lead["bare_latin"]).split())
+                prefix = ("(" if lead["open"] else "") + latin + ("," if has_comma else "") + " "
+                latex = rest
         else:
             ref = "".join(lead["reference"].split())
             ref = re.sub(r"\\(?:mathrm|text|operatorname)\{Eq\.\}", "Eq.", ref)
             ref = re.sub(r"\\(?:left|right)", "", ref)
             prefix = re.sub(r"Eq\.\((\d+[a-z]?)\)", r"Eq. (\1)", ref) + " "
-        latex = latex[lead.end() :]
+            latex = latex[lead.end() :]
     surface, _ = _delimiters(latex)
     for pattern in (_TAIL_SCRIPT, _TAIL_POSSESSIVE, _TAIL_WORD):
         tail = pattern.search(latex)
@@ -143,11 +200,37 @@ def _boundary_parts(latex: str) -> tuple[str, list[str], str]:
         closing = _EDGE_CLOSE.search(latex)
         if closing and (closing.start(1), closing[1]) in unmatched and closing.start() > 0:
             latex, suffix = latex[: closing.start()].rstrip(), closing[1] + suffix
+    cond_items = _split_inner_condition(latex)
+    if len(cond_items) > 1:
+        return prefix, cond_items, suffix
     surface, _ = _delimiters(latex)
     cuts = [i for i, char in enumerate(latex) if char == ";" and i in surface]
     bounds = [-1, *cuts, len(latex)]
     pieces = [latex[a + 1 : b].strip() for a, b in pairwise(bounds)]
-    return prefix, pieces if cuts and all(map(_independent, pieces)) else [latex], suffix
+    if cuts and all(map(_independent, pieces)):
+        alternating: list[str] = [pieces[0]]
+        for piece in pieces[1:]:
+            alternating.extend(("; ", piece))
+        return prefix, alternating, suffix
+    return prefix, [latex], suffix
+
+
+def _strip_trailing_relation(latex: str, after: str) -> tuple[str, str]:
+    """当公式末尾残留孤立关系符且右侧紧跟纯数字/简单标量时，将关系符剥离为正文。"""
+    if not _SCALAR_START.match(RICH_TAG.sub("", after)):
+        return latex, after
+    match = _TRAILING_RELATION.search(latex)
+    if match is None:
+        return latex, after
+    surface, _ = _delimiters(latex)
+    if match.start() not in surface:
+        return latex, after
+    body = latex[: match.start()].rstrip()
+    if not body or body.endswith(("_", "^", "{", "\\", "=", "<", ">", "!", ":")) or not _HAS_MATH_ATOM.search(body):
+        return latex, after
+    op_text = _RELATION_TEXT[match["op"]]
+    new_after = (op_text + after) if after[:1].isspace() else f"{op_text} {after}"
+    return body, new_after
 
 
 def _content_parts(content: str, unchanged: dict[int, int] | None = None) -> list[str]:
@@ -177,13 +260,14 @@ def _content_parts(content: str, unchanged: dict[int, int] | None = None) -> lis
                     parts[-1] += latex
                     latex = ""
         if latex:
-            prefix, formulas, suffix = _boundary_parts(latex)
+            prefix, items, suffix = _boundary_parts(latex)
+            if not suffix:
+                items[-1], after = _strip_trailing_relation(items[-1], after)
             parts[-1] += prefix
-            if unchanged is not None and formulas == [original]:
+            if unchanged is not None and items == [original]:
                 unchanged[len(parts) // 2] = i // 2
-            for formula in formulas[:-1]:
-                parts.extend((formula, "; "))
-            parts.extend((formulas[-1], suffix + after))
+            parts.extend(items[:-1])
+            parts.extend((items[-1], suffix + after))
         else:
             parts[-1] += after
     return parts
@@ -497,6 +581,11 @@ def merge_torn_formulas(line: LayoutLine, chars: Sequence[Char]) -> LayoutLine:
     return line.model_copy(update={"spans": spans})
 
 
+def _relation_counts(parts: Iterable[str]) -> dict[str, int]:
+    joined = "".join(RICH_TAG.sub("", part) for part in parts)
+    return {op: joined.count(op) for op in _RELATION_CHARS}
+
+
 def clean_formula_lines(block: LayoutBlock, chars: Sequence[Char]) -> LayoutBlock:
     """MinerU 已给行级公式时，只重新定位确实吞字的行，其余沿用原坐标。"""
     lines: list[LayoutLine] = []
@@ -525,7 +614,13 @@ def clean_formula_lines(block: LayoutBlock, chars: Sequence[Char]) -> LayoutBloc
         # 原框仍比无锚点的猜测可靠，扫描页则保留新分出的文字和公式。
         scripts = _script_payloads(cleaned[::2])
         restored = _script_payloads(s.content for row in refined.lines for s in row.spans if s.kind == "text")
-        if line_chars and (total != found or scripts != restored):
+        orig_rel = _relation_counts(s.content for s in line.spans if s.kind == "text")
+        clean_rel = _relation_counts(cleaned[::2])
+        restored_rel = _relation_counts(s.content for row in refined.lines for s in row.spans if s.kind == "text")
+        relation_missed = any(
+            clean_rel[op] > orig_rel[op] and restored_rel[op] < clean_rel[op] for op in _RELATION_CHARS
+        )
+        if line_chars and (total != found or scripts != restored or relation_missed):
             lines.append(line)
             continue
         originals = [s for s in line.spans if s.kind == "inline_formula" and s.content.strip()]
