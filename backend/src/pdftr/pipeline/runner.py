@@ -5,8 +5,12 @@
 """
 
 import asyncio
+import hashlib
+import json
 import logging
+import sqlite3
 import threading
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
@@ -24,7 +28,8 @@ from pdftr.fusion.build import InvalidLayoutPages, fuse
 from pdftr.glossary.extract import Extraction, extract_acronym_definitions, extract_terms, frequent_candidates
 from pdftr.glossary.matcher import TermMatcher, TermSelection
 from pdftr.glossary.normalize import normalize_terms
-from pdftr.parsing.port import LayoutParser, ParseError
+from pdftr.parsing.mineru_plan import preview_requested_pages
+from pdftr.parsing.port import LayoutCache, LayoutParser, ParseError
 from pdftr.pipeline.events import EventBus
 from pdftr.pipeline.memory import release_memory
 from pdftr.pipeline.secrets import Secrets, SecretStore
@@ -38,6 +43,37 @@ from pdftr.translation.segmenter import BAD_SOURCE_MESSAGE, bad_source, segment
 from pdftr.translation.service import TranslateOptions, default_concurrency, translate
 
 log = logging.getLogger(__name__)
+PROGRESS_MIN_INTERVAL_S = 1.5
+LAYOUT_CACHE_VERSION = 2
+
+
+def _parse_progress_kind(message: str) -> str:
+    for kind, prefixes in (
+        ("upload", ("正在上传", "上传")),
+        ("queue", ("MinerU 已接收", "MinerU 正在接收", "排队")),
+        ("parse", ("MinerU 正在解析", "正在解析")),
+        ("convert", ("MinerU 正在整理", "整理")),
+        ("download", ("正在下载", "下载")),
+        ("cache", ("已复用近期版面", "缓存")),
+    ):
+        if message.startswith(prefixes):
+            return kind
+    return "other"
+
+
+def _pdf_sha256(pdf: Path) -> str:
+    digest = hashlib.sha256()
+    with pdf.open("rb") as stream:
+        while chunk := stream.read(64 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _layout_cache_key(scope: str, pdf_hash: str, config: str, pages: Sequence[int] | None) -> str:
+    pages_key = "all" if pages is None else ",".join(str(p) for p in pages)
+    components = [LAYOUT_CACHE_VERSION, scope, pdf_hash, "mineru-cloud", config, pages_key]
+    return hashlib.sha256(json.dumps(components, separators=(",", ":")).encode("utf-8")).hexdigest()
+
 
 ParserFactory = Callable[[Secrets, str], LayoutParser]  # （密钥, 解析服务名）→ 解析器
 ChatFactory = Callable[[Secrets], ChatModel]
@@ -56,6 +92,9 @@ class PipelineDeps:
     term_matcher: MatcherLoader
     max_concurrent_jobs: int = 4  # 同时上传、解析的任务数（主要在等云端，不占本机资源）
     max_concurrent_translations: int = 1  # 同时翻译的任务数：一篇接一篇，每篇内部并发请求翻译服务
+    mineru_partial_pages_enabled: bool = True
+    layout_cache: LayoutCache | None = None
+    layout_cache_ttl_hours: int = 0
     parse_retry_delays: tuple[float, ...] = (15, 45)  # 解析遇到网络类错误时自动重试的等待秒数
     font_dir: Path | None = None  # 导出 PDF 用的字体目录
     llm_concurrency: int = 0  # 0 = 按服务商自动选择（translation.service.default_concurrency）
@@ -203,7 +242,7 @@ class Pipeline:
         self._cancelling: set[str] = set()  # 用户要求取消的任务（与服务停止时的取消区分开）
         self._mutations: set[str] = set()  # 已完成任务的编辑/重翻/撤回互斥标记
         self._mutation_guard = threading.Lock()
-        self._artifact_guard = threading.Lock()
+        self._artifact_guard = threading.RLock()
         self._exporting: dict[str, int] = {}
         self._deleting: set[str] = set()
         self._exports: dict[Path, asyncio.Task[ExportResult]] = {}
@@ -212,15 +251,28 @@ class Pipeline:
     def submit(self, job: Job, secrets: Secrets) -> None:
         self.deps.secrets.put(job.id, secrets)
         task = asyncio.create_task(self._run(job.id))
-        self._tasks[job.id] = task
-        task.add_done_callback(lambda _: self._tasks.pop(job.id, None))
+        with self._artifact_guard:
+            self._tasks[job.id] = task
+
+        def finished(done: asyncio.Task[None]) -> None:
+            with self._artifact_guard:
+                if self._tasks.get(job.id) is done:
+                    self._tasks.pop(job.id)
+
+        task.add_done_callback(finished)
+
+    def active_job_ids(self) -> set[str]:
+        with self._artifact_guard:
+            return set(self._tasks)
 
     def is_running(self, job_id: str) -> bool:
-        return job_id in self._tasks
+        with self._artifact_guard:
+            return job_id in self._tasks
 
     def cancel(self, job_id: str) -> bool:
         """取消排队中或进行中的任务；返回是否有任务可取消。已完成的阶段与译文缓存保留，重试时从中断处继续。"""
-        task = self._tasks.get(job_id)
+        with self._artifact_guard:
+            task = self._tasks.get(job_id)
         if task is None or task.done():
             return False
         self._cancelling.add(job_id)
@@ -284,7 +336,8 @@ class Pipeline:
 
     def active_count(self) -> int:
         """排队中与执行中的任务数。"""
-        return len(self._tasks)
+        with self._artifact_guard:
+            return len(self._tasks)
 
     def pending_work_count(self) -> int:
         """停机时还需等待的流水线任务与导出。"""
@@ -304,6 +357,7 @@ class Pipeline:
 
     def recover_interrupted(self) -> None:
         """服务重启时，进行中的任务已没有密钥可用，标记失败，用户重新提供 Key 后可从断点重试。"""
+        self.deps.artifacts.purge_parser_tmp(set())
         for status in (JobStatus.RUNNING, JobStatus.QUEUED):
             for job in self.deps.store.jobs_with_status(status):
                 job.status, job.error = JobStatus.FAILED, "服务重启，任务中断，请点击重试"
@@ -311,7 +365,8 @@ class Pipeline:
 
     async def wait_all(self, timeout: float | None = None) -> bool:
         """等待在途的翻译和导出，超时返回 False。"""
-        tasks = [*self._tasks.values(), *self._exports.values()]
+        with self._artifact_guard:
+            tasks = [*self._tasks.values(), *self._exports.values()]
         if not tasks:
             return True
         _, pending = await asyncio.wait(tasks, timeout=timeout)
@@ -370,30 +425,97 @@ class Pipeline:
         if out.exists():
             return
         parser = self.deps.parser_factory(secrets, job.options.parser)
-        raw_dir = self.deps.artifacts.job_dir(job.id) / "parser"
+        raw_dir = None if job.options.parser == "mineru-cloud" else self.deps.artifacts.job_dir(job.id) / "parser"
+
+        last_written_at = 0.0
+        last: tuple[str, str, float | None] | None = None
 
         def progress(message: str, fraction: float | None = None) -> None:
-            self._update(job, message=message, progress=job.progress if fraction is None else fraction)
+            nonlocal last_written_at, last
+            now = time.monotonic()
+            current = (_parse_progress_kind(message), message, fraction)
+            if (
+                last is None
+                or current[0] != last[0]
+                or (fraction == 1.0 and last[2] != 1.0)
+                or any(warning in message for warning in ("超时", "重试", "准备重新提交"))
+                or (current != last and now - last_written_at >= PROGRESS_MIN_INTERVAL_S)
+            ):
+                self._update(job, message=message, progress=job.progress if fraction is None else fraction)
+                last_written_at, last = now, current
 
         pdf = self.deps.artifacts.path(job.id, "original.pdf")
-        result = await self._parse_with_retry(job, lambda: parser.parse(pdf, raw_dir=raw_dir, on_progress=progress))
+        pages = (
+            job.options.pages
+            if job.options.parser == "mineru-cloud" and self.deps.mineru_partial_pages_enabled
+            else None
+        )
+        cache = self.deps.layout_cache
+        cache_config = getattr(parser, "cache_config_sig", None)
+        cache_ttl = self.deps.layout_cache_ttl_hours
+        cache_identity: tuple[str, str, str] | None = None
+        if (
+            job.options.parser == "mineru-cloud"
+            and cache is not None
+            and cache_ttl > 0
+            and isinstance(cache_config, str)
+        ):
+            started = time.monotonic()
+            scope = hashlib.sha256(f"pdftr-layout-scope-v1:{secrets.parser_token}".encode()).hexdigest()
+            pdf_hash = await run_thread(_pdf_sha256, pdf)
+            wanted = None
+            if pages is not None:
+                async with self.local_slot():
+                    wanted = await run_thread(preview_requested_pages, pdf, pages)
+            cache_identity = (scope, pdf_hash, cache_config)
+            key = _layout_cache_key(*cache_identity, wanted)
+            hit = None
+            try:
+                hit = await run_thread(cache.get, key, job_id=job.id)
+                if hit is None and wanted is not None:
+                    hit = await run_thread(cache.get, _layout_cache_key(*cache_identity, None), job_id=job.id)
+            except (OSError, sqlite3.Error):
+                log.warning("任务 %s 读取版面缓存失败，将向 MinerU 解析", job.id)
+            if hit is not None:
+                log.info(
+                    "版面缓存命中 job=%s pages=%s elapsed_ms=%d",
+                    job.id,
+                    "all" if wanted is None else len(wanted),
+                    (time.monotonic() - started) * 1000,
+                )
+                progress("已复用近期版面解析结果（跳过 MinerU 请求）", 1.0)
+                _write_json(out, hit.model_dump_json())
+                return
+
+        result = await self._parse_with_retry(
+            job, lambda: parser.parse(pdf, pages=pages, raw_dir=raw_dir, on_progress=progress)
+        )
         _write_json(out, result.model_dump_json())
+        if cache is not None and cache_identity is not None:
+            try:
+                key = _layout_cache_key(*cache_identity, result.requested_pages)
+                await run_thread(cache.put, key, result, job_id=job.id, ttl_seconds=cache_ttl * 3600)
+            except Exception:
+                log.warning("任务 %s 写入版面缓存失败", job.id)
 
     async def _parse_with_retry(self, job: Job, attempt_parse: Callable[[], Awaitable[LayoutResult]]) -> LayoutResult:
         """网络错误或 MinerU 云端解析超时自动重试，最多使用配置的重试机会。"""
         delays = self.deps.parse_retry_delays
+        retry_limit = len(delays)
         for attempt, delay in enumerate(delays, start=1):
             try:
                 return await attempt_parse()
             except ParseError as e:
-                if not e.retryable:
+                if e.max_retries is not None:
+                    retry_limit = min(retry_limit, e.max_retries)
+                if not e.retryable or attempt > retry_limit:
                     raise
                 log.warning("任务 %s 解析失败（%s），%.0f 秒后第 %d 次重试", job.id, e, delay, attempt)
                 if str(e).startswith("MinerU 解析超过"):
-                    message = f"MinerU 解析超时，{delay:.0f} 秒后重新提交（第 {attempt}/{len(delays)} 次重试）"
+                    message = f"MinerU 解析超时，{delay:.0f} 秒后重新提交（第 {attempt}/{retry_limit} 次重试）"
                 else:
-                    message = f"网络不稳定，{delay:.0f} 秒后自动重试（第 {attempt}/{len(delays)} 次）：{e}"
-                self._update(job, message=message)
+                    message = f"网络不稳定，{delay:.0f} 秒后自动重试（第 {attempt}/{retry_limit} 次）：{e}"
+                self._update(job, message=message, progress=0.0)
                 await asyncio.sleep(delay)
         return await attempt_parse()
 
@@ -408,7 +530,13 @@ class Pipeline:
         chars = await run_thread(extract, pdf)
         try:
             doc, report = await run_thread(
-                fuse, job.id, layout, chars, used_cloud=True, pages_to_translate=job.options.pages
+                fuse,
+                job.id,
+                layout,
+                chars,
+                used_cloud=True,
+                pages_to_translate=job.options.pages,
+                expected_layout_pages=layout.requested_pages,
             )
         except InvalidLayoutPages as e:
             raise StageError(str(e)) from e

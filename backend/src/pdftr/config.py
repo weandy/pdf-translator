@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     # 发往 MinerU（接口、上传、下载结果）的代理，如 socks5h://用户:密码@主机:端口 或 http://主机:端口。
     # 服务器到国内线路差时使用：实测某海外服务器直连上传约 25 KB/s，经洛杉矶一台线路好的机器转发约 1.8 MB/s
     mineru_proxy: str = ""
+    mineru_partial_pages_enabled: bool = True
+    mineru_sharding_enabled: bool = True
+    mineru_shard_threshold: int = Field(default=24, ge=8, le=200)
+    mineru_shard_target_pages: int = Field(default=14, ge=6, le=60)
+    mineru_shard_min_pages: int = Field(default=8, ge=4, le=30)
+    mineru_max_shards: int = Field(default=6, ge=2, le=8)
+    layout_cache_ttl_hours: int = Field(default=24, ge=0, le=168)
     paddle_token: str = ""  # 部署者共享的 PaddleOCR（星河社区）Token（可选）
     paddle_proxy: str = ""  # 发往 PaddleOCR 的代理（可选，写法同 PDFTR_MINERU_PROXY）
 
@@ -115,6 +122,12 @@ class Settings(BaseSettings):
                 raise ValueError("可信代理不得信任全部地址")
             result.append(str(network))
         return tuple(dict.fromkeys(result))
+
+    @model_validator(mode="after")
+    def validate_mineru_sharding(self) -> Settings:
+        if self.mineru_shard_min_pages > self.mineru_shard_target_pages:
+            raise ValueError("MinerU 分片最小页数不能超过目标页数")
+        return self
 
     @model_validator(mode="after")
     def validate_submission_audit(self) -> Settings:

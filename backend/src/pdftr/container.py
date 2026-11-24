@@ -3,12 +3,14 @@
 import logging
 import threading
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from pdftr.config import Settings
 from pdftr.glossary import sources as glossary_sources
 from pdftr.glossary.matcher import TermMatcher
-from pdftr.parsing.mineru_cloud import MinerUCloudParser
+from pdftr.parsing.mineru_cloud import MinerUCloudParser, MinerUResourceLimits
 from pdftr.parsing.paddle_vl import PaddleVLParser
 from pdftr.pipeline.admin import AdminAuth
 from pdftr.pipeline.events import EventBus
@@ -17,6 +19,7 @@ from pdftr.pipeline.secrets import Secrets, SecretStore
 from pdftr.storage.admin import SqliteAdminSessionStore
 from pdftr.storage.cache import SqliteTranslationCache
 from pdftr.storage.files import FileArtifactStore
+from pdftr.storage.layout_cache import SqliteLayoutCache
 from pdftr.storage.sqlite import SqliteStore
 from pdftr.translation.anthropic_compat import AnthropicChat
 from pdftr.translation.openai_compat import OpenAICompatChat
@@ -89,16 +92,44 @@ def build_container(settings: Settings | None = None, deps_override: dict | None
     s = settings or Settings()
     s.data_dir.mkdir(parents=True, exist_ok=True)
     db = s.data_dir / "app.db"
+    pipeline_ref: list[Pipeline] = []
+
+    @asynccontextmanager
+    async def local_slot() -> AsyncIterator[None]:
+        async with pipeline_ref[0].local_slot():
+            yield
+
+    mineru_limits = MinerUResourceLimits(local_slot=local_slot)
+    cache_path = s.data_dir / "layout_cache.db"
+    cache_ttl = min(s.retention_hours, s.layout_cache_ttl_hours)
+    layout_cache = (
+        SqliteLayoutCache(cache_path, min_free_disk_mb=s.min_free_disk_mb) if cache_ttl or cache_path.exists() else None
+    )
+    if layout_cache is not None and cache_ttl == 0:
+        layout_cache.clear_all()
     deps = {
         "artifacts": FileArtifactStore(s.data_dir),
         "store": SqliteStore(db, submission_audit_enabled=s.submission_audit_enabled),
         "cache": SqliteTranslationCache(db),
+        "layout_cache": layout_cache,
+        "layout_cache_ttl_hours": cache_ttl,
         "events": EventBus(),
         "secrets": SecretStore(),
         "parser_factory": lambda sec, name: (
             PaddleVLParser(sec.paddle_token, proxy=s.paddle_proxy)
             if name == "paddleocr-vl"
-            else MinerUCloudParser(sec.parser_token, proxy=s.mineru_proxy)
+            else MinerUCloudParser(
+                sec.parser_token,
+                proxy=s.mineru_proxy,
+                use_pdf_parent_tmp=True,
+                enable_partial_pages=s.mineru_partial_pages_enabled,
+                enable_sharding=s.mineru_sharding_enabled,
+                shard_threshold=s.mineru_shard_threshold,
+                shard_target_pages=s.mineru_shard_target_pages,
+                shard_min_pages=s.mineru_shard_min_pages,
+                max_shards=s.mineru_max_shards,
+                limits=mineru_limits,
+            )
         ),
         "chat_factory": lambda sec: (
             AnthropicChat(base_url=sec.llm_base_url, api_key=sec.llm_api_key, model=sec.llm_model)
@@ -110,10 +141,13 @@ def build_container(settings: Settings | None = None, deps_override: dict | None
         "max_concurrent_translations": s.max_concurrent_translations,
         "font_dir": s.font_dir,
         "llm_concurrency": s.llm_concurrency,
+        "mineru_partial_pages_enabled": s.mineru_partial_pages_enabled,
     } | (deps_override or {})  # 测试时替换解析器、大模型等
     admin = (
         AdminAuth(SqliteAdminSessionStore(db), s.admin_password_hash, s.admin_origin, s.admin_session_days * 86400)
         if s.admin_password_hash and s.admin_origin
         else None
     )
-    return Container(settings=s, pipeline=Pipeline(PipelineDeps(**deps)), admin=admin)
+    pipeline = Pipeline(PipelineDeps(**deps))
+    pipeline_ref.append(pipeline)
+    return Container(settings=s, pipeline=pipeline, admin=admin)

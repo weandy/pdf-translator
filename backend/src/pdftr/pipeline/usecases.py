@@ -262,7 +262,17 @@ def delete_job(pipeline: Pipeline, job_id: str) -> None:
             raise UserError("任务进行中，结束后才能删除")
         get_job(pipeline, job_id)
         pipeline.deps.store.delete_job(job_id)
+        _release_layout_cache(pipeline, job_id)
         _cleanup_artifacts_locked(pipeline, job_id)
+
+
+def _release_layout_cache(pipeline: Pipeline, job_id: str) -> None:
+    cache = pipeline.deps.layout_cache
+    if cache is not None:
+        try:
+            cache.release_job(job_id)
+        except Exception:
+            log.warning("任务 %s 的版面缓存引用清理失败，将在下轮重试", job_id)
 
 
 def _cleanup_artifacts_locked(pipeline: Pipeline, job_id: str) -> bool:
@@ -294,7 +304,9 @@ def purge_expired(pipeline: Pipeline, retention_hours: int, now: datetime | None
             with pipeline.deletion_access(job.id) as allowed:
                 if allowed:
                     store.delete_job(job.id)
+                    _release_layout_cache(pipeline, job.id)
                     removed += 1
+    known: set[str] = set()
     if retention_hours > 0:
         known = {job.id for job in store.all_jobs()}
         cutoff = now - timedelta(hours=retention_hours)
@@ -308,7 +320,17 @@ def purge_expired(pipeline: Pipeline, retention_hours: int, now: datetime | None
         with pipeline.deletion_access(job_id) as allowed:
             if allowed and _cleanup_artifacts_locked(pipeline, job_id):
                 cleaned += 1
+    pipeline.deps.artifacts.purge_parser_tmp(pipeline.active_job_ids(), max_age_s=600.0)
     cached = pipeline.deps.cache.purge_older_than(retention_hours) if retention_hours > 0 else 0
+    layout_cache = pipeline.deps.layout_cache
+    if layout_cache is not None:
+        try:
+            if retention_hours == 0 or pipeline.deps.layout_cache_ttl_hours == 0:
+                layout_cache.clear_all()
+            else:
+                layout_cache.purge_expired(known_job_ids=known, now_ts=int(now.timestamp()))
+        except Exception:
+            log.warning("版面缓存周期清理失败，将在下轮重试")
     if removed or cleaned or cached:
         store.checkpoint_after_purge()
     if removed or cached:

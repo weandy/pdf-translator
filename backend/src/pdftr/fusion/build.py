@@ -103,6 +103,7 @@ class FusionReport:
     formulas_unlocated: int = 0  # 块级解析结果里没能推算出位置的行内公式（按正文保留）
     non_native_pages: list[int] = field(default_factory=list)
     missing_layout_pages: list[int] = field(default_factory=list)
+    omitted_layout_pages: list[int] = field(default_factory=list)
 
     @property
     def coverage(self) -> float:
@@ -116,8 +117,10 @@ def fuse(
     *,
     used_cloud: bool,
     pages_to_translate: Iterable[int] | None = None,
+    expected_layout_pages: Iterable[int] | None = None,
 ) -> tuple[Document, FusionReport]:
     pdf_indexes = {page.index for page in char_pages}
+    expected_layout = pdf_indexes if expected_layout_pages is None else (set(expected_layout_pages) & pdf_indexes)
     seen: set[int] = set()
     for page in layout.pages:
         if not 0 <= page.index < len(char_pages) or page.index not in pdf_indexes:
@@ -138,18 +141,23 @@ def fuse(
         if cp.kind is not PageKind.NATIVE:
             report.non_native_pages.append(cp.index)
         visible = [c for c in cp.chars if not c.c.isspace()]
-        report.chars_total += len(visible)
+        if cp.index in expected_layout:
+            report.chars_total += len(visible)
         if (lp := by_index.get(cp.index)) is None:
             can_translate = cp.kind in (PageKind.NATIVE, PageKind.SCANNED)
-            if can_translate:
+            if cp.index not in expected_layout:
+                report.omitted_layout_pages.append(cp.index)
+            elif can_translate:
                 report.missing_layout_pages.append(cp.index)
             pages.append(
                 Page(index=cp.index, width=cp.width, height=cp.height, rotation=cp.rotation, kind=cp.kind,
-                     missing_layout=can_translate and cp.index in selected and (bool(visible) or cp.has_images))
+                     missing_layout=can_translate and cp.index in selected and cp.index in expected_layout
+                     and (bool(visible) or cp.has_images))
             )  # fmt: skip
             continue
         per_block, orphans = align(cp.chars, [b.bbox for b in lp.blocks])
-        report.chars_assigned += len(visible) - sum(1 for c in orphans if not c.c.isspace())
+        if cp.index in expected_layout:
+            report.chars_assigned += len(visible) - sum(1 for c in orphans if not c.c.isspace())
 
         blocks: list[Block] = []
         marks = margin_marks(orphans) if cp.kind is PageKind.NATIVE else []
@@ -205,7 +213,8 @@ def fuse(
     _even_scan_sizes(pages)
     _even_caption_sizes(pages, native_captions)
     report.pages = len(pages)
-    doc = Document(job_id=job_id, pages=pages, meta=_meta(pages, layout.parser, used_cloud))
+    meta = _meta(pages, layout.parser, used_cloud, expected_layout if expected_layout_pages is not None else None)
+    doc = Document(job_id=job_id, pages=pages, meta=meta)
     return doc, report
 
 
@@ -903,7 +912,7 @@ def _plain(block: Block) -> str:
     return " ".join(s.text for s in block.spans if s.kind == "text").strip()
 
 
-def _meta(pages: list[Page], parser: str, used_cloud: bool) -> DocMeta:
+def _meta(pages: list[Page], parser: str, used_cloud: bool, expected_layout: set[int] | None = None) -> DocMeta:
     blocks = [b for p in pages for b in p.blocks]
     title = paper_title(pages)
     abstract = ""
@@ -915,8 +924,16 @@ def _meta(pages: list[Page], parser: str, used_cloud: bool) -> DocMeta:
                 break
         heading = "".join(SECTION_NUMBER.sub("", text).split()).casefold().rstrip(":：")
         if b.type is BlockType.TITLE and heading == "abstract":
-            abstract = next((_plain(x) for x in blocks[i + 1 :] if x.type is BlockType.TEXT and _plain(x)), "")
+            candidates = blocks[i + 1 :]
+            if expected_layout is not None:
+                candidates = [x for x in candidates if x.page in (b.page, b.page + 1)]
+            abstract = next((_plain(x) for x in candidates if x.type is BlockType.TEXT and _plain(x)), "")
             break
     if not abstract:  # 没有“Abstract”标题时，取第一段足够长的正文（S10：BERT 论文即如此）
-        abstract = next((_plain(b) for b in blocks if b.type is BlockType.TEXT and len(_plain(b).split()) >= 60), "")
+        candidates = (
+            blocks if expected_layout is None else [b for b in blocks if b.page in (0, 1) and b.page in expected_layout]
+        )
+        abstract = next(
+            (_plain(b) for b in candidates if b.type is BlockType.TEXT and len(_plain(b).split()) >= 60), ""
+        )
     return DocMeta(title=title, abstract=abstract, parser=parser, used_cloud=used_cloud)

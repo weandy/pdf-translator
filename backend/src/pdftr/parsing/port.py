@@ -17,9 +17,10 @@ class ParseError(RuntimeError):
     Token 无效、额度用完、文件被拒等重试也没用的为 False。
     """
 
-    def __init__(self, message: str, *, retryable: bool = False) -> None:
+    def __init__(self, message: str, *, retryable: bool = False, max_retries: int | None = None) -> None:
         super().__init__(message)
         self.retryable = retryable
+        self.max_retries = max_retries
 
 
 class ParseProgress(Protocol):
@@ -42,3 +43,21 @@ class LayoutParser(Protocol):
         """解析 PDF。pages 为 0 起的页码（None 表示全部）；raw_dir 不为空时把服务原始结果存到这里，便于重放；
         on_progress 在服务端状态变化时被调用（排队、解析到第几页等）。"""
         ...
+
+
+class LayoutCache(Protocol):
+    """短期版面缓存，读取及写入时登记任务引用。"""
+
+    def get(self, key: str, *, job_id: str, now_ts: int | None = None) -> LayoutResult | None: ...
+
+    def put(
+        self, key: str, layout: LayoutResult, *, job_id: str, ttl_seconds: int, now_ts: int | None = None
+    ) -> bool: ...
+
+    def release_job(self, job_id: str) -> int: ...
+
+    def purge_expired(self, *, known_job_ids: set[str] | None = None, now_ts: int | None = None) -> int: ...
+
+    def clear_all(self) -> int: ...
+
+    def close(self) -> None: ...

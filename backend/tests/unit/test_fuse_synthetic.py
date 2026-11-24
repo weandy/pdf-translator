@@ -332,3 +332,43 @@ def test_fuse_rejects_invalid_layout_page_numbers(pdf, indexes, message):
         page.index = index
     with pytest.raises(ValueError, match=message):
         fuse("synthetic", layout, extract(pdf), used_cloud=True)
+
+
+@pytest.mark.parametrize("explicit_heading", [False, True])
+def test_partial_fusion_ignores_omitted_pages_and_late_abstract_fallback(tmp_path, explicit_heading):
+    pdf_path = tmp_path / "partial.pdf"
+    long_body = " ".join(["ordinary"] * 61)
+    with pymupdf.open() as pdf_doc:
+        for index in range(16):
+            page = pdf_doc.new_page(width=600, height=800)
+            page.insert_text((50, 56), "A Synthetic Title" if index == 0 else "Page content.")
+            if index == 0 and explicit_heading:
+                page.insert_text((50, 700), "Abstract")
+        pdf_doc.save(pdf_path)
+    pages = [
+        LayoutPage(
+            index=0,
+            width=600,
+            height=800,
+            blocks=[layout_block(0, BlockType.TITLE, [45, 40, 200, 60], "A Synthetic Title")],
+        ),
+        LayoutPage(
+            index=9, width=600, height=800, blocks=[layout_block(0, BlockType.TEXT, [45, 100, 550, 400], long_body)]
+        ),
+    ]
+    if explicit_heading:
+        pages[0].blocks.append(layout_block(1, BlockType.TITLE, [45, 680, 130, 705], "Abstract"))
+    inputs = extract(pdf_path)
+    requested = [0, 9, 10]
+    layout = LayoutResult(parser="mineru", pages=pages, requested_pages=requested)
+    doc, report = fuse(
+        "0123456789abcdef", layout, inputs, used_cloud=True, pages_to_translate=[9, 10], expected_layout_pages=requested
+    )
+    assert doc.meta.title == "A Synthetic Title"
+    assert doc.meta.abstract == ""
+    assert report.omitted_layout_pages == [*range(1, 9), *range(11, 16)]
+    assert report.missing_layout_pages == [10]
+    assert report.chars_total == sum(not c.c.isspace() for i in requested for c in inputs[i].chars)
+    assert [page.index for page in doc.pages if page.missing_layout] == [10]
+    full_doc, _ = fuse("0123456789abcdef", layout, inputs, used_cloud=True)
+    assert len(full_doc.meta.abstract.split()) >= 60

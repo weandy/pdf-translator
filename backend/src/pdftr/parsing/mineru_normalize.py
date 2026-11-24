@@ -7,7 +7,10 @@
 - discarded_blocks 里的页眉、页码、侧边标识不展示；page_footnote 是正文脚注，要保留并翻译。
 """
 
+import math
 import re
+import sys
+from collections.abc import Sequence
 from typing import Any
 
 from pdftr.domain.geometry import Rect
@@ -114,6 +117,45 @@ def _block(raw: dict[str, Any], btype: BlockType, order: int, *, discarded: bool
         discarded=discarded,
         source_type=raw.get("type", ""),
     )
+
+
+def normalize_checked(
+    layout: dict[str, Any], *, orig_pages: Sequence[int] | None = None, strict_relative: bool = False
+) -> LayoutResult:
+    infos = layout.get("pdf_info")
+    if not isinstance(infos, list) or not infos:
+        raise ValueError("MinerU 解析结果缺少有效页面")
+    if strict_relative and not orig_pages:
+        raise ValueError("MinerU 分片缺少原始页号映射")
+    seen: set[int] = set()
+    for info in infos:
+        if not isinstance(info, dict):
+            raise ValueError("MinerU 解析结果含非法页面")
+        index = info.get("page_idx")
+        if (
+            type(index) is not int
+            or index < 0
+            or index in seen
+            or (orig_pages is not None and index >= len(orig_pages))
+        ):
+            raise ValueError("MinerU 解析结果含缺失、非法、重复或越界页号")
+        size = info.get("page_size")
+        if (
+            not isinstance(size, (list, tuple))
+            or len(size) != 2
+            or any(
+                type(value) not in (int, float) or not 0 < value <= sys.float_info.max or not math.isfinite(value)
+                for value in size
+            )
+        ):
+            raise ValueError("MinerU 解析结果含非法页面尺寸")
+        seen.add(index)
+    result = normalize(layout)
+    if strict_relative and orig_pages is not None:
+        for page in result.pages:
+            page.index = orig_pages[page.index]
+    result.pages.sort(key=lambda page: page.index)
+    return result
 
 
 def normalize(layout: dict[str, Any]) -> LayoutResult:

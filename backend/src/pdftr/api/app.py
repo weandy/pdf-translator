@@ -20,6 +20,7 @@ from pdftr.api.admin_deps import AdminSecurityMiddleware
 from pdftr.container import Container, build_container
 from pdftr.domain.llm import ChatError
 from pdftr.pipeline.usecases import NotFound, ServiceBusy, UserError, purge_expired
+from pdftr.pipeline.workers import run_thread
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ async def _purge_periodically(c: Container, interval_s: float = 600) -> None:
     """启动时和之后每 10 分钟清理一次到期任务（保留期只有 24 小时，按小时清理会多留近一小时）。"""
     while True:
         try:
-            await asyncio.to_thread(purge_expired, c.pipeline, c.settings.retention_hours)
+            await run_thread(purge_expired, c.pipeline, c.settings.retention_hours)
         except Exception:
             log.exception("清理过期任务失败")
         if c.admin is not None:
@@ -55,15 +56,20 @@ def create_app(container: Container | None = None) -> FastAPI:
         housekeeping = asyncio.create_task(_purge_periodically(c))
         # 在后台预先下载并加载术语库，第一个任务不用等
         warmup = asyncio.create_task(asyncio.to_thread(c.pipeline.deps.term_matcher))
-        yield
-        housekeeping.cancel()
-        warmup.cancel()
-        # 部署新版本时先让进行中的任务跑完，避免用户的翻译被中途打断
-        pending = c.pipeline.pending_work_count()
-        if pending:
-            log.info("等待 %d 项翻译与导出工作完成（最多 %.0f 秒）", pending, c.settings.shutdown_grace_s)
+        try:
+            yield
+        finally:
+            housekeeping.cancel()
+            warmup.cancel()
+            await asyncio.gather(housekeeping, warmup, return_exceptions=True)
+            # 所有缓存使用者收拢后再关闭连接，避免停机时中断仍在写库的工作。
+            pending = c.pipeline.pending_work_count()
+            if pending:
+                log.info("等待 %d 项翻译与导出工作完成（最多 %.0f 秒）", pending, c.settings.shutdown_grace_s)
             if not await c.pipeline.wait_all(c.settings.shutdown_grace_s):
                 log.warning("仍有任务未完成，服务停止后可从断点重试")
+            elif c.pipeline.deps.layout_cache is not None:
+                await run_thread(c.pipeline.deps.layout_cache.close)
 
     app = FastAPI(title="pdf-translator", version=__version__, lifespan=lifespan)
     app.state.container = c

@@ -747,3 +747,161 @@ def test_glossary_selection_matches_runner_retranslation_panel_and_cli(tmp_path,
     cli.main(["translate", str(pdf), str(FIXTURES / "mineru_layout_min.json")])
     check_prompts("函数")
     assert bool(loaded) is use_library
+
+
+def test_layout_cache_reuses_full_document_and_lifecycles(tmp_path, monkeypatch):
+    import sqlite3
+    from contextlib import closing
+
+    from pdftr.parsing.mineru_plan import preview_requested_pages
+    from pdftr.pipeline import runner
+    from pdftr.storage.metadata_backup import export_metadata
+
+    calls = []
+    configuration = "model=vlm|lang=en|formula=1|table=1"
+
+    class Cacheable(FakeParser):
+        @property
+        def cache_config_sig(self):
+            return configuration
+
+        async def parse(self, pdf, pages=None, raw_dir=None, on_progress=None):
+            assert raw_dir is None
+            planned = preview_requested_pages(pdf, pages)
+            calls.append(planned)
+            result = await super().parse(pdf, pages, raw_dir, on_progress)
+            page = result.pages[1]
+            result.pages.extend(page.model_copy(update={"index": i}) for i in range(2, 16))
+            if planned is not None:
+                result.requested_pages = list(planned)
+                result.pages = [p for p in result.pages if p.index in planned]
+            return result
+
+    with pymupdf.open(stream=make_pdf(), filetype="pdf") as doc:
+        for _ in range(14):
+            page = doc.new_page(width=600, height=800)
+            page.insert_text((52, 109), "A normal paragraph.", fontsize=9, fontname="tiro")
+        pdf_data = doc.tobytes()
+
+    container = build_container(
+        Settings(data_dir=tmp_path, glossary_sources="", font_dir=tmp_path / "fonts", min_free_disk_mb=0),
+        {"parser_factory": lambda *_: Cacheable(), "chat_factory": lambda *_: FakeChat()},
+    )
+    partial = list(range(9, 15))
+    other = list(range(8, 14))
+
+    with TestClient(create_app(container)) as client:
+        jobs = []
+
+        def run(pages=None, headers=HEADERS):
+            response = _upload(client, data=pdf_data, headers=headers, options={"cloud_consent": True, "pages": pages})
+            assert response.status_code == 202, response.text
+            job = _wait(client, response.json()["id"])
+            assert job["status"] == "done", job
+            jobs.append(job["id"])
+            path = container.pipeline.deps.artifacts.path(job["id"], "layout.json")
+            assert not (path.parent / "parser" / "mineru.zip").exists()
+            assert not (path.parent / "parser-tmp").exists()
+            return job, LayoutResult.model_validate_json(path.read_bytes())
+
+        first, result = run(partial)
+        assert result.requested_pages is not None
+        assert run(partial)[1] == result
+        assert len(calls) == 1
+        full, full_result = run()
+        assert len(calls) == 2 and full_result.requested_pages is None
+        focused, reused = run(other)
+        assert reused == full_result and len(calls) == 2
+        source = client.get(f"/api/jobs/{focused['id']}/document").json()
+        assert source["title"] == "A Synthetic Title"
+        assert len(source["pages"]) == 16
+        assert source["segments"]
+        assert all(
+            any(block.startswith(f"p{i}-") for i in other) for s in source["segments"] for block in s["block_ids"]
+        )
+        for mode in ("mono", "dual"):
+            response = client.get(f"/api/jobs/{first['id']}/export", params={"mode": mode})
+            assert response.status_code == 200
+            with pymupdf.open(stream=response.content, filetype="pdf") as exported:
+                assert exported.page_count == 16
+
+        run(other, {**HEADERS, "X-Parser-Key": "different-test-token"})
+        assert len(calls) == 3
+        configuration = "model=other|lang=en|formula=1|table=1"
+        run(other)
+        assert len(calls) == 4
+        monkeypatch.setattr(runner, "LAYOUT_CACHE_VERSION", runner.LAYOUT_CACHE_VERSION + 1)
+        run(other)
+        assert len(calls) == 5
+
+        backup = tmp_path / "metadata.db"
+        export_metadata(tmp_path / "app.db", backup)
+        for path in (tmp_path / "app.db", backup):
+            with closing(sqlite3.connect(path)) as db:
+                assert db.execute("SELECT name FROM sqlite_schema WHERE name LIKE 'layout_cache%'").fetchall() == []
+        with closing(sqlite3.connect(tmp_path / "layout_cache.db")) as db:
+            assert db.execute("SELECT count(*) FROM layout_cache").fetchone() == (5,)
+            assert client.delete(f"/api/jobs/{full['id']}").status_code == 204
+            jobs.remove(full["id"])
+            assert db.execute("SELECT count(*) FROM layout_cache").fetchone() == (5,)
+            for job_id in jobs:
+                assert client.delete(f"/api/jobs/{job_id}").status_code == 204
+            assert db.execute("SELECT count(*) FROM layout_cache").fetchone() == (0,)
+            assert db.execute("SELECT count(*) FROM layout_cache_refs").fetchone() == (0,)
+
+    cache = container.pipeline.deps.layout_cache
+    assert cache is not None
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        cache.get("absent", job_id="test")
+
+
+def test_cancelled_layout_cache_write_joins_before_task_can_be_deleted(tmp_path, monkeypatch):
+    import sqlite3
+    import threading
+    from contextlib import closing
+
+    from pdftr.domain.job import Job
+    from pdftr.pipeline.secrets import Secrets
+
+    class Cacheable(FakeParser):
+        cache_config_sig = "test"
+
+    pipeline = build_container(
+        Settings(data_dir=tmp_path, glossary_sources="", min_free_disk_mb=0),
+        {"parser_factory": lambda *_: Cacheable(), "chat_factory": lambda *_: FakeChat()},
+    ).pipeline
+    cache = pipeline.deps.layout_cache
+    assert cache is not None
+    job = Job(id="0123456789abcdef", filename="example.pdf")
+    pipeline.deps.store.save_job(job)
+    pipeline.deps.artifacts.path(job.id, "original.pdf").write_bytes(make_pdf())
+
+    async def run():
+        entered = asyncio.Event()
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+        put = cache.put
+
+        def blocking_put(*args, **kwargs):
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(5)
+            return put(*args, **kwargs)
+
+        monkeypatch.setattr(cache, "put", blocking_put)
+        pipeline.submit(job, Secrets(llm_base_url="", llm_api_key="", llm_model="", parser_token="test"))
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            assert pipeline.cancel(job.id)
+            await asyncio.sleep(0)
+            assert pipeline.is_running(job.id)
+            with pytest.raises(usecases.UserError, match="任务进行中"):
+                usecases.delete_job(pipeline, job.id)
+        finally:
+            release.set()
+        assert await pipeline.wait_all(5)
+        usecases.delete_job(pipeline, job.id)
+
+    with closing(cache):
+        asyncio.run(run())
+        with closing(sqlite3.connect(tmp_path / "layout_cache.db")) as db:
+            assert db.execute("SELECT count(*) FROM layout_cache").fetchone() == (0,)

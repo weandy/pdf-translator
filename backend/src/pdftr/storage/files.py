@@ -2,6 +2,7 @@
 
 import re
 import shutil
+import time
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
@@ -48,6 +49,35 @@ class FileArtifactStore:
             except (OSError, ValueError):
                 continue
         return sorted(result)
+
+    def purge_parser_tmp(self, active_job_ids: set[str], max_age_s: float = 0.0) -> int:
+        removed = 0
+        cutoff = time.time() - max_age_s
+        if self.root.is_symlink() or not self.root.is_dir():
+            return removed
+        for job_dir in self.root.iterdir():
+            if job_dir.name in active_job_ids:
+                continue
+            try:
+                job_dir = self._checked_dir(job_dir.name)
+                parent = job_dir / "parser-tmp"
+                if parent.is_symlink() or parent.resolve() != job_dir.resolve() / "parser-tmp" or not parent.is_dir():
+                    continue
+                for attempt in parent.iterdir():
+                    if not attempt.name.startswith("attempt-") or attempt.is_symlink():
+                        continue
+                    if attempt.resolve() != parent.resolve() / attempt.name or not attempt.is_dir():
+                        continue
+                    if max_age_s == 0 or attempt.stat().st_mtime < cutoff:
+                        shutil.rmtree(attempt)
+                        removed += 1
+                if max_age_s == 0 or parent.stat().st_mtime < cutoff:
+                    with suppress(OSError):
+                        parent.rmdir()
+            except (OSError, ValueError):
+                # 清理可能与任务删除并发，残留目录由下一轮再处理。
+                continue
+        return removed
 
     def path(self, job_id: str, name: str) -> Path:
         # 工件名由程序生成，这里仍做校验，防止路径穿越
