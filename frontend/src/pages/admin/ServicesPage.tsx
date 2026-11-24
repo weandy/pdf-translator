@@ -16,12 +16,15 @@ import {
   adminApi,
   AdminApiError,
   type AdminConfigView,
+  type AdminListModelsIn,
   type DefaultLlmConfig,
   type FreeProviderView,
   type GlossaryAdminView,
   type LlmPreset,
   type ModelPriceEntry,
   type ParserServiceView,
+  type PricingSyncConfig,
+  type PricingSyncStatusView,
   type SecretUpdate,
   type SecretView,
 } from "@/shared/api/admin";
@@ -82,6 +85,56 @@ interface PriceRowDraft {
   output: string;
   peak_factor: string;
 }
+
+interface PricingSyncDraft {
+  source_url: string;
+  source_format: "auto" | "litellm" | "models_dev" | "pdftr";
+  usd_to_cny: string;
+  auto_sync_enabled: boolean;
+  sync_interval_hours: string;
+}
+
+interface PricingDraft {
+  models: PriceRowDraft[];
+  sync: PricingSyncDraft;
+}
+
+interface ModelFetchState {
+  state: "idle" | "busy" | "ok" | "err";
+  models: string[];
+  message: string;
+  requiresKey?: boolean;
+  filter: string;
+  open: boolean;
+}
+
+const DEFAULT_PRICING_SOURCE_URL =
+  "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json";
+
+const syncDateTime = new Intl.DateTimeFormat("zh-CN", {
+  timeZone: "Asia/Shanghai",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+
+function formatSyncTime(iso?: string | null): string {
+  if (!iso) return "尚未同步";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "尚未同步" : syncDateTime.format(d);
+}
+
+const PRICING_SYNC_SPECS: readonly MergeFieldSpec<PricingSyncDraft>[] = [
+  { key: "source_url", label: "远程单价源地址" },
+  { key: "source_format", label: "单价源格式" },
+  { key: "usd_to_cny", label: "USD → CNY 汇率" },
+  { key: "auto_sync_enabled", label: "自动定时同步" },
+  { key: "sync_interval_hours", label: "自动同步周期" },
+];
 
 interface TestDiag {
   state: "idle" | "busy" | "ok" | "err";
@@ -282,12 +335,7 @@ function mergeFreeSection(base: FreeDraft, local: FreeDraft, remote: FreeDraft):
           localValue: `原目标 ${b.protocol} / ${b.base_url || "（空）"} 录入的新密钥（已清空）`,
           remoteValue: `新目标 ${mergedP.protocol} / ${mergedP.base_url || "（空）"}（当前密钥：${formatSecretView(r.serverSecret)}）`,
         });
-      } else if (
-        localEndpointChanged &&
-        !remoteEndpointChanged &&
-        remoteSecretChanged &&
-        l.api_key.action === "keep"
-      ) {
+      } else if (localEndpointChanged && !remoteEndpointChanged && remoteSecretChanged && l.api_key.action === "keep") {
         mergedP.api_key = KEEP_SECRET();
         pairingBlocked = true;
         safetyBlockedIds.push(id);
@@ -301,7 +349,8 @@ function mergeFreeSection(base: FreeDraft, local: FreeDraft, remote: FreeDraft):
       if (!pairingBlocked) {
         if (secretRes.adopted) adoptedFields.push(`上游「${pLabel}」· ${secretRes.adopted}`);
         if (secretRes.kept) keptLocalFields.push(`上游「${pLabel}」· ${secretRes.kept}`);
-        if (secretRes.conflict) conflicts.push({ ...secretRes.conflict, label: `上游「${pLabel}」· ${secretRes.conflict.label}` });
+        if (secretRes.conflict)
+          conflicts.push({ ...secretRes.conflict, label: `上游「${pLabel}」· ${secretRes.conflict.label}` });
       }
       mergedById.set(id, mergedP);
     } else if (!b && !l && r) {
@@ -554,7 +603,7 @@ function mergeLlmSection(
   };
 }
 
-function mergePricingSection(
+function mergePriceRows(
   base: PriceRowDraft[],
   local: PriceRowDraft[],
   remote: PriceRowDraft[],
@@ -634,6 +683,22 @@ function mergePricingSection(
       },
     ],
     dirty: true,
+  };
+}
+
+function mergePricingSection(
+  base: PricingDraft,
+  local: PricingDraft,
+  remote: PricingDraft,
+): MergeOutcome<PricingDraft> {
+  const rowsOutcome = mergePriceRows(base.models, local.models, remote.models);
+  const syncOutcome = mergeFields(base.sync, local.sync, remote.sync, PRICING_SYNC_SPECS);
+  return {
+    merged: { models: rowsOutcome.merged, sync: syncOutcome.merged },
+    adoptedFields: [...syncOutcome.adoptedFields, ...rowsOutcome.adoptedFields],
+    keptLocalFields: [...syncOutcome.keptLocalFields, ...rowsOutcome.keptLocalFields],
+    conflicts: [...syncOutcome.conflicts, ...rowsOutcome.conflicts],
+    dirty: rowsOutcome.dirty || syncOutcome.dirty,
   };
 }
 
@@ -739,14 +804,36 @@ function buildDefaultLlmDraft(llm: DefaultLlmConfig): DefaultLlmDraft {
   };
 }
 
-function buildPricingDraft(cfg: AdminConfigView): PriceRowDraft[] {
-  return (cfg.pricing.models ?? []).map((item: ModelPriceEntry) => ({
-    model: item.model,
-    cache_hit: String(item.cache_hit),
-    cache_miss: String(item.cache_miss),
-    output: String(item.output),
-    peak_factor: String(item.peak_factor),
-  }));
+function defaultPricingSyncDraft(): PricingSyncDraft {
+  return {
+    source_url: DEFAULT_PRICING_SOURCE_URL,
+    source_format: "auto",
+    usd_to_cny: "7.25",
+    auto_sync_enabled: true,
+    sync_interval_hours: "24",
+  };
+}
+
+function buildPricingDraft(cfg: AdminConfigView): PricingDraft {
+  const sync: PricingSyncConfig | undefined = cfg.pricing.sync;
+  return {
+    models: (cfg.pricing.models ?? []).map((item: ModelPriceEntry) => ({
+      model: item.model,
+      cache_hit: String(item.cache_hit),
+      cache_miss: String(item.cache_miss),
+      output: String(item.output),
+      peak_factor: String(item.peak_factor),
+    })),
+    sync: sync
+      ? {
+          source_url: sync.source_url ?? "",
+          source_format: sync.source_format ?? "auto",
+          usd_to_cny: String(sync.usd_to_cny ?? 7.25),
+          auto_sync_enabled: sync.auto_sync_enabled ?? true,
+          sync_interval_hours: String(sync.sync_interval_hours ?? 24),
+        }
+      : defaultPricingSyncDraft(),
+  };
 }
 
 function buildGlossaryOrder(glossary: GlossaryAdminView): string[] {
@@ -870,10 +957,14 @@ export function ServicesPage() {
   const [llmBanner, setLlmBanner] = useState<SaveBanner | null>(null);
   const [llmSaving, setLlmSaving] = useState(false);
 
-  const [pricingDraft, setPricingDraft] = useState<PriceRowDraft[]>([]);
+  const [pricingDraft, setPricingDraft] = useState<PricingDraft>(() => ({
+    models: [],
+    sync: defaultPricingSyncDraft(),
+  }));
   const [pricingDirty, setPricingDirty] = useState(false);
   const [pricingBanner, setPricingBanner] = useState<SaveBanner | null>(null);
   const [pricingSaving, setPricingSaving] = useState(false);
+  const [pricingSyncing, setPricingSyncing] = useState(false);
 
   const [glossaryOrder, setGlossaryOrder] = useState<string[]>([]);
   const [glossaryEnabled, setGlossaryEnabled] = useState<string[]>([]);
@@ -882,25 +973,36 @@ export function ServicesPage() {
   const [glossarySaving, setGlossarySaving] = useState(false);
   const [glossaryReloadingReq, setGlossaryReloadingReq] = useState(false);
 
-  // 连接测试控制器与诊断状态：按 target/providerId 独立维护，修改表单或切换标签时自动中止过时请求
+  // 连接测试与模型拉取控制器及诊断状态：按 target/providerId 独立维护，修改表单或切换标签时自动中止过时请求
   const testControllersRef = useRef<Map<string, AbortController>>(new Map());
   const [testDiags, setTestDiags] = useState<Record<string, TestDiag>>({});
+  const modelControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const [modelFetches, setModelFetches] = useState<Record<string, ModelFetchState>>({});
+  // 一次性临时探测 Key（仅存于当前页内存，绝不落库，切换分区或修改地址时立即清空）
+  const [probeKeys, setProbeKeys] = useState<Record<string, string>>({});
+  const [activePresetModelKey, setActivePresetModelKey] = useState<string | null>(null);
   const loadControllerRef = useRef<AbortController | null>(null);
   const dirtyRef = useRef({ free: false, parser: false, llm: false, pricing: false, glossary: false });
   const baselinesRef = useRef<{
     free: FreeDraft | null;
     parser: { draft: ParserDraft; view: ParserServiceView } | null;
     llm: DefaultLlmDraft | null;
-    pricing: PriceRowDraft[] | null;
+    pricing: PricingDraft | null;
     glossary: GlossaryDraft | null;
   }>({ free: null, parser: null, llm: null, pricing: null, glossary: null });
   const draftsRef = useRef<{
     free: FreeDraft | null;
     parser: ParserDraft | null;
     llm: DefaultLlmDraft | null;
-    pricing: PriceRowDraft[];
+    pricing: PricingDraft;
     glossary: GlossaryDraft;
-  }>({ free: null, parser: null, llm: null, pricing: [], glossary: { order: [], enabled: [] } });
+  }>({
+    free: null,
+    parser: null,
+    llm: null,
+    pricing: { models: [], sync: defaultPricingSyncDraft() },
+    glossary: { order: [], enabled: [] },
+  });
 
   useEffect(() => {
     dirtyRef.current = {
@@ -927,10 +1029,23 @@ export function ServicesPage() {
       ctrl.abort();
     }
     testControllersRef.current.clear();
+    for (const ctrl of modelControllersRef.current.values()) {
+      ctrl.abort();
+    }
+    modelControllersRef.current.clear();
+    setProbeKeys({});
+    setActivePresetModelKey(null);
     setTestDiags((prev) => {
       const next: Record<string, TestDiag> = {};
       for (const [key, value] of Object.entries(prev)) {
         if (value.state !== "busy") next[key] = value;
+      }
+      return next;
+    });
+    setModelFetches((prev) => {
+      const next: Record<string, ModelFetchState> = {};
+      for (const [key, value] of Object.entries(prev)) {
+        if (value.state !== "busy") next[key] = { ...value, open: false };
       }
       return next;
     });
@@ -949,6 +1064,97 @@ export function ServicesPage() {
       return copy;
     });
   }, []);
+
+  const abortModelFetchKey = useCallback((key: string) => {
+    const existing = modelControllersRef.current.get(key);
+    if (existing) {
+      existing.abort();
+      modelControllersRef.current.delete(key);
+    }
+    setModelFetches((prev) => {
+      if (!prev[key]) return prev;
+      const copy = { ...prev };
+      delete copy[key];
+      return copy;
+    });
+    setProbeKeys((prev) => {
+      if (!(key in prev)) return prev;
+      const copy = { ...prev };
+      delete copy[key];
+      return copy;
+    });
+  }, []);
+
+  async function runModelFetch(key: string, payload: AdminListModelsIn) {
+    const existing = modelControllersRef.current.get(key);
+    if (existing) existing.abort();
+    const controller = new AbortController();
+    modelControllersRef.current.set(key, controller);
+    setModelFetches((prev) => ({
+      ...prev,
+      [key]: {
+        state: "busy",
+        models: prev[key]?.models ?? [],
+        message: "正在拉取模型列表…",
+        requiresKey: false,
+        filter: prev[key]?.filter ?? "",
+        open: true,
+      },
+    }));
+    try {
+      const result = await adminApi.listModels(payload, csrfToken, controller.signal);
+      if (controller.signal.aborted) return;
+      modelControllersRef.current.delete(key);
+      if (result.ok) {
+        const models = result.models ?? [];
+        setModelFetches((prev) => ({
+          ...prev,
+          [key]: {
+            state: "ok",
+            models,
+            message:
+              result.detail ||
+              (models.length > 0
+                ? `已拉取 ${models.length} 个模型（${result.latency_ms} ms）`
+                : "接口返回空模型列表，请手动填写"),
+            requiresKey: false,
+            filter: "",
+            open: true,
+          },
+        }));
+      } else {
+        setModelFetches((prev) => ({
+          ...prev,
+          [key]: {
+            state: "err",
+            models: [],
+            message: result.detail || "未能拉取模型列表，请检查地址或手动填写",
+            requiresKey: Boolean(result.requires_api_key),
+            filter: "",
+            open: Boolean(result.requires_api_key),
+          },
+        }));
+      }
+    } catch (reason) {
+      if (controller.signal.aborted) return;
+      modelControllersRef.current.delete(key);
+      if (reason instanceof AdminApiError && reason.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      setModelFetches((prev) => ({
+        ...prev,
+        [key]: {
+          state: "err",
+          models: [],
+          message: reason instanceof AdminApiError ? reason.message : "拉取模型列表失败，请检查网络或配置。",
+          requiresKey: false,
+          filter: "",
+          open: false,
+        },
+      }));
+    }
+  }
 
   const applyServerConfig = useCallback(
     (
@@ -1180,10 +1386,7 @@ export function ServicesPage() {
     }
   }
 
-  async function runConnectionTest(
-    key: string,
-    payload: Parameters<typeof adminApi.testConnection>[0],
-  ) {
+  async function runConnectionTest(key: string, payload: Parameters<typeof adminApi.testConnection>[0]) {
     abortTestKey(key);
     const controller = new AbortController();
     testControllersRef.current.set(key, controller);
@@ -1252,6 +1455,7 @@ export function ServicesPage() {
     if (!target) return;
     abortTestKey(`free:${target.id}`);
     if (patch.api_key !== undefined || patch.base_url !== undefined || patch.protocol !== undefined) {
+      abortModelFetchKey(`free:${target.id}`);
       setFreeSafetyBlockedIds((prev) => (prev.includes(target.id) ? prev.filter((id) => id !== target.id) : prev));
     }
     setFreeDirty(true);
@@ -1317,6 +1521,7 @@ export function ServicesPage() {
     const target = freeDraft.providers[index];
     if (target) {
       abortTestKey(`free:${target.id}`);
+      abortModelFetchKey(`free:${target.id}`);
       setFreeSafetyBlockedIds((prev) => (prev.includes(target.id) ? prev.filter((id) => id !== target.id) : prev));
     }
     setFreeDirty(true);
@@ -1453,11 +1658,11 @@ export function ServicesPage() {
     }
   }
 
-  // ---- 分区 3B：模型单价热表 ----
+  // ---- 分区 3B：模型单价热表与 GitHub 远程同步 ----
   async function savePricing() {
     if (!config || pricingSaving) return;
     const models: ModelPriceEntry[] = [];
-    for (const row of pricingDraft) {
+    for (const row of pricingDraft.models) {
       const name = row.model.trim();
       if (!name) continue;
       const cacheHit = parseStrictFinite(row.cache_hit);
@@ -1490,6 +1695,18 @@ export function ServicesPage() {
         peak_factor: peakFactor,
       });
     }
+
+    const usdToCny = parseStrictFinite(pricingDraft.sync.usd_to_cny);
+    const intervalHours = Number(pricingDraft.sync.sync_interval_hours.trim());
+    if (!Number.isFinite(usdToCny) || usdToCny <= 0 || usdToCny > 100) {
+      setPricingBanner({ tone: "err", message: "美元汇率（USD → CNY）须为 0 至 100 之间的有限正数。" });
+      return;
+    }
+    if (!Number.isInteger(intervalHours) || intervalHours < 1 || intervalHours > 720) {
+      setPricingBanner({ tone: "err", message: "自动同步周期须为 1 至 720 之间的整数小时。" });
+      return;
+    }
+
     setPricingSaving(true);
     setPricingBanner(null);
     try {
@@ -1498,11 +1715,18 @@ export function ServicesPage() {
         {
           expected_revision: config.revision,
           models,
+          sync: {
+            source_url: pricingDraft.sync.source_url.trim(),
+            source_format: pricingDraft.sync.source_format,
+            usd_to_cny: usdToCny,
+            auto_sync_enabled: pricingDraft.sync.auto_sync_enabled,
+            sync_interval_hours: intervalHours,
+          },
         },
         csrfToken,
       );
       applyServerConfig(updated, { resetOnly: "pricing" });
-      setPricingBanner({ tone: "ok", message: `模型单价表已保存并实时生效（v${updated.revision}）。` });
+      setPricingBanner({ tone: "ok", message: `模型单价与同步配置已保存并实时生效（v${updated.revision}）。` });
     } catch (reason) {
       if (reason instanceof AdminApiError && reason.status === 401) {
         handleUnauthorized();
@@ -1511,6 +1735,49 @@ export function ServicesPage() {
       setPricingBanner(formatSaveError(reason));
     } finally {
       setPricingSaving(false);
+    }
+  }
+
+  async function runPricingSyncNow() {
+    if (!config || pricingSyncing) return;
+    const savedSource = (config.pricing.sync?.source_url ?? "").trim();
+    const draftSource = pricingDraft.sync.source_url.trim();
+    const savedFormat = config.pricing.sync?.source_format ?? "auto";
+    if (draftSource !== savedSource || pricingDraft.sync.source_format !== savedFormat) {
+      setPricingBanner({
+        tone: "info",
+        message: "你修改了远程单价源地址或格式，请先点击下方「保存模型单价」，再点击「立即同步」。",
+      });
+      return;
+    }
+    if (!savedSource) {
+      setPricingBanner({ tone: "err", message: "请先填写远程模型单价源地址并保存。" });
+      return;
+    }
+    setPricingSyncing(true);
+    setPricingBanner(null);
+    try {
+      const status: PricingSyncStatusView = await adminApi.syncPricing(csrfToken);
+      setConfig((prev) => (prev ? { ...prev, pricing_sync_status: status } : prev));
+      if (status.status === "ok") {
+        setPricingBanner({
+          tone: "ok",
+          message: `远程单价同步完成：共缓存 ${status.model_count} 个模型（手动热表保持优先不被覆盖）。`,
+        });
+      } else {
+        setPricingBanner({
+          tone: "err",
+          message: `同步失败：${status.last_error || "无法拉取远程价格源"}${status.model_count > 0 ? `（已保留原有 ${status.model_count} 个模型缓存）` : ""}`,
+        });
+      }
+    } catch (reason) {
+      if (reason instanceof AdminApiError && reason.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      setPricingBanner(formatSaveError(reason));
+    } finally {
+      setPricingSyncing(false);
     }
   }
 
@@ -1666,9 +1933,7 @@ export function ServicesPage() {
             <button
               type="button"
               className="ac-btn sm"
-              onClick={() =>
-                banner.conflict ? void loadConfig({ resetOnly: section }) : adoptLatestSection(section)
-              }
+              onClick={() => (banner.conflict ? void loadConfig({ resetOnly: section }) : adoptLatestSection(section))}
             >
               全部采用最新覆盖草稿
             </button>
@@ -1791,11 +2056,15 @@ export function ServicesPage() {
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {freeDraft.providers.map((provider, index) => {
               const diag = testDiags[`free:${provider.id}`];
+              const fetchKey = `free:${provider.id}`;
+              const modelFetch = modelFetches[fetchKey];
               const endpointChanged =
                 provider.serverSecret.configured &&
                 provider.api_key.action === "keep" &&
-                (provider.base_url.trim() !== provider.originalUrl ||
-                  provider.protocol !== provider.originalProtocol);
+                (provider.base_url.trim() !== provider.originalUrl || provider.protocol !== provider.originalProtocol);
+              const filteredModels = (modelFetch?.models ?? []).filter((m) =>
+                modelFetch?.filter.trim() ? m.toLowerCase().includes(modelFetch.filter.trim().toLowerCase()) : true,
+              );
               return (
                 <article key={provider.id} className="ac-provider-card">
                   <div className="ac-provider-hd">
@@ -1833,6 +2102,25 @@ export function ServicesPage() {
                       <button
                         type="button"
                         className="ac-btn sm"
+                        disabled={
+                          modelFetch?.state === "busy" || endpointChanged || freeSafetyBlockedIds.includes(provider.id)
+                        }
+                        onClick={() => {
+                          if (freeSafetyBlockedIds.includes(provider.id)) return;
+                          void runModelFetch(fetchKey, {
+                            target: "free_provider",
+                            provider_id: provider.id,
+                            protocol: provider.protocol,
+                            base_url: provider.base_url.trim(),
+                            api_key: provider.api_key,
+                          });
+                        }}
+                      >
+                        {modelFetch?.state === "busy" ? "拉取中…" : "拉取模型"}
+                      </button>
+                      <button
+                        type="button"
+                        className="ac-btn sm"
                         disabled={diag?.state === "busy" || freeSafetyBlockedIds.includes(provider.id)}
                         onClick={() => {
                           if (freeSafetyBlockedIds.includes(provider.id)) return;
@@ -1849,11 +2137,7 @@ export function ServicesPage() {
                       >
                         {diag?.state === "busy" ? "测试中…" : "测试连接"}
                       </button>
-                      <button
-                        type="button"
-                        className="ac-btn sm danger"
-                        onClick={() => removeFreeProvider(index)}
-                      >
+                      <button type="button" className="ac-btn sm danger" onClick={() => removeFreeProvider(index)}>
                         删除渠道
                       </button>
                     </div>
@@ -1949,6 +2233,78 @@ export function ServicesPage() {
                       )}
                     </div>
                   </div>
+
+                  {modelFetch && (
+                    <>
+                      <span className={`ac-diag ${modelFetch.state}`} role="status">
+                        <span className="ac-dot" aria-hidden="true" />
+                        {modelFetch.message}
+                      </span>
+                      {modelFetch.open && modelFetch.models.length > 0 && (
+                        <div
+                          className="ac-model-picker"
+                          aria-label={`渠道 ${provider.name || provider.id} 可用模型列表`}
+                        >
+                          <div className="ac-model-picker-head">
+                            <input
+                              type="search"
+                              placeholder={`筛选模型（共 ${modelFetch.models.length} 个）…`}
+                              value={modelFetch.filter}
+                              onChange={(event) =>
+                                setModelFetches((prev) => ({
+                                  ...prev,
+                                  [fetchKey]: { ...prev[fetchKey]!, filter: event.target.value },
+                                }))
+                              }
+                            />
+                            <button
+                              type="button"
+                              className="ac-btn sm"
+                              onClick={() =>
+                                setModelFetches((prev) => ({
+                                  ...prev,
+                                  [fetchKey]: { ...prev[fetchKey]!, open: false },
+                                }))
+                              }
+                            >
+                              收起
+                            </button>
+                          </div>
+                          <div className="ac-model-list">
+                            {filteredModels.slice(0, 60).map((modelId) => (
+                              <div key={modelId} className="ac-model-item">
+                                <code>{modelId}</code>
+                                <div className="ac-actions">
+                                  <button
+                                    type="button"
+                                    className={`ac-btn sm${provider.model === modelId ? " primary" : ""}`}
+                                    onClick={() => updateProvider(index, { model: modelId })}
+                                  >
+                                    {provider.model === modelId ? "当前主模型" : "设为主模型"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={`ac-btn sm${provider.fallback_model === modelId ? " primary" : ""}`}
+                                    onClick={() => updateProvider(index, { fallback_model: modelId })}
+                                  >
+                                    {provider.fallback_model === modelId ? "当前备选" : "设为备选"}
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                            {filteredModels.length === 0 && (
+                              <span className="ac-hint">未找到匹配的模型名称，可清空关键词或手动填写。</span>
+                            )}
+                            {filteredModels.length > 60 && (
+                              <span className="ac-hint">
+                                仅展示前 60 个匹配项（共 {filteredModels.length} 个），请输入关键词进一步筛选。
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
 
                   {diag && (
                     <span className={`ac-diag ${diag.state}`} role="status">
@@ -2107,9 +2463,7 @@ export function ServicesPage() {
                   <input
                     type="checkbox"
                     checked={parserDraft.paddle_public_enabled}
-                    onChange={(event) =>
-                      patchParser({ paddle_public_enabled: event.target.checked }, "paddle")
-                    }
+                    onChange={(event) => patchParser({ paddle_public_enabled: event.target.checked }, "paddle")}
                   />
                   <span>向前台开放 PaddleOCR-VL 解析选项</span>
                 </label>
@@ -2217,14 +2571,12 @@ export function ServicesPage() {
             </div>
 
             <div className="ac-alert info" style={{ marginBottom: 12 }}>
-              <span>
-                安全提示：后台绝不保存访客密钥；修改默认推荐地址时不会自动迁移环境变量中的共享密钥。
-              </span>
+              <span>安全提示：后台绝不保存访客密钥；修改默认推荐地址时不会自动迁移环境变量中的共享密钥。</span>
             </div>
 
             {renderBanner("llm", llmBanner)}
 
-            <div className="ac-grid-3" style={{ marginTop: llmBanner ? 12 : 0, marginBottom: 14 }}>
+            <div className="ac-grid-3" style={{ marginTop: llmBanner ? 12 : 0, marginBottom: 10 }}>
               <div className="ac-field">
                 <label htmlFor="default-llm-url">默认推荐地址</label>
                 <input
@@ -2233,6 +2585,7 @@ export function ServicesPage() {
                   className="mono"
                   value={llmDraft.base_url}
                   onChange={(event) => {
+                    abortModelFetchKey("llm:default");
                     setLlmDirty(true);
                     setLlmDraft({ ...llmDraft, base_url: event.target.value });
                   }}
@@ -2244,6 +2597,7 @@ export function ServicesPage() {
                   id="default-llm-protocol"
                   value={llmDraft.protocol}
                   onChange={(event) => {
+                    abortModelFetchKey("llm:default");
                     setLlmDirty(true);
                     setLlmDraft({ ...llmDraft, protocol: event.target.value as "openai" | "anthropic" });
                   }}
@@ -2253,7 +2607,24 @@ export function ServicesPage() {
                 </select>
               </div>
               <div className="ac-field">
-                <label htmlFor="default-llm-model">默认模型</label>
+                <label htmlFor="default-llm-model">
+                  <span>默认模型</span>
+                  <button
+                    type="button"
+                    className="ac-link-btn"
+                    disabled={modelFetches["llm:default"]?.state === "busy"}
+                    onClick={() =>
+                      void runModelFetch("llm:default", {
+                        target: "default_llm",
+                        protocol: llmDraft.protocol,
+                        base_url: llmDraft.base_url.trim(),
+                        probe_api_key: probeKeys["llm:default"]?.trim() || "",
+                      })
+                    }
+                  >
+                    {modelFetches["llm:default"]?.state === "busy" ? "拉取中…" : "拉取默认模型列表"}
+                  </button>
+                </label>
                 <input
                   id="default-llm-model"
                   type="text"
@@ -2266,6 +2637,95 @@ export function ServicesPage() {
                 />
               </div>
             </div>
+
+            {(() => {
+              const defFetch = modelFetches["llm:default"];
+              if (!defFetch) return null;
+              const defFiltered = defFetch.models.filter((m) =>
+                defFetch.filter.trim() ? m.toLowerCase().includes(defFetch.filter.trim().toLowerCase()) : true,
+              );
+              return (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+                  <span className={`ac-diag ${defFetch.state}`} role="status">
+                    <span className="ac-dot" aria-hidden="true" />
+                    {defFetch.message}
+                  </span>
+                  {defFetch.requiresKey && (
+                    <div className="ac-probe-bar">
+                      <input
+                        type="password"
+                        autoComplete="off"
+                        aria-label="默认推荐临时探测 Key"
+                        placeholder="输入一次性临时探测 Key（仅用于拉取模型，绝不保存）"
+                        value={probeKeys["llm:default"] ?? ""}
+                        onChange={(event) => setProbeKeys((prev) => ({ ...prev, "llm:default": event.target.value }))}
+                      />
+                      <button
+                        type="button"
+                        className="ac-btn sm primary"
+                        disabled={!probeKeys["llm:default"]?.trim()}
+                        onClick={() =>
+                          void runModelFetch("llm:default", {
+                            target: "default_llm",
+                            protocol: llmDraft.protocol,
+                            base_url: llmDraft.base_url.trim(),
+                            probe_api_key: probeKeys["llm:default"]?.trim() || "",
+                          })
+                        }
+                      >
+                        用临时 Key 拉取
+                      </button>
+                    </div>
+                  )}
+                  {defFetch.open && defFetch.models.length > 0 && (
+                    <div className="ac-model-picker" aria-label="默认推荐可用模型列表">
+                      <div className="ac-model-picker-head">
+                        <input
+                          type="search"
+                          placeholder={`筛选模型（共 ${defFetch.models.length} 个）…`}
+                          value={defFetch.filter}
+                          onChange={(event) =>
+                            setModelFetches((prev) => ({
+                              ...prev,
+                              "llm:default": { ...prev["llm:default"]!, filter: event.target.value },
+                            }))
+                          }
+                        />
+                        <button
+                          type="button"
+                          className="ac-btn sm"
+                          onClick={() =>
+                            setModelFetches((prev) => ({
+                              ...prev,
+                              "llm:default": { ...prev["llm:default"]!, open: false },
+                            }))
+                          }
+                        >
+                          收起
+                        </button>
+                      </div>
+                      <div className="ac-model-list">
+                        {defFiltered.slice(0, 60).map((modelId) => (
+                          <div key={modelId} className="ac-model-item">
+                            <code>{modelId}</code>
+                            <button
+                              type="button"
+                              className={`ac-btn sm${llmDraft.model === modelId ? " primary" : ""}`}
+                              onClick={() => {
+                                setLlmDirty(true);
+                                setLlmDraft({ ...llmDraft, model: modelId });
+                              }}
+                            >
+                              {llmDraft.model === modelId ? "已选为默认" : "设为默认模型"}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             <div className="ac-actions" style={{ justifyContent: "space-between", marginBottom: 8 }}>
               <strong>快捷服务商预设列表</strong>
@@ -2346,9 +2806,7 @@ export function ServicesPage() {
                           setLlmDraft({
                             ...llmDraft,
                             presets: llmDraft.presets.map((p, idx) =>
-                              idx === index
-                                ? { ...p, protocol: event.target.value as "openai" | "anthropic" }
-                                : p,
+                              idx === index ? { ...p, protocol: event.target.value as "openai" | "anthropic" } : p,
                             ),
                           });
                         }}
@@ -2388,24 +2846,151 @@ export function ServicesPage() {
                       />
                     </td>
                     <td>
-                      <button
-                        type="button"
-                        className="ac-btn sm danger"
-                        onClick={() => {
-                          setLlmDirty(true);
-                          setLlmDraft({
-                            ...llmDraft,
-                            presets: llmDraft.presets.filter((_, idx) => idx !== index),
-                          });
-                        }}
-                      >
-                        删除
-                      </button>
+                      <div className="ac-actions">
+                        <button
+                          type="button"
+                          className="ac-btn sm"
+                          disabled={modelFetches[`llm:preset:${index}`]?.state === "busy"}
+                          onClick={() => {
+                            const pKey = `llm:preset:${index}`;
+                            setActivePresetModelKey(pKey);
+                            void runModelFetch(pKey, {
+                              target: "default_llm",
+                              protocol: preset.protocol,
+                              base_url: preset.base_url.trim(),
+                              probe_api_key: probeKeys[pKey]?.trim() || "",
+                            });
+                          }}
+                        >
+                          {modelFetches[`llm:preset:${index}`]?.state === "busy" ? "拉取中…" : "拉取模型"}
+                        </button>
+                        <button
+                          type="button"
+                          className="ac-btn sm danger"
+                          onClick={() => {
+                            abortModelFetchKey(`llm:preset:${index}`);
+                            if (activePresetModelKey === `llm:preset:${index}`) setActivePresetModelKey(null);
+                            setLlmDirty(true);
+                            setLlmDraft({
+                              ...llmDraft,
+                              presets: llmDraft.presets.filter((_, idx) => idx !== index),
+                            });
+                          }}
+                        >
+                          删除
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+
+            {(() => {
+              if (!activePresetModelKey) return null;
+              const match = /^llm:preset:(\d+)$/.exec(activePresetModelKey);
+              const presetIdx = match ? Number(match[1]) : -1;
+              const targetPreset = presetIdx >= 0 ? llmDraft.presets[presetIdx] : undefined;
+              const pFetch = modelFetches[activePresetModelKey];
+              if (!targetPreset || !pFetch) return null;
+              const currentModels = targetPreset.modelsText
+                .split(",")
+                .map((m) => m.trim())
+                .filter(Boolean);
+              const filtered = pFetch.models.filter((m) =>
+                pFetch.filter.trim() ? m.toLowerCase().includes(pFetch.filter.trim().toLowerCase()) : true,
+              );
+              const togglePresetModel = (modelId: string) => {
+                const exists = currentModels.includes(modelId);
+                const nextModels = exists ? currentModels.filter((m) => m !== modelId) : [...currentModels, modelId];
+                setLlmDirty(true);
+                setLlmDraft({
+                  ...llmDraft,
+                  presets: llmDraft.presets.map((p, idx) =>
+                    idx === presetIdx ? { ...p, modelsText: nextModels.join(", ") } : p,
+                  ),
+                });
+              };
+              return (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
+                  <div className="ac-actions" style={{ justifyContent: "space-between" }}>
+                    <span className={`ac-diag ${pFetch.state}`} role="status">
+                      <span className="ac-dot" aria-hidden="true" />
+                      预设「{targetPreset.name || targetPreset.id}」：{pFetch.message}
+                    </span>
+                    <button type="button" className="ac-btn sm" onClick={() => setActivePresetModelKey(null)}>
+                      关闭
+                    </button>
+                  </div>
+                  {pFetch.requiresKey && (
+                    <div className="ac-probe-bar">
+                      <input
+                        type="password"
+                        autoComplete="off"
+                        aria-label={`预设 ${targetPreset.name || targetPreset.id} 临时探测 Key`}
+                        placeholder="输入一次性临时探测 Key（仅用于拉取该预设模型，绝不保存）"
+                        value={probeKeys[activePresetModelKey] ?? ""}
+                        onChange={(event) =>
+                          setProbeKeys((prev) => ({ ...prev, [activePresetModelKey]: event.target.value }))
+                        }
+                      />
+                      <button
+                        type="button"
+                        className="ac-btn sm primary"
+                        disabled={!probeKeys[activePresetModelKey]?.trim()}
+                        onClick={() =>
+                          void runModelFetch(activePresetModelKey, {
+                            target: "default_llm",
+                            protocol: targetPreset.protocol,
+                            base_url: targetPreset.base_url.trim(),
+                            probe_api_key: probeKeys[activePresetModelKey]?.trim() || "",
+                          })
+                        }
+                      >
+                        用临时 Key 拉取
+                      </button>
+                    </div>
+                  )}
+                  {pFetch.open && pFetch.models.length > 0 && (
+                    <div
+                      className="ac-model-picker"
+                      aria-label={`预设 ${targetPreset.name || targetPreset.id} 模型选择器`}
+                    >
+                      <div className="ac-model-picker-head">
+                        <input
+                          type="search"
+                          placeholder={`筛选模型（共 ${pFetch.models.length} 个）…`}
+                          value={pFetch.filter}
+                          onChange={(event) =>
+                            setModelFetches((prev) => ({
+                              ...prev,
+                              [activePresetModelKey]: { ...prev[activePresetModelKey]!, filter: event.target.value },
+                            }))
+                          }
+                        />
+                      </div>
+                      <div className="ac-model-list">
+                        {filtered.slice(0, 60).map((modelId) => {
+                          const selected = currentModels.includes(modelId);
+                          return (
+                            <div key={modelId} className="ac-model-item">
+                              <code>{modelId}</code>
+                              <button
+                                type="button"
+                                className={`ac-btn sm${selected ? " primary" : ""}`}
+                                onClick={() => togglePresetModel(modelId)}
+                              >
+                                {selected ? "已加入（点击移出）" : "加入预设"}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             <div className="ac-card-ft">
               <span className="ac-hint">单独保存到 default_llm 分区。</span>
@@ -2438,9 +3023,9 @@ export function ServicesPage() {
             <div className="ac-card-hd">
               <div>
                 <h2 className="ac-card-title" id="svc-pricing-heading">
-                  模型单价热表（元 / 百万 Token）
+                  模型单价热表与远程同步（元 / 百万 Token）
                 </h2>
-                <p className="ac-card-sub">覆盖内置单价，服务商调价时免发版实时同步费用预估与计费。</p>
+                <p className="ac-card-sub">支持一键与定时同步 GitHub 开源单价源，同时保留手动单价热表优先覆盖。</p>
               </div>
               <button
                 type="button"
@@ -2448,10 +3033,13 @@ export function ServicesPage() {
                 onClick={() => {
                   setPricingDirty(true);
                   setPricingBanner(null);
-                  setPricingDraft([
+                  setPricingDraft({
                     ...pricingDraft,
-                    { model: "", cache_hit: "0", cache_miss: "0", output: "0", peak_factor: "1" },
-                  ]);
+                    models: [
+                      ...pricingDraft.models,
+                      { model: "", cache_hit: "0", cache_miss: "0", output: "0", peak_factor: "1" },
+                    ],
+                  });
                 }}
               >
                 新增模型单价
@@ -2460,7 +3048,200 @@ export function ServicesPage() {
 
             {renderBanner("pricing", pricingBanner)}
 
-            <table className="ac-table" style={{ marginTop: pricingBanner ? 12 : 0 }}>
+            {(() => {
+              const syncStatus = config.pricing_sync_status;
+              const badgeTone =
+                pricingSyncing || syncStatus?.syncing
+                  ? "pen"
+                  : syncStatus?.status === "ok"
+                    ? "ok"
+                    : syncStatus?.status === "error"
+                      ? "err"
+                      : "";
+              const badgeLabel =
+                pricingSyncing || syncStatus?.syncing
+                  ? "同步中…"
+                  : syncStatus?.status === "ok"
+                    ? `已同步 · ${syncStatus.model_count} 个模型`
+                    : syncStatus?.status === "error"
+                      ? `同步异常（缓存 ${syncStatus.model_count} 个）`
+                      : "尚未同步";
+              return (
+                <div
+                  className="ac-sync-box"
+                  aria-label="GitHub 远程模型单价源配置"
+                  style={{ marginTop: pricingBanner ? 12 : 0 }}
+                >
+                  <div className="ac-sync-head">
+                    <div>
+                      <strong>GitHub 远程模型单价源</strong>
+                      <div className="ac-sync-meta">
+                        <span>上次同步：{formatSyncTime(syncStatus?.synced_at)}</span>
+                        <span>
+                          自动同步：
+                          {pricingDraft.sync.auto_sync_enabled
+                            ? `每 ${pricingDraft.sync.sync_interval_hours || "24"} 小时自动同步一次`
+                            : "已关闭"}
+                        </span>
+                      </div>
+                      {syncStatus?.last_error && (
+                        <span className="ac-field-err" role="alert">
+                          最近错误：{syncStatus.last_error}
+                        </span>
+                      )}
+                    </div>
+                    <div className="ac-actions">
+                      <span className={`ac-badge mono ${badgeTone}`}>{badgeLabel}</span>
+                      <button
+                        type="button"
+                        className="ac-btn sm primary"
+                        disabled={pricingSyncing || !pricingDraft.sync.source_url.trim()}
+                        onClick={() => void runPricingSyncNow()}
+                      >
+                        {pricingSyncing ? "同步中…" : "立即同步"}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="ac-field">
+                    <label htmlFor="pricing-source-url">
+                      <span>价格源 JSON 地址（HTTPS · 留空停用）</span>
+                      <span className="ac-actions">
+                        <button
+                          type="button"
+                          className="ac-link-btn"
+                          onClick={() => {
+                            setPricingDirty(true);
+                            setPricingBanner(null);
+                            setPricingDraft({
+                              ...pricingDraft,
+                              sync: {
+                                ...pricingDraft.sync,
+                                source_url: DEFAULT_PRICING_SOURCE_URL,
+                                source_format: "auto",
+                              },
+                            });
+                          }}
+                        >
+                          恢复默认 Wei-Shaw 源
+                        </button>
+                        <button
+                          type="button"
+                          className="ac-link-btn"
+                          onClick={() => {
+                            setPricingDirty(true);
+                            setPricingBanner(null);
+                            setPricingDraft({
+                              ...pricingDraft,
+                              sync: { ...pricingDraft.sync, source_url: "" },
+                            });
+                          }}
+                        >
+                          清空停用
+                        </button>
+                      </span>
+                    </label>
+                    <input
+                      id="pricing-source-url"
+                      type="url"
+                      className="mono"
+                      placeholder={DEFAULT_PRICING_SOURCE_URL}
+                      value={pricingDraft.sync.source_url}
+                      onChange={(event) => {
+                        setPricingDirty(true);
+                        setPricingBanner(null);
+                        setPricingDraft({
+                          ...pricingDraft,
+                          sync: { ...pricingDraft.sync, source_url: event.target.value },
+                        });
+                      }}
+                    />
+                  </div>
+
+                  <div className="ac-grid-4">
+                    <div className="ac-field">
+                      <label htmlFor="pricing-source-format">源格式</label>
+                      <select
+                        id="pricing-source-format"
+                        value={pricingDraft.sync.source_format}
+                        onChange={(event) => {
+                          setPricingDirty(true);
+                          setPricingDraft({
+                            ...pricingDraft,
+                            sync: {
+                              ...pricingDraft.sync,
+                              source_format: event.target.value as PricingSyncDraft["source_format"],
+                            },
+                          });
+                        }}
+                      >
+                        <option value="auto">自动识别（推荐）</option>
+                        <option value="litellm">LiteLLM / Wei-Shaw（USD/token）</option>
+                        <option value="models_dev">models.dev（USD/1M）</option>
+                        <option value="pdftr">pdftr 原生（CNY/1M）</option>
+                      </select>
+                    </div>
+
+                    <div className="ac-field">
+                      <label htmlFor="pricing-usd-rate">USD → CNY 汇率</label>
+                      <input
+                        id="pricing-usd-rate"
+                        type="number"
+                        step="0.01"
+                        min={0.1}
+                        max={100}
+                        value={pricingDraft.sync.usd_to_cny}
+                        onChange={(event) => {
+                          setPricingDirty(true);
+                          setPricingDraft({
+                            ...pricingDraft,
+                            sync: { ...pricingDraft.sync, usd_to_cny: event.target.value },
+                          });
+                        }}
+                      />
+                    </div>
+
+                    <div className="ac-field">
+                      <label htmlFor="pricing-sync-interval">自动周期（小时）</label>
+                      <input
+                        id="pricing-sync-interval"
+                        type="number"
+                        min={1}
+                        max={720}
+                        value={pricingDraft.sync.sync_interval_hours}
+                        onChange={(event) => {
+                          setPricingDirty(true);
+                          setPricingDraft({
+                            ...pricingDraft,
+                            sync: { ...pricingDraft.sync, sync_interval_hours: event.target.value },
+                          });
+                        }}
+                      />
+                    </div>
+
+                    <label className="ac-toggle" style={{ minHeight: 34 }}>
+                      <input
+                        type="checkbox"
+                        checked={pricingDraft.sync.auto_sync_enabled}
+                        onChange={(event) => {
+                          setPricingDirty(true);
+                          setPricingDraft({
+                            ...pricingDraft,
+                            sync: { ...pricingDraft.sync, auto_sync_enabled: event.target.checked },
+                          });
+                        }}
+                      />
+                      <span>开启自动同步</span>
+                    </label>
+                  </div>
+                  <span className="ac-hint">
+                    双层隔离：远程同步缓存保存在独立文件中，绝不覆盖下方手动单价热表；计价时始终优先采用下方手动热表。
+                  </span>
+                </div>
+              );
+            })()}
+
+            <table className="ac-table">
               <thead>
                 <tr>
                   <th>模型名称</th>
@@ -2472,7 +3253,7 @@ export function ServicesPage() {
                 </tr>
               </thead>
               <tbody>
-                {pricingDraft.map((row, index) => (
+                {pricingDraft.models.map((row, index) => (
                   <tr key={index}>
                     <td>
                       <input
@@ -2481,11 +3262,12 @@ export function ServicesPage() {
                         value={row.model}
                         onChange={(event) => {
                           setPricingDirty(true);
-                          setPricingDraft(
-                            pricingDraft.map((item, idx) =>
+                          setPricingDraft({
+                            ...pricingDraft,
+                            models: pricingDraft.models.map((item, idx) =>
                               idx === index ? { ...item, model: event.target.value } : item,
                             ),
-                          );
+                          });
                         }}
                       />
                     </td>
@@ -2498,11 +3280,12 @@ export function ServicesPage() {
                         value={row.cache_hit}
                         onChange={(event) => {
                           setPricingDirty(true);
-                          setPricingDraft(
-                            pricingDraft.map((item, idx) =>
+                          setPricingDraft({
+                            ...pricingDraft,
+                            models: pricingDraft.models.map((item, idx) =>
                               idx === index ? { ...item, cache_hit: event.target.value } : item,
                             ),
-                          );
+                          });
                         }}
                       />
                     </td>
@@ -2515,11 +3298,12 @@ export function ServicesPage() {
                         value={row.cache_miss}
                         onChange={(event) => {
                           setPricingDirty(true);
-                          setPricingDraft(
-                            pricingDraft.map((item, idx) =>
+                          setPricingDraft({
+                            ...pricingDraft,
+                            models: pricingDraft.models.map((item, idx) =>
                               idx === index ? { ...item, cache_miss: event.target.value } : item,
                             ),
-                          );
+                          });
                         }}
                       />
                     </td>
@@ -2532,11 +3316,12 @@ export function ServicesPage() {
                         value={row.output}
                         onChange={(event) => {
                           setPricingDirty(true);
-                          setPricingDraft(
-                            pricingDraft.map((item, idx) =>
+                          setPricingDraft({
+                            ...pricingDraft,
+                            models: pricingDraft.models.map((item, idx) =>
                               idx === index ? { ...item, output: event.target.value } : item,
                             ),
-                          );
+                          });
                         }}
                       />
                     </td>
@@ -2550,11 +3335,12 @@ export function ServicesPage() {
                         value={row.peak_factor}
                         onChange={(event) => {
                           setPricingDirty(true);
-                          setPricingDraft(
-                            pricingDraft.map((item, idx) =>
+                          setPricingDraft({
+                            ...pricingDraft,
+                            models: pricingDraft.models.map((item, idx) =>
                               idx === index ? { ...item, peak_factor: event.target.value } : item,
                             ),
-                          );
+                          });
                         }}
                       />
                     </td>
@@ -2564,7 +3350,10 @@ export function ServicesPage() {
                         className="ac-btn sm danger"
                         onClick={() => {
                           setPricingDirty(true);
-                          setPricingDraft(pricingDraft.filter((_, idx) => idx !== index));
+                          setPricingDraft({
+                            ...pricingDraft,
+                            models: pricingDraft.models.filter((_, idx) => idx !== index),
+                          });
                         }}
                       >
                         删除
@@ -2576,7 +3365,9 @@ export function ServicesPage() {
             </table>
 
             <div className="ac-card-ft">
-              <span className="ac-hint">未列入此表的模型将显示「按服务商计费」，独立保存 pricing 分区。</span>
+              <span className="ac-hint">
+                未命中手动热表与远程缓存的模型将显示「按服务商计费」，独立保存 pricing 分区。
+              </span>
               <div className="ac-actions">
                 <button
                   type="button"

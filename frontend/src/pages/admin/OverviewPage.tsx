@@ -28,6 +28,21 @@ const STAGE_LABELS: Record<string, string> = {
   done: "已完成",
 };
 
+const jobDateTime = new Intl.DateTimeFormat("zh-CN", {
+  timeZone: "Asia/Shanghai",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+function formatJobTime(iso?: string | null): string {
+  if (!iso) return "";
+  const parsed = new Date(iso);
+  return Number.isNaN(parsed.getTime()) ? "" : jobDateTime.format(parsed);
+}
+
 const STATUS_LABELS: Record<string, string> = {
   queued: "排队中",
   running: "处理中",
@@ -36,15 +51,7 @@ const STATUS_LABELS: Record<string, string> = {
   cancelled: "已取消",
 };
 
-function QueueCard({
-  title,
-  stats,
-  footnote,
-}: {
-  title: string;
-  stats: QueueSlotStats;
-  footnote: string;
-}) {
+function QueueCard({ title, stats, footnote }: { title: string; stats: QueueSlotStats; footnote: string }) {
   const ratio = stats.limit > 0 ? Math.min(100, Math.round((stats.in_use / stats.limit) * 100)) : 0;
   const barTone = ratio >= 100 ? "warn" : "ok";
   const badgeTone = stats.waiting > 0 ? "pen" : stats.in_use > 0 ? "ok" : "";
@@ -280,11 +287,7 @@ export function OverviewPage() {
                   <span>免费上游池（{data.services.usable_providers} 个可用渠道）</span>
                   <span
                     className={`ac-badge ${
-                      data.services.free_enabled
-                        ? data.services.free_ready
-                          ? "ok"
-                          : "warn"
-                        : ""
+                      data.services.free_enabled ? (data.services.free_ready ? "ok" : "warn") : ""
                     }`}
                   >
                     {data.services.free_enabled
@@ -349,9 +352,9 @@ export function OverviewPage() {
             <div className="ac-card-hd">
               <div>
                 <h2 className="ac-card-title" id="active-jobs-heading">
-                  当前在途任务（脱敏）
+                  当前在途任务
                 </h2>
-                <p className="ac-card-sub">仅显示任务 ID 缩写、页数、阶段、进度与方式，不包含论文正文</p>
+                <p className="ac-card-sub">实时展示正在解析或翻译的文件名、页数、阶段、进度与提交时间</p>
               </div>
               <span className="ac-badge mono">{data.active_jobs.length} 个在途</span>
             </div>
@@ -360,7 +363,7 @@ export function OverviewPage() {
               <table className="ac-table">
                 <thead>
                   <tr>
-                    <th>任务 ID</th>
+                    <th>文件与任务</th>
                     <th>页数</th>
                     <th>当前阶段</th>
                     <th>进度</th>
@@ -369,25 +372,36 @@ export function OverviewPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.active_jobs.map((job) => (
-                    <tr key={job.job_id}>
-                      <td className="ac-mono">{job.job_id.slice(0, 8)}</td>
-                      <td>{job.page_count} 页</td>
-                      <td>{STAGE_LABELS[job.stage] ?? (job.stage || "等待调度")}</td>
-                      <td className="ac-mono">
-                        {job.progress <= 1 ? Math.round(job.progress * 100) : Math.round(job.progress)}%
-                      </td>
-                      <td>
-                        <span className={`ac-badge ${job.channel_mode === "free" ? "pen" : ""}`}>
-                          {job.channel_mode === "free" ? "免费体验" : "自备 Key"}
-                        </span>{" "}
-                        <span className="ac-mono">{job.model || "-"}</span>
-                      </td>
-                      <td>
-                        <span className="ac-badge">{STATUS_LABELS[job.status] ?? job.status}</span>
-                      </td>
-                    </tr>
-                  ))}
+                  {data.active_jobs.map((job) => {
+                    const submittedLabel = formatJobTime(job.created_at);
+                    return (
+                      <tr key={job.job_id}>
+                        <td>
+                          <div className="ac-active-job-name" title={job.filename || job.job_id}>
+                            {job.filename || "未命名文件"}
+                          </div>
+                          <div className="ac-active-job-sub ac-mono">
+                            #{job.job_id.slice(0, 8)}
+                            {submittedLabel ? ` · ${submittedLabel}` : ""}
+                          </div>
+                        </td>
+                        <td>{job.page_count} 页</td>
+                        <td>{STAGE_LABELS[job.stage] ?? (job.stage || "等待调度")}</td>
+                        <td className="ac-mono">
+                          {job.progress <= 1 ? Math.round(job.progress * 100) : Math.round(job.progress)}%
+                        </td>
+                        <td>
+                          <span className={`ac-badge ${job.channel_mode === "free" ? "pen" : ""}`}>
+                            {job.channel_mode === "free" ? "免费体验" : "自备 Key"}
+                          </span>{" "}
+                          <span className="ac-mono">{job.model || "-"}</span>
+                        </td>
+                        <td>
+                          <span className="ac-badge">{STATUS_LABELS[job.status] ?? job.status}</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             ) : (

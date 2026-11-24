@@ -275,4 +275,26 @@ describe("首页内容", () => {
       expect(retry).toHaveBeenNthCalledWith(2, "cancelled");
     });
   });
+
+  it("首页底部居中提供 ToS 弹窗与独立条款页链接", async () => {
+    await renderHome(async (host) => {
+      const footer = host.querySelector(".home-footer")!;
+      expect(footer).not.toBeNull();
+      expect(footer.querySelector('a[href="/tos"]')).not.toBeNull();
+      const trigger = [...footer.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("服务条款与隐私说明"),
+      )!;
+      expect(trigger).toBeTruthy();
+
+      await act(async () => trigger.click());
+      const dialog = host.querySelector('[role="dialog"]')!;
+      expect(dialog).not.toBeNull();
+      expect(dialog.textContent).toContain("文档解析与翻译数据传输");
+      expect(dialog.querySelector('a[href="/tos"]')).not.toBeNull();
+
+      const closeBtn = [...dialog.querySelectorAll("button")].find((b) => b.textContent === "我已了解")!;
+      await act(async () => closeBtn.click());
+      expect(host.querySelector('[role="dialog"]')).toBeNull();
+    });
+  });
 });

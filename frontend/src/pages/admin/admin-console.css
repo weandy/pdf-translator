@@ -227,7 +227,10 @@
   text-decoration: none;
   font-size: 13.5px;
   font-weight: 500;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  transition:
+    background 0.12s,
+    color 0.12s,
+    border-color 0.12s;
 }
 
 .admin-nav-link:hover {
@@ -882,52 +885,109 @@
 
 .ac-record-card {
   border: 1px solid var(--ac-line-soft);
-  border-radius: 8px;
-  padding: 12px 14px;
+  border-radius: 9px;
+  padding: 14px 16px;
   background: var(--ac-sub);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.ac-record-grid {
-  display: grid;
-  grid-template-columns: 1.45fr 1.25fr 0.95fr;
-  gap: 14px;
-  align-items: start;
+.ac-record-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--ac-line-soft);
+}
+
+.ac-record-head-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ac-record-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ac-record-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
 .ac-record-title {
   margin: 0;
-  font-size: 13.5px;
+  font-size: 14px;
   font-weight: 600;
+  line-height: 1.45;
   color: var(--ac-ink);
   overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
-.ac-record-meta {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 5px;
-  font-size: 12px;
-  color: var(--ac-soft);
+.ac-record-title.expanded {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
 }
 
-.ac-title-full {
-  margin-top: 8px;
-  padding: 8px 10px;
-  border-left: 3px solid var(--ac-pen);
-  background: var(--ac-paper);
-  border-radius: 4px;
-  font-size: 12.5px;
-  overflow-wrap: anywhere;
+.ac-record-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 20px;
+  align-items: start;
+}
+
+.ac-record-col {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
+}
+
+.ac-record-kv {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.ac-record-k {
+  color: var(--ac-faint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.ac-record-v {
+  color: var(--ac-soft);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ac-record-sep {
+  margin: 0 5px;
+  color: var(--ac-faint);
 }
 
 .ac-ip-box {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -954,7 +1014,6 @@
 }
 
 .ac-ua-raw {
-  margin-top: 8px;
   padding: 8px 10px;
   border-radius: 6px;
   background: var(--ac-paper);
@@ -969,18 +1028,7 @@
   gap: 10px;
 }
 
-.ac-record-right {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 5px;
-  text-align: right;
-  font-size: 12px;
-  color: var(--ac-soft);
-}
-
 .ac-record-fail {
-  margin-top: 8px;
   padding: 8px 10px;
   border-radius: 6px;
   background: var(--ac-err-bg);
@@ -1000,19 +1048,190 @@
 .ac-pagination {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
+  justify-content: center;
+  gap: 10px 14px;
   flex-wrap: wrap;
-  margin-top: 14px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ac-line-soft);
+  font-size: 12.5px;
+  color: var(--ac-soft);
+}
+
+.ac-pagination-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ac-pagination-summary {
+  color: var(--ac-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.ac-page-num {
+  min-width: 30px;
+  padding: 0 8px;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.ac-page-ellipsis {
+  padding: 0 4px;
+  color: var(--ac-faint);
+}
+
+.ac-pagination label {
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .ac-pagination select {
-  min-height: 32px;
+  width: auto;
+  min-width: 74px;
+  min-height: 30px;
   padding: 0 8px;
   border: 1px solid var(--ac-line);
   border-radius: 6px;
   background: var(--ac-paper);
   color: var(--ac-ink);
+}
+
+.ac-table .ac-actions {
+  flex-wrap: nowrap;
+}
+
+/* ---------- 在途任务完整文件名与模型拉取 / 单价同步面板 ---------- */
+.ac-active-job-name {
+  font-weight: 600;
+  color: var(--ac-ink);
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ac-active-job-sub {
+  font-size: 11.5px;
+  color: var(--ac-faint);
+  margin-top: 2px;
+}
+
+.ac-model-picker {
+  border: 1px solid var(--ac-line);
+  border-radius: 8px;
+  background: var(--ac-paper);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ac-model-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ac-model-picker-head input {
+  flex: 1;
+  min-width: 180px;
+  min-height: 30px;
+  padding: 3px 9px;
+  border: 1px solid var(--ac-line);
+  border-radius: 6px;
+  background: var(--ac-sub);
+  color: var(--ac-ink);
+  font-size: 12.5px;
+}
+
+.ac-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 210px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.ac-model-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--ac-sub);
+  border: 1px solid var(--ac-line-soft);
+  font-size: 12px;
+}
+
+.ac-model-item code {
+  font-family: var(--ac-mono);
+  overflow-wrap: anywhere;
+  color: var(--ac-ink);
+}
+
+.ac-probe-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px dashed var(--ac-line);
+  background: var(--ac-sub);
+}
+
+.ac-probe-bar input {
+  flex: 1;
+  min-width: 220px;
+  min-height: 30px;
+  padding: 3px 9px;
+  border: 1px solid var(--ac-line);
+  border-radius: 6px;
+  background: var(--ac-paper);
+  color: var(--ac-ink);
+  font-family: var(--ac-mono);
+  font-size: 12px;
+}
+
+.ac-sync-box {
+  border: 1px solid var(--ac-line);
+  border-radius: 9px;
+  padding: 14px 16px;
+  background: var(--ac-sub);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.ac-sync-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ac-sync-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  font-size: 12px;
+  color: var(--ac-soft);
+}
+
+.ac-grid-4 {
+  display: grid;
+  grid-template-columns: 1.3fr 0.9fr 0.9fr 1fr;
+  gap: 10px 12px;
+  align-items: end;
 }
 
 /* ---------- 服务设置 ---------- */
@@ -1236,16 +1455,16 @@
   .ac-ov-split,
   .ac-filter-grid,
   .ac-filter-dates,
-  .ac-record-grid,
+  .ac-record-body,
   .ac-grid-2,
   .ac-grid-3,
+  .ac-grid-4,
   .ac-env-grid {
     grid-template-columns: 1fr;
   }
 
-  .ac-record-right {
-    align-items: flex-start;
-    text-align: left;
+  .ac-record-head {
+    flex-direction: column;
   }
 
   .admin-content {

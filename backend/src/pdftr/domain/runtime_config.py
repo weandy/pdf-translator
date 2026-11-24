@@ -16,6 +16,10 @@ ConfigSection = Literal["free_translation", "parser", "default_llm", "pricing", 
 _PROVIDER_ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,39}$"
 _DEFAULT_FREE_NOTICE = "免费体验将通过 MinerU 解析 PDF 并使用公共推理接口翻译，仅建议上传公开论文。"
 _DEFAULT_GLOSSARY_SOURCES = ("aitd", "d2l", "ml-technical-term", "ais-vocab", "computerese")
+DEFAULT_PRICING_SOURCE_URL = (
+    "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json"
+)
+PricingSourceFormat = Literal["auto", "litellm", "models_dev", "pdftr"]
 
 
 class SecretView(BaseModel):
@@ -141,9 +145,34 @@ class DefaultLlmConfig(BaseModel):
     presets: list[LlmPreset] = Field(default_factory=default_llm_presets)
 
 
+class PricingSyncConfig(BaseModel):
+    source_url: str = Field(default=DEFAULT_PRICING_SOURCE_URL, max_length=1000)
+    source_format: PricingSourceFormat = "auto"
+    usd_to_cny: float = Field(default=7.25, gt=0, le=100.0)
+    auto_sync_enabled: bool = True
+    sync_interval_hours: int = Field(default=24, ge=1, le=720)
+
+    @field_validator("usd_to_cny")
+    @classmethod
+    def validate_finite_rate(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("美元汇率必须为有限正数")
+        return value
+
+
+class PricingSyncStatusView(BaseModel):
+    source_url: str = ""
+    status: Literal["never", "ok", "error", "syncing"] = "never"
+    synced_at: datetime | None = None
+    model_count: int = 0
+    last_error: str = ""
+    syncing: bool = False
+
+
 class PricingConfig(BaseModel):
     models: list[ModelPriceEntry] = Field(default_factory=default_model_prices, max_length=50)
     custom_configured: bool = False
+    sync: PricingSyncConfig = Field(default_factory=PricingSyncConfig)
 
     @model_validator(mode="before")
     @classmethod

@@ -1968,6 +1968,68 @@
     }
    }
   },
+  "/api/admin/config/models": {
+   "post": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "List Admin Config Models",
+    "operationId": "list_admin_config_models_api_admin_config_models_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/AdminListModelsIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AdminListModelsOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/admin/pricing/sync": {
+   "post": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Sync Admin Pricing",
+    "operationId": "sync_admin_pricing_api_admin_pricing_sync_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PricingSyncStatusView"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/admin/config/revisions": {
    "get": {
     "tags": [
@@ -2158,6 +2220,22 @@
       "type": "string",
       "title": "Job Id"
      },
+     "filename": {
+      "type": "string",
+      "title": "Filename",
+      "default": ""
+     },
+     "created_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Created At"
+     },
      "page_count": {
       "type": "integer",
       "title": "Page Count"
@@ -2278,6 +2356,9 @@
      "pricing": {
       "$ref": "#/components/schemas/PricingConfig"
      },
+     "pricing_sync_status": {
+      "$ref": "#/components/schemas/PricingSyncStatusView"
+     },
      "glossary": {
       "$ref": "#/components/schemas/GlossaryAdminView"
      },
@@ -2307,6 +2388,103 @@
      "env_locks"
     ],
     "title": "AdminConfigView"
+   },
+   "AdminListModelsIn": {
+    "properties": {
+     "target": {
+      "type": "string",
+      "enum": [
+       "free_provider",
+       "default_llm"
+      ],
+      "title": "Target"
+     },
+     "provider_id": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 40
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Provider Id"
+     },
+     "protocol": {
+      "type": "string",
+      "enum": [
+       "openai",
+       "anthropic"
+      ],
+      "title": "Protocol",
+      "default": "openai"
+     },
+     "base_url": {
+      "type": "string",
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Base Url"
+     },
+     "api_key": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/SecretUpdate"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "probe_api_key": {
+      "type": "string",
+      "maxLength": 500,
+      "title": "Probe Api Key",
+      "default": ""
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "target",
+     "base_url"
+    ],
+    "title": "AdminListModelsIn"
+   },
+   "AdminListModelsOut": {
+    "properties": {
+     "ok": {
+      "type": "boolean",
+      "title": "Ok"
+     },
+     "models": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Models"
+     },
+     "latency_ms": {
+      "type": "integer",
+      "title": "Latency Ms",
+      "default": 0
+     },
+     "detail": {
+      "type": "string",
+      "title": "Detail",
+      "default": ""
+     },
+     "requires_api_key": {
+      "type": "boolean",
+      "title": "Requires Api Key",
+      "default": false
+     }
+    },
+    "type": "object",
+    "required": [
+     "ok"
+    ],
+    "title": "AdminListModelsOut"
    },
    "AdminLoginIn": {
     "properties": {
@@ -4359,6 +4537,9 @@
       "type": "boolean",
       "title": "Custom Configured",
       "default": false
+     },
+     "sync": {
+      "$ref": "#/components/schemas/PricingSyncConfig"
      }
     },
     "type": "object",
@@ -4378,6 +4559,16 @@
       "type": "array",
       "maxItems": 50,
       "title": "Models"
+     },
+     "sync": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/PricingSyncConfig"
+       },
+       {
+        "type": "null"
+       }
+      ]
      }
     },
     "additionalProperties": false,
@@ -4386,6 +4577,97 @@
      "expected_revision"
     ],
     "title": "PricingPatch"
+   },
+   "PricingSyncConfig": {
+    "properties": {
+     "source_url": {
+      "type": "string",
+      "maxLength": 1000,
+      "title": "Source Url",
+      "default": "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json"
+     },
+     "source_format": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "litellm",
+       "models_dev",
+       "pdftr"
+      ],
+      "title": "Source Format",
+      "default": "auto"
+     },
+     "usd_to_cny": {
+      "type": "number",
+      "maximum": 100.0,
+      "exclusiveMinimum": 0.0,
+      "title": "Usd To Cny",
+      "default": 7.25
+     },
+     "auto_sync_enabled": {
+      "type": "boolean",
+      "title": "Auto Sync Enabled",
+      "default": true
+     },
+     "sync_interval_hours": {
+      "type": "integer",
+      "maximum": 720.0,
+      "minimum": 1.0,
+      "title": "Sync Interval Hours",
+      "default": 24
+     }
+    },
+    "type": "object",
+    "title": "PricingSyncConfig"
+   },
+   "PricingSyncStatusView": {
+    "properties": {
+     "source_url": {
+      "type": "string",
+      "title": "Source Url",
+      "default": ""
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "never",
+       "ok",
+       "error",
+       "syncing"
+      ],
+      "title": "Status",
+      "default": "never"
+     },
+     "synced_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Synced At"
+     },
+     "model_count": {
+      "type": "integer",
+      "title": "Model Count",
+      "default": 0
+     },
+     "last_error": {
+      "type": "string",
+      "title": "Last Error",
+      "default": ""
+     },
+     "syncing": {
+      "type": "boolean",
+      "title": "Syncing",
+      "default": false
+     }
+    },
+    "type": "object",
+    "title": "PricingSyncStatusView"
    },
    "QueueSlotStats": {
     "properties": {

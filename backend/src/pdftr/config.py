@@ -91,7 +91,7 @@ class Settings(BaseSettings):
     @field_validator("admin_path")
     @classmethod
     def validate_admin_path(cls, value: str) -> str:
-        reserved = {"admin", "api", "jobs", "stats", "guide", "glossary", "assets"}
+        reserved = {"admin", "api", "jobs", "stats", "guide", "glossary", "tos", "assets"}
         if not re.fullmatch(r"/[A-Za-z0-9][A-Za-z0-9_-]{0,63}", value) or value[1:].lower() in reserved:
             raise ValueError("管理入口必须是未占用的单一路径段")
         return value

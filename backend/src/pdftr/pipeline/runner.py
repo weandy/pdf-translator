@@ -366,7 +366,7 @@ class Pipeline:
         return parse_limit >= 2
 
     def active_jobs_summary(self) -> list[dict[str, object]]:
-        """返回在途任务的脱敏运行摘要，绝不含文件名或论文正文。"""
+        """返回当前在途任务的运行信息（供管理员总览排查进度）。"""
         items: list[dict[str, object]] = []
         with self._admission_guard:
             job_ids = list(self._tasks)
@@ -377,6 +377,8 @@ class Pipeline:
             items.append(
                 {
                     "job_id": job.id,
+                    "filename": job.filename,
+                    "created_at": job.created_at.isoformat(),
                     "page_count": job.page_count,
                     "stage": job.stage,
                     "progress": job.progress,

@@ -1,6 +1,14 @@
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { lazy, Suspense, useState } from "react";
-import { createBrowserRouter, Link, Navigate, Outlet, RouterProvider, useLocation, useOutletContext } from "react-router";
+import {
+  createBrowserRouter,
+  Link,
+  Navigate,
+  Outlet,
+  RouterProvider,
+  useLocation,
+  useOutletContext,
+} from "react-router";
 
 import { authHeaders } from "@/entities/settings/model";
 import { usePageVisit } from "@/entities/stats/model";
@@ -9,6 +17,7 @@ import { GlossaryPage } from "@/pages/GlossaryPage";
 import { GuidePage } from "@/pages/GuidePage";
 import { HomePage } from "@/pages/HomePage";
 import { StatsPage } from "@/pages/StatsPage";
+import { TermsPage } from "@/pages/TermsPage";
 import { api, setAuthHeaders, type ServerConfig } from "@/shared/api/client";
 
 // 把浏览器里保存的 Key 注入接口客户端（shared 层不依赖 entities，由这里连接）
@@ -124,6 +133,7 @@ const router = createBrowserRouter([
       { path: "/guide", element: <GuidePage /> },
       { path: "/glossary", element: <GlossaryPage /> },
       { path: "/stats", element: <StatsPage /> },
+      { path: "/tos", element: <TermsPage /> },
       {
         path: "/jobs/:id",
         element: (

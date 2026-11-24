@@ -193,7 +193,10 @@ describe("共享 MinerU 上传流程", () => {
       ),
     );
 
-    const files = Array.from({ length: 6 }, (_, i) => new File(["synthetic"], `paper-${i + 1}.pdf`, { type: "application/pdf" }));
+    const files = Array.from(
+      { length: 6 },
+      (_, i) => new File(["synthetic"], `paper-${i + 1}.pdf`, { type: "application/pdf" }),
+    );
     await act(async () => {
       const input = host.querySelector('input[type="file"]')!;
       Object.defineProperty(input, "files", { configurable: true, value: files });
@@ -332,7 +335,10 @@ describe("共享 MinerU 上传流程", () => {
       ),
     );
 
-    const files = Array.from({ length: 5 }, (_, i) => new File(["x"], `leave-${i + 1}.pdf`, { type: "application/pdf" }));
+    const files = Array.from(
+      { length: 5 },
+      (_, i) => new File(["x"], `leave-${i + 1}.pdf`, { type: "application/pdf" }),
+    );
     await act(async () => {
       const input = host.querySelector('input[type="file"]')!;
       Object.defineProperty(input, "files", { configurable: true, value: files });
@@ -523,9 +529,11 @@ describe("共享 MinerU 上传流程", () => {
 
     expect(host.querySelector(".setup-hint")).toBeNull();
     expect(host.querySelector(".consent")?.textContent).toContain("我知道文件会上传到 PaddleOCR 云端解析");
-    expect(startButton().disabled).toBe(false);
+    const freeStart = findButton("开始免费翻译")!;
+    expect(freeStart).toBeTruthy();
+    expect(freeStart.disabled).toBe(false);
 
-    await act(async () => startButton().click());
+    await act(async () => freeStart.click());
     expect(create).toHaveBeenCalledWith(
       expect.any(File),
       expect.objectContaining({ parser: "paddleocr-vl", cloud_consent: true }),
@@ -534,6 +542,33 @@ describe("共享 MinerU 上传流程", () => {
         headers: { "X-Translation-Mode": "free" },
       }),
     );
+  });
+
+  it("方案 A 纯白虚线卡片精简大段正文，勾选框可直接触发服务条款弹窗回调", async () => {
+    const onOpenTerms = vi.fn();
+    client.setQueryData(["config"], makeConfig(true, false));
+    await act(async () =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <MemoryRouter>
+            <UploadPanel
+              onCreated={onCreated}
+              onBatchCreated={vi.fn()}
+              onNeedSettings={vi.fn()}
+              onOpenTerms={onOpenTerms}
+            />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      ),
+    );
+    expect(host.querySelector(".upload-card")).not.toBeNull();
+    expect(host.querySelector(".dropzone")).not.toBeNull();
+    expect(host.querySelector(".spread")).toBeNull();
+    expect(host.querySelector(".how-to")).toBeNull();
+    const tosBtn = findButton("《服务条款与隐私说明》")!;
+    expect(tosBtn).toBeTruthy();
+    await act(async () => tosBtn.click());
+    expect(onOpenTerms).toHaveBeenCalledOnce();
   });
 
   it("BYOK 使用个人 MinerU Token 且未绑定当前解析地址时拦截提交，确认后恢复并附带 X-Parser-Base-URL", async () => {

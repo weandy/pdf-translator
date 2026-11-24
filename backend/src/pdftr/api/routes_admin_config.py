@@ -8,9 +8,12 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from pdftr.api.admin_deps import enforce_csrf, enforce_query_rate, require_admin
 from pdftr.api.deps import container
+from pdftr.domain.runtime_config import PricingSyncStatusView
 from pdftr.pipeline.runtime_config import (
     ActiveJobSummaryOut,
     AdminConfigView,
+    AdminListModelsIn,
+    AdminListModelsOut,
     AdminOverviewOut,
     AdminQueuesOut,
     AdminServiceSummaryOut,
@@ -129,6 +132,20 @@ async def test_admin_config(body: ConnectionTestIn, request: Request) -> Connect
     identity = require_admin(request)
     enforce_csrf(request, identity)
     return await _manager(request).test_connection(body)
+
+
+@router.post("/config/models", response_model=AdminListModelsOut)
+async def list_admin_config_models(body: AdminListModelsIn, request: Request) -> AdminListModelsOut:
+    identity = require_admin(request)
+    enforce_csrf(request, identity)
+    return await _manager(request).list_models(body)
+
+
+@router.post("/pricing/sync", response_model=PricingSyncStatusView)
+async def sync_admin_pricing(request: Request) -> PricingSyncStatusView:
+    identity = require_admin(request)
+    enforce_csrf(request, identity)
+    return await _manager(request).sync_pricing(force=True)
 
 
 @router.get("/config/revisions", response_model=ConfigRevisionsOut)

@@ -22,6 +22,8 @@ export type ParserServiceView = components["schemas"]["ParserServiceView"];
 export type DefaultLlmConfig = components["schemas"]["DefaultLlmConfig"];
 export type LlmPreset = components["schemas"]["LlmPreset"];
 export type PricingConfig = components["schemas"]["PricingConfig"];
+export type PricingSyncConfig = components["schemas"]["PricingSyncConfig"];
+export type PricingSyncStatusView = components["schemas"]["PricingSyncStatusView"];
 export type ModelPriceEntry = components["schemas"]["ModelPriceEntry"];
 export type GlossaryAdminView = components["schemas"]["GlossaryAdminView"];
 export type GlossarySourceView = components["schemas"]["GlossarySourceView"];
@@ -31,6 +33,10 @@ export type SecretView = components["schemas"]["SecretView"];
 export type SecretUpdate = components["schemas"]["SecretUpdate"];
 export type ConnectionTestIn = components["schemas"]["ConnectionTestIn"];
 export type ConnectionTestOut = components["schemas"]["ConnectionTestOut"];
+export type AdminListModelsIn = Omit<components["schemas"]["AdminListModelsIn"], "probe_api_key"> & {
+  probe_api_key?: string;
+};
+export type AdminListModelsOut = components["schemas"]["AdminListModelsOut"];
 export type ConfigRevisionSummary = components["schemas"]["ConfigRevisionSummary"];
 export type ConfigRevisionsOut = components["schemas"]["ConfigRevisionsOut"];
 export type RollbackIn = components["schemas"]["RollbackIn"];
@@ -90,6 +96,14 @@ const SAFE_400_MESSAGES: readonly { keyword: string; message: string }[] = [
   {
     keyword: "术语库",
     message: "包含未知的术语库来源，请刷新配置后重试。",
+  },
+  {
+    keyword: "模型单价源",
+    message: "模型单价源地址无效，请填写合法的公网 HTTPS 地址或留空停用。",
+  },
+  {
+    keyword: "有效 API Key",
+    message: "当前渠道尚未配置有效 API Key，请先填入密钥后再拉取模型列表。",
   },
 ];
 
@@ -168,6 +182,10 @@ const fieldMessages: Record<string, string> = {
   min_free_disk_mb: "最小剩余磁盘空间须为非负整数。",
   site_notice: "全站公告最多 500 个字符。",
   sources: "术语库来源配置无效，请刷新后重试。",
+  source_url: "请输入合法的远程价格源 HTTPS 地址（留空表示停用）。",
+  source_format: "价格源格式仅支持自动识别、LiteLLM、models.dev 或 pdftr。",
+  usd_to_cny: "美元汇率须为 0 至 100 之间的有限正数。",
+  sync_interval_hours: "自动同步周期须在 1 至 720 小时之间。",
 };
 
 type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
@@ -244,8 +262,10 @@ export const adminApi = {
   session: (signal?: AbortSignal) => request<AdminSession>("/api/admin/session", "GET", undefined, undefined, signal),
   logout: (csrfToken: string, signal?: AbortSignal) =>
     request<void>("/api/admin/session", "DELETE", {}, csrfToken, signal),
-  overview: (signal?: AbortSignal) => request<AdminOverview>("/api/admin/overview", "GET", undefined, undefined, signal),
-  getConfig: (signal?: AbortSignal) => request<AdminConfigView>("/api/admin/config", "GET", undefined, undefined, signal),
+  overview: (signal?: AbortSignal) =>
+    request<AdminOverview>("/api/admin/overview", "GET", undefined, undefined, signal),
+  getConfig: (signal?: AbortSignal) =>
+    request<AdminConfigView>("/api/admin/config", "GET", undefined, undefined, signal),
   updateConfig: <S extends ConfigSection>(
     section: S,
     body: ConfigSectionPayloadMap[S],
@@ -254,6 +274,10 @@ export const adminApi = {
   ) => request<AdminConfigView>(`/api/admin/config/${section}`, "PUT", body, csrfToken, signal),
   testConnection: (body: ConnectionTestIn, csrfToken: string, signal?: AbortSignal) =>
     request<ConnectionTestOut>("/api/admin/config/test", "POST", body, csrfToken, signal, 35000),
+  listModels: (body: AdminListModelsIn, csrfToken: string, signal?: AbortSignal) =>
+    request<AdminListModelsOut>("/api/admin/config/models", "POST", body, csrfToken, signal, 25000),
+  syncPricing: (csrfToken: string, signal?: AbortSignal) =>
+    request<PricingSyncStatusView>("/api/admin/pricing/sync", "POST", {}, csrfToken, signal, 30000),
   listRevisions: (params?: { limit?: number; offset?: number }, signal?: AbortSignal) => {
     const query = new URLSearchParams();
     if (params?.limit !== undefined) query.set("limit", String(params.limit));

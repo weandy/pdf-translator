@@ -60,6 +60,11 @@ describe("独立管理客户端", () => {
       "synthetic-csrf",
     );
     await adminApi.testConnection({ target: "mineru", base_url: "https://mineru.net" }, "synthetic-csrf");
+    await adminApi.listModels(
+      { target: "default_llm", protocol: "openai", base_url: "https://integrate.api.nvidia.com/v1" },
+      "synthetic-csrf",
+    );
+    await adminApi.syncPricing("synthetic-csrf");
     await adminApi.listRevisions({ limit: 15, offset: 5 });
     await adminApi.rollbackConfig({ target_revision: 2, expected_revision: 3 }, "synthetic-csrf");
     await adminApi.reloadGlossary("synthetic-csrf");
@@ -69,12 +74,14 @@ describe("独立管理客户端", () => {
       ["/api/admin/config", "GET"],
       ["/api/admin/config/pricing", "PUT"],
       ["/api/admin/config/test", "POST"],
+      ["/api/admin/config/models", "POST"],
+      ["/api/admin/pricing/sync", "POST"],
       ["/api/admin/config/revisions?limit=15&offset=5", "GET"],
       ["/api/admin/config/rollback", "POST"],
       ["/api/admin/glossary/reload", "POST"],
     ]);
 
-    for (const index of [2, 3, 5, 6]) {
+    for (const index of [2, 3, 4, 5, 7, 8]) {
       const headers = new Headers(fetch.mock.calls[index]![1].headers);
       expect(headers.get("X-CSRF-Token")).toBe("synthetic-csrf");
       expect(headers.get("Content-Type")).toBe("application/json");
@@ -91,9 +98,7 @@ describe("独立管理客户端", () => {
         .mockResolvedValueOnce(
           new Response(JSON.stringify({ detail: "raw-secret-token-should-not-leak" }), { status: 409 }),
         )
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ detail: "raw-secret-body" }), { status: 413 }),
-        )
+        .mockResolvedValueOnce(new Response(JSON.stringify({ detail: "raw-secret-body" }), { status: 413 }))
         .mockResolvedValueOnce(
           new Response(JSON.stringify({ detail: "raw-rate-limit" }), {
             status: 429,

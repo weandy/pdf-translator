@@ -25,6 +25,7 @@ interface Props {
   onCreated: (job: Job) => void; // 只上传一个文件时：进入这个任务
   onBatchCreated: (jobs: Job[]) => void; // 一次上传多个文件时：留在首页看批次
   onNeedSettings: () => void;
+  onOpenTerms?: () => void;
 }
 
 const MAX_BATCH = 10; // 一次最多选几个文件
@@ -60,27 +61,7 @@ interface Item {
 const when = (iso: string) =>
   new Date(iso).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
-/** 对开页里的版面示意：标题、正文、公式。左页英文、右页中文（中文行用蓝铅笔色）。 */
-function SketchPage({ lang }: { lang: "en" | "zh" }) {
-  return (
-    <div className={`spread-page ${lang}`} aria-hidden="true">
-      <i className="ln title" />
-      <i className="ln" />
-      <i className="ln" />
-      <i className="ln short" />
-      <i className="ln eq" />
-      <i className="ln" />
-      <i className="ln" />
-      <i className="ln" />
-      <i className="ln short" />
-      <i className="fig" />
-      <i className="ln" />
-      <i className="ln short" />
-    </div>
-  );
-}
-
-export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props) {
+export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenTerms }: Props) {
   const settings = useSettings();
   const {
     data: config,
@@ -290,7 +271,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
       : `¥${estimate.cny_low.toFixed(2)}–${(estimate.cny_high ?? estimate.cny_low).toFixed(2)}`);
 
   return (
-    <section className="upload" aria-label="上传论文">
+    <section className="upload upload-card" aria-label="上传论文">
       {configWaiting && (
         <p className="hint" role="status">
           正在加载站点配置…
@@ -323,54 +304,51 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
 
       {freeEnabled && (
         <div className="mode-panel">
-          <div className="segmented mode-switch" role="group" aria-label="翻译通道">
+          <div className="mode-switch" role="group" aria-label="翻译通道">
             <button
               type="button"
-              className={isFree ? "on" : undefined}
+              className={`mode-tab${isFree ? " on" : ""}`}
               aria-pressed={isFree}
               onClick={() => selectMode("free")}
             >
-              免费体验（免填 API Key）
+              <span className="mode-tab-title">免费体验</span>
+              <span className="mode-tab-sub">免填 API Key · 即传即翻</span>
             </button>
             <button
               type="button"
-              className={!isFree ? "on" : undefined}
+              className={`mode-tab${!isFree ? " on" : ""}`}
               aria-pressed={!isFree}
               onClick={() => selectMode("byok")}
             >
-              自备 API Key
+              <span className="mode-tab-title">自备 API Key</span>
+              <span className="mode-tab-sub">独立队列 · 自定义模型</span>
             </button>
           </div>
           {isFree ? (
-            <div className="mode-card free" role="status">
-              <div className="mode-card-head">
+            <div className="mode-summary free" role="status">
+              <div className="mode-summary-main">
                 {freeChannel?.model_display && (
                   <span>
-                    当前免费模型：<strong>{freeChannel.model_display}</strong>
+                    当前模型：<strong>{freeChannel.model_display}</strong>
                   </span>
                 )}
-                {freeLimit !== null && <span className="num">单篇上限 {freeLimit} 页</span>}
+                {freeLimit !== null && <span className="mode-pill num">上限 {freeLimit} 页</span>}
               </div>
-              <p className="hint">
-                {freeChannel?.notice?.trim() ||
-                  `经 ${service} 云端解析版面，并通过站点公共推理接口翻译，仅建议用于公开论文体验。`}
-              </p>
+              {freeChannel?.notice?.trim() && <span className="mode-summary-note">{freeChannel.notice.trim()}</span>}
             </div>
           ) : (
-            <div className="mode-card byok">
-              <p className="hint">
-                翻译队列独立，支持自定义服务商与模型。
-                <button type="button" className="link" onClick={onNeedSettings}>
-                  设置服务商与 Key
-                </button>
-              </p>
+            <div className="mode-summary byok">
+              <span>使用你配置的翻译服务与独立队列</span>
+              <button type="button" className="link" onClick={onNeedSettings}>
+                设置服务商与 Key
+              </button>
             </div>
           )}
         </div>
       )}
 
       <label
-        className={`spread${dragging ? " dragging" : ""}`}
+        className={`dropzone${dragging ? " dragging" : ""}${items.length > 0 ? " has-file" : ""}`}
         onDragOver={(e) => {
           e.preventDefault();
           setDragging(true);
@@ -388,25 +366,33 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
             e.target.value = ""; // 允许再次选择同一个文件
           }}
         />
-        <SketchPage lang="en" />
-        <SketchPage lang="zh" />
-        <span className="spread-label">
+        <span className="dropzone-icon" aria-hidden="true">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <path d="M12 18v-6" />
+            <path d="m9.5 14.5 2.5-2.5 2.5 2.5" />
+          </svg>
+        </span>
+        <span className="dropzone-label">
           {file ? (
             <>
               <span className="file-name">{file.file.name}</span>
-              <span>
-                {fileError ?? (file.pages === null ? "正在读取页数…" : `${file.pages} 页，点击可换一个文件`)}
+              <span className="dropzone-sub">
+                {fileError ?? (file.pages === null ? "正在读取页数…" : `${file.pages} 页 · 点击可更换文件`)}
               </span>
             </>
           ) : items.length > 1 ? (
             <>
-              <span className="file-name">{items.length} 个文件</span>
-              <span>{pages === null ? "正在读取页数…" : `共 ${pages} 页，点击可重新选择`}</span>
+              <span className="file-name">已选 {items.length} 个 PDF 文件</span>
+              <span className="dropzone-sub">
+                {pages === null ? "正在读取页数…" : `共 ${pages} 页 · 点击可重新选择`}
+              </span>
             </>
           ) : (
             <>
               <strong>选择英文论文 PDF</strong>
-              <span>或拖到这里，一次可以选多个</span>
+              <span className="dropzone-sub">拖拽 PDF 到此处，或点击浏览（支持一次多选）</span>
             </>
           )}
         </span>
@@ -550,7 +536,8 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
       {parserNeedsRebind && config?.default_mineru_base_url && (
         <div className="key-rebind-notice" role="alert">
           <p>
-            当前个人 MinerU Token 尚未绑定到当前解析服务地址（目标：{config.default_mineru_base_url}），请确认目标地址或更换 Token。
+            当前个人 MinerU Token 尚未绑定到当前解析服务地址（目标：{config.default_mineru_base_url}
+            ），请确认目标地址或更换 Token。
           </p>
           <div className="row-actions">
             <button type="button" onClick={() => saveSettings(confirmParserKeyBinding(getSettings(), config))}>
@@ -614,36 +601,29 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
         </div>
       )}
 
-      <p className="notice">
-        {isFree
-          ? `文件会上传到 ${service} 云端解析版面，正文会发往本站提供的免费公共推理接口翻译，请仅上传公开论文，不要上传涉密或未公开的文档。`
-          : `文件会上传到 ${service} 云端解析版面，正文会发给你设置的翻译服务，请不要上传涉密或未公开的文档。`}
-        {config &&
-          config.retention_hours > 0 &&
-          `原文与译文在服务器上只保留 ${config.retention_hours} 小时，之后自动删除，请及时下载。`}
-        版面解析在高峰时可能要排队 10 分钟以上。
-      </p>
-      {config?.submission_audit_enabled && (
-        <p className="notice" role="note">
-          本服务已开启提交审计，会按数据保留说明留存任务摘要、提交 IP 与客户端 User-Agent（浏览器/系统标识）等必要信息用于排障与审计（免费体验与自备 Key 模式均适用），公开统计仅展示聚合数量；正文和文件按保留期清理，正在运行的任务可能延后。
-          <a href="/guide#privacy">查看数据保留说明</a>
-        </p>
-      )}
-
-      <label className="consent">
-        <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
-        我知道文件会上传到 {service} 云端解析
-      </label>
+      <div className="consent-block">
+        <label className="consent">
+          <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
+          <span>
+            我知道文件会上传到 {service} 云端解析，并同意
+            {onOpenTerms ? (
+              <button type="button" className="link" onClick={onOpenTerms}>
+                《服务条款与隐私说明》
+              </button>
+            ) : (
+              <Link to="/tos">《服务条款与隐私说明》</Link>
+            )}
+          </span>
+        </label>
+        {config?.submission_audit_enabled && (
+          <p className="consent-audit-note" role="note">
+            已开启提交审计（仅记录标题、提交 IP 与 User-Agent 等必要信息，公开统计仅展示聚合数量）·{" "}
+            <a href="/guide#privacy">隐私说明</a>
+          </p>
+        )}
+      </div>
 
       {error && <p className="error">{error}</p>}
-      <ol className="how-to" aria-label="使用步骤">
-        <li>选择英文论文 PDF（可以一次选多个）</li>
-        <li>等版面解析和翻译，一般 1–4 分钟，可以先离开</li>
-        <li>对照阅读，点段落修改，下载中文版或双语 PDF</li>
-        <li className="how-to-more">
-          <Link to="/guide">完整使用指南</Link>
-        </li>
-      </ol>
       <div className="upload-actions" ref={actions}>
         <button
           type="button"
@@ -664,8 +644,12 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
           {busy
             ? `正在上传…${items.length > 1 ? ` ${uploading}/${items.length}` : ""}`
             : usable.length > 1
-              ? `开始翻译 ${usable.length} 篇`
-              : "开始翻译"}
+              ? isFree
+                ? `开始免费翻译 ${usable.length} 篇`
+                : `开始翻译 ${usable.length} 篇`
+              : isFree
+                ? "开始免费翻译"
+                : "开始翻译"}
         </button>
       </div>
     </section>

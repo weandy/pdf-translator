@@ -86,6 +86,14 @@ _ADMIN_ALLOWED_422_FIELDS = frozenset(
         "cache_miss",
         "output",
         "peak_factor",
+        "target",
+        "provider_id",
+        "sync",
+        "source_url",
+        "source_format",
+        "usd_to_cny",
+        "auto_sync_enabled",
+        "sync_interval_hours",
     }
 )
 
@@ -154,6 +162,33 @@ async def _purge_periodically(
             continue
 
 
+async def _sync_pricing_periodically(
+    c: Container,
+    *,
+    initial_delay_s: float = 15.0,
+    check_interval_s: float = 1800.0,
+    stop_event: asyncio.Event | None = None,
+) -> None:
+    """后台定期检查远程模型单价源，默认每 24 小时同步一次；启动延迟后首检，停机立即取消。"""
+    stop = stop_event or asyncio.Event()
+    if initial_delay_s > 0:
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=initial_delay_s)
+            return
+        except TimeoutError:
+            pass
+    while not stop.is_set():
+        if c.runtime_config is not None:
+            try:
+                await c.runtime_config.sync_pricing_if_due()
+            except Exception:
+                log.exception("定时同步远程模型单价失败")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=check_interval_s)
+        except TimeoutError:
+            continue
+
+
 def create_app(container: Container | None = None) -> FastAPI:
     owns_container = container is None
     c = container or build_container()
@@ -168,6 +203,7 @@ def create_app(container: Container | None = None) -> FastAPI:
         housekeeping = asyncio.create_task(
             _purge_periodically(c, stop_event=stop_housekeeping, active_purge=active_purge)
         )
+        pricing_sync_task = asyncio.create_task(_sync_pricing_periodically(c, stop_event=stop_housekeeping))
         # 在后台预先下载并加载术语库，第一个任务不用等
         warmup = asyncio.create_task(asyncio.to_thread(c.pipeline.deps.term_matcher))
         try:
@@ -177,6 +213,9 @@ def create_app(container: Container | None = None) -> FastAPI:
             housekeeping.cancel()
             with suppress(asyncio.CancelledError):
                 await housekeeping
+            pricing_sync_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await pricing_sync_task
             warmup.cancel()
             with suppress(asyncio.CancelledError):
                 await warmup

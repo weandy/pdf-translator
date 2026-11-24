@@ -9,8 +9,9 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
+import httpx2
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from pdftr.config import Settings
@@ -25,6 +26,8 @@ from pdftr.domain.runtime_config import (
     ModelPriceEntry,
     ParserServiceConfig,
     PricingConfig,
+    PricingSyncConfig,
+    PricingSyncStatusView,
     RuntimeConfigData,
     SecretMode,
     SecretUpdate,
@@ -35,13 +38,20 @@ from pdftr.domain.runtime_config import (
     mask_secret,
 )
 from pdftr.domain.stats import AdminStatsSnapshot
+from pdftr.domain.url_guard import build_safe_async_transport
 from pdftr.glossary import sources as glossary_sources
 from pdftr.parsing.mineru_cloud import MinerUCloudParser
 from pdftr.parsing.paddle_vl import JOB_URL as PADDLE_JOB_URL
 from pdftr.parsing.paddle_vl import PaddleVLParser
 from pdftr.parsing.port import ParseError
+from pdftr.pipeline.pricing_sync import PriceFetcher, PricingSyncService, validate_pricing_source_url
 from pdftr.pipeline.secrets import Secrets
-from pdftr.pipeline.url_guard import validate_llm_url, validate_parser_url, validate_proxy_url
+from pdftr.pipeline.url_guard import (
+    make_outbound_request_hook,
+    validate_llm_url,
+    validate_parser_url,
+    validate_proxy_url,
+)
 from pdftr.pipeline.usecases import UserError
 from pdftr.storage.runtime_config import (
     SecretDecryptError,
@@ -51,8 +61,8 @@ from pdftr.storage.runtime_config import (
     encrypt_secret,
 )
 from pdftr.translation.anthropic_compat import AnthropicChat
-from pdftr.translation.cost import Price
-from pdftr.translation.openai_compat import OpenAICompatChat
+from pdftr.translation.cost import PRICES, Price
+from pdftr.translation.openai_compat import MODEL_LIST_TIMEOUT_S, OpenAICompatChat
 
 log = logging.getLogger(__name__)
 
@@ -210,6 +220,7 @@ class AdminConfigView(BaseModel):
     parser: ParserServiceView
     default_llm: DefaultLlmConfig
     pricing: PricingConfig
+    pricing_sync_status: PricingSyncStatusView = Field(default_factory=PricingSyncStatusView)
     glossary: GlossaryAdminView
     system: SystemConfig
     env_locks: list[EnvLockItem]
@@ -263,6 +274,7 @@ class PricingPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_revision: int = Field(ge=0)
     models: list[ModelPriceEntry] = Field(default_factory=list, max_length=50)
+    sync: PricingSyncConfig | None = None
 
 
 class GlossaryPatch(BaseModel):
@@ -302,6 +314,24 @@ class ConnectionTestOut(BaseModel):
     detail: str = ""
 
 
+class AdminListModelsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target: Literal["free_provider", "default_llm"]
+    provider_id: str | None = Field(default=None, max_length=40)
+    protocol: Literal["openai", "anthropic"] = "openai"
+    base_url: str = Field(min_length=1, max_length=500)
+    api_key: SecretUpdate | None = None
+    probe_api_key: str = Field(default="", max_length=500, repr=False)
+
+
+class AdminListModelsOut(BaseModel):
+    ok: bool
+    models: list[str] = Field(default_factory=list)
+    latency_ms: int = 0
+    detail: str = ""
+    requires_api_key: bool = False
+
+
 class QueueSlotStats(BaseModel):
     in_use: int = 0
     limit: int = 0
@@ -327,6 +357,8 @@ class AdminServiceSummaryOut(BaseModel):
 
 class ActiveJobSummaryOut(BaseModel):
     job_id: str
+    filename: str = ""
+    created_at: str | None = None
     page_count: int
     stage: str
     progress: float
@@ -354,6 +386,7 @@ class ConfigRevisionsOut(BaseModel):
 
 ChatTester = Callable[[str, str, str, str, int], Awaitable[ConnectionTestOut]]
 ParserTester = Callable[[Literal["mineru", "paddle"], str, str, str], Awaitable[tuple[int, int]]]
+ModelLister = Callable[[str, str, str], Awaitable[list[str]]]
 
 
 def _baseline_from_settings(settings: Settings) -> RuntimeConfigData:
@@ -434,6 +467,8 @@ class RuntimeConfigManager:
         glossary_cached: Callable[[str], bool] | None = None,
         chat_tester: ChatTester | None = None,
         parser_tester: ParserTester | None = None,
+        model_lister: ModelLister | None = None,
+        price_fetcher: PriceFetcher | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -449,6 +484,12 @@ class RuntimeConfigManager:
         self._glossary_cached = glossary_cached
         self._chat_tester = chat_tester
         self._parser_tester = parser_tester
+        self._model_lister = model_lister
+        self._pricing_sync = PricingSyncService(
+            settings.data_dir / "pricing" / "remote_prices.json",
+            allow_private=settings.allow_private_llm_urls,
+            fetcher=price_fetcher,
+        )
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._secrets_corrupted = False
@@ -706,7 +747,7 @@ class RuntimeConfigManager:
             mineru_proxy=mineru_proxy,
             paddle_token=paddle_token,
             paddle_proxy=paddle_proxy,
-            price_overrides=_prices_from_config(data.pricing) if data.pricing.custom_configured else None,
+            price_overrides=self._effective_price_overrides(data.pricing),
             warnings=tuple(dict.fromkeys(warnings)),
             updated_at=updated_at,
         )
@@ -936,6 +977,7 @@ class RuntimeConfigManager:
             ),
             default_llm=snap.data.default_llm,
             pricing=snap.data.pricing,
+            pricing_sync_status=self._pricing_sync.status_view(snap.data.pricing.sync.source_url),
             glossary=self._glossary_view(snap),
             system=snap.data.system,
             env_locks=self._env_locks(),
@@ -1173,6 +1215,20 @@ class RuntimeConfigManager:
             )
         return self.admin_view()
 
+    def _effective_price_overrides(self, pricing: PricingConfig) -> dict[str, Price] | None:
+        """双层价表合并：手动热表（或未自定义时的内置 DeepSeek 价）始终优先于远程同步缓存。"""
+        remote_prices = (
+            self._pricing_sync.prices_cny(pricing.sync.usd_to_cny) if pricing.sync.source_url.strip() else {}
+        )
+        if not remote_prices:
+            return _prices_from_config(pricing) if pricing.custom_configured else None
+        merged: dict[str, Price] = dict(remote_prices)
+        if pricing.custom_configured:
+            merged.update(_prices_from_config(pricing))
+        else:
+            merged.update(PRICES)
+        return merged
+
     def update_pricing(self, patch: PricingPatch) -> AdminConfigView:
         cleaned: list[ModelPriceEntry] = []
         seen: set[str] = set()
@@ -1185,18 +1241,53 @@ class RuntimeConfigManager:
             seen.add(name)
             cleaned.append(entry.model_copy(update={"model": name}))
 
-        new_pricing = PricingConfig(models=cleaned, custom_configured=True)
+        allow_private = self._settings.allow_private_llm_urls
+        new_sync: PricingSyncConfig | None = None
+        if patch.sync is not None:
+            try:
+                norm_source_url = validate_pricing_source_url(patch.sync.source_url, allow_private=allow_private)
+            except ValueError as exc:
+                raise UserError(str(exc)) from exc
+            new_sync = patch.sync.model_copy(update={"source_url": norm_source_url})
+
         with self._lock:
+            old_pricing = self._snapshot.data.pricing
+            effective_sync = new_sync if new_sync is not None else old_pricing.sync
+            new_pricing = PricingConfig(models=cleaned, custom_configured=True, sync=effective_sync)
+            changed_fields: list[str] = []
+            if old_pricing.models != new_pricing.models:
+                changed_fields.append("pricing.models")
+            if old_pricing.sync != new_pricing.sync:
+                changed_fields.append("pricing.sync")
             new_data = self._snapshot.data.model_copy(update={"pricing": new_pricing})
             self._commit_locked(
                 expected_revision=patch.expected_revision,
                 new_data=new_data,
                 new_secrets=self._raw_secrets,
                 section="pricing",
-                changed_fields=["pricing.models"],
-                summary=f"更新模型计价配置（共 {len(cleaned)} 个模型）",
+                changed_fields=changed_fields or ["pricing.models"],
+                summary=f"更新模型计价与同步配置（手动热表 {len(cleaned)} 个模型）",
             )
         return self.admin_view()
+
+    async def sync_pricing(self, *, force: bool = False) -> PricingSyncStatusView:
+        snap = self.snapshot()
+        try:
+            status = await self._pricing_sync.sync_now(snap.data.pricing.sync, force=force)
+        except ValueError as exc:
+            raise UserError(str(exc)) from exc
+        with self._lock:
+            cur = self._snapshot
+            self._snapshot = replace(cur, price_overrides=self._effective_price_overrides(cur.data.pricing))
+        return status
+
+    async def sync_pricing_if_due(self) -> bool:
+        snap = self.snapshot()
+        sync_cfg = snap.data.pricing.sync
+        if not self._pricing_sync.is_due(sync_cfg):
+            return False
+        await self.sync_pricing(force=False)
+        return True
 
     def update_glossary(self, patch: GlossaryPatch) -> AdminConfigView:
         ordered: list[str] = []
@@ -1602,3 +1693,195 @@ class RuntimeConfigManager:
         except ParseError as exc:
             latency_ms = max(0, round((time.monotonic() - started) * 1000))
             return ConnectionTestOut(ok=False, status_code=None, latency_ms=latency_ms, detail=str(exc))
+
+    async def list_models(self, req: AdminListModelsIn) -> AdminListModelsOut:
+        """管理员专用拉取上游模型列表：支持免费渠道沿用已存密文或表单新 Key，以及自备预设公开/临时探测。"""
+        snap = self.snapshot()
+        allow_private = self._settings.allow_private_llm_urls
+        try:
+            norm_url = validate_llm_url(req.base_url, allow_private=allow_private, require_https=not allow_private)
+        except ValueError as exc:
+            raise UserError(str(exc)) from exc
+
+        if req.target == "free_provider":
+            existing = next((p for p in snap.free_providers if p.config.id == req.provider_id), None)
+            api_key = self._resolve_test_secret(
+                label="免费渠道 API Key",
+                update=req.api_key,
+                current=existing.api_key if existing else None,
+                env_value="",
+                target_url=norm_url,
+                target_protocol=req.protocol,
+                is_proxy=False,
+                allow_inherit_env=False,
+            )
+            if not api_key:
+                raise UserError("当前渠道未配置有效 API Key，无法拉取模型列表")
+            return await self._probe_models_with_key(req.protocol, norm_url, api_key)
+
+        # target == "default_llm"：提供临时探测 Key 时直接用 Key 拉取，否则先尝试无鉴权公开 /models
+        probe_key = req.probe_api_key.strip()
+        if probe_key:
+            return await self._probe_models_with_key(req.protocol, norm_url, probe_key)
+        return await self._probe_public_models(req.protocol, norm_url)
+
+    async def _probe_models_with_key(self, protocol: str, base_url: str, api_key: str) -> AdminListModelsOut:
+        started = time.monotonic()
+        chat: OpenAICompatChat | AnthropicChat | None = None
+        allow_private = self._settings.allow_private_llm_urls
+        try:
+            if self._model_lister is not None:
+                models = await self._model_lister(protocol, base_url, api_key)
+            else:
+                if protocol == "anthropic":
+                    chat = AnthropicChat(
+                        base_url=base_url,
+                        api_key=api_key,
+                        model="list-models",
+                        timeout=MODEL_LIST_TIMEOUT_S,
+                        disable_redirects=True,
+                        default_max_retries=0,
+                        allow_private=allow_private,
+                    )
+                else:
+                    chat = OpenAICompatChat(
+                        base_url=base_url,
+                        api_key=api_key,
+                        model="list-models",
+                        timeout=MODEL_LIST_TIMEOUT_S,
+                        disable_redirects=True,
+                        default_max_retries=0,
+                        allow_private=allow_private,
+                    )
+                models = await chat.list_models()
+            latency_ms = max(0, round((time.monotonic() - started) * 1000))
+            return AdminListModelsOut(
+                ok=True,
+                models=models,
+                latency_ms=latency_ms,
+                detail=f"已拉取 {len(models)} 个可用模型" if models else "接口返回空模型列表，请手动填写",
+            )
+        except ChatError as exc:
+            latency_ms = max(0, round((time.monotonic() - started) * 1000))
+            return AdminListModelsOut(
+                ok=False,
+                models=[],
+                latency_ms=latency_ms,
+                detail=str(exc),
+                requires_api_key=exc.status_code in (401, 403),
+            )
+        finally:
+            if chat is not None:
+                await chat.aclose()
+
+    async def _probe_public_models(self, protocol: str, base_url: str) -> AdminListModelsOut:
+        started = time.monotonic()
+        allow_private = self._settings.allow_private_llm_urls
+        if self._model_lister is not None:
+            try:
+                models = await self._model_lister(protocol, base_url, "")
+                latency_ms = max(0, round((time.monotonic() - started) * 1000))
+                return AdminListModelsOut(
+                    ok=True,
+                    models=models,
+                    latency_ms=latency_ms,
+                    detail=f"已拉取 {len(models)} 个公开模型" if models else "接口返回空模型列表，请手动填写",
+                )
+            except ChatError as exc:
+                latency_ms = max(0, round((time.monotonic() - started) * 1000))
+                return AdminListModelsOut(
+                    ok=False,
+                    models=[],
+                    latency_ms=latency_ms,
+                    detail=str(exc),
+                    requires_api_key=exc.status_code in (401, 403),
+                )
+
+        trimmed = base_url.rstrip("/")
+        if protocol == "anthropic" and not trimmed.endswith("/v1"):
+            endpoint = f"{trimmed}/v1/models"
+        else:
+            endpoint = f"{trimmed}/models"
+        headers: dict[str, str] = {"Accept": "application/json"}
+        if protocol == "anthropic":
+            headers["anthropic-version"] = "2023-06-01"
+        hooks = (
+            {
+                "request": [
+                    make_outbound_request_hook(
+                        allow_private=False,
+                        require_https=not allow_private,
+                        label="翻译服务地址",
+                    )
+                ]
+            }
+            if not allow_private
+            else None
+        )
+        transport = build_safe_async_transport(allow_private=allow_private)
+        try:
+            async with httpx2.AsyncClient(
+                follow_redirects=False,
+                timeout=MODEL_LIST_TIMEOUT_S,
+                transport=transport,
+                event_hooks=hooks,
+            ) as client:
+                resp = await client.get(endpoint, headers=headers)
+        except httpx2.TimeoutException:
+            latency_ms = max(0, round((time.monotonic() - started) * 1000))
+            return AdminListModelsOut(ok=False, latency_ms=latency_ms, detail="获取模型列表超时，请重试或手动填写")
+        except httpx2.HTTPError:
+            latency_ms = max(0, round((time.monotonic() - started) * 1000))
+            return AdminListModelsOut(
+                ok=False,
+                latency_ms=latency_ms,
+                detail="无法连接该服务地址，请检查 URL 或网络",
+            )
+
+        latency_ms = max(0, round((time.monotonic() - started) * 1000))
+        if resp.status_code in (401, 403):
+            return AdminListModelsOut(
+                ok=False,
+                latency_ms=latency_ms,
+                requires_api_key=True,
+                detail="该服务商需要 API Key 才能查询模型列表，可输入一次性临时探测 Key（仅本次使用，绝不保存）",
+            )
+        if 300 <= resp.status_code < 400:
+            return AdminListModelsOut(
+                ok=False,
+                latency_ms=latency_ms,
+                detail=f"服务地址触发重定向（HTTP {resp.status_code}），出于安全策略已拒绝跟随",
+            )
+        if resp.status_code == 429:
+            return AdminListModelsOut(
+                ok=False,
+                latency_ms=latency_ms,
+                detail="模型列表请求受限（HTTP 429），请稍后重试或手动填写",
+            )
+        if resp.status_code != 200:
+            return AdminListModelsOut(
+                ok=False,
+                latency_ms=latency_ms,
+                detail=f"该服务暂不提供公开模型列表（HTTP {resp.status_code}），可提供临时探测 Key 或手动填写",
+                requires_api_key=resp.status_code == 400,
+            )
+        try:
+            body: Any = resp.json()
+        except ValueError:
+            return AdminListModelsOut(ok=False, latency_ms=latency_ms, detail="服务返回的模型列表格式无效，请手动填写")
+        raw_items = body.get("data") if isinstance(body, dict) else body
+        if not isinstance(raw_items, list):
+            return AdminListModelsOut(ok=False, latency_ms=latency_ms, detail="服务返回的模型列表格式无效，请手动填写")
+        ids = sorted(
+            {
+                item["id"].strip()
+                for item in raw_items
+                if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip()
+            }
+        )
+        return AdminListModelsOut(
+            ok=True,
+            models=ids,
+            latency_ms=latency_ms,
+            detail=f"已拉取 {len(ids)} 个公开模型" if ids else "接口返回空模型列表，请手动填写",
+        )

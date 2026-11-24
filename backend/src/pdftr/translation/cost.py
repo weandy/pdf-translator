@@ -48,6 +48,41 @@ def add_cost(
     return (total or 0.0) + cost
 
 
+def lookup_price(model: str, table: Mapping[str, Price]) -> Price | None:
+    """按精确名 -> 小写名 -> 去服务商前缀（如 openai/gpt-4o <-> gpt-4o）顺序查找模型单价。"""
+    cleaned = model.strip()
+    if not cleaned:
+        return None
+    direct = table.get(cleaned)
+    if direct is not None:
+        return direct
+    lowered = cleaned.casefold()
+    stripped = lowered.rsplit("/", 1)[-1] if "/" in lowered else lowered
+    lower_match: Price | None = None
+    stripped_match: Price | None = None
+    suffix_match: Price | None = None
+    suffix_ambiguous = False
+    for key, price in table.items():
+        k_lower = key.strip().casefold()
+        if k_lower == lowered:
+            lower_match = price
+            break
+        if k_lower == stripped and stripped_match is None:
+            stripped_match = price
+        elif "/" in k_lower and k_lower.rsplit("/", 1)[-1] == stripped:
+            if suffix_match is None:
+                suffix_match = price
+            else:
+                suffix_ambiguous = True
+    if lower_match is not None:
+        return lower_match
+    if stripped_match is not None:
+        return stripped_match
+    if suffix_match is not None and not suffix_ambiguous:
+        return suffix_match
+    return None
+
+
 def cost_cny(
     model: str,
     usage: ChatUsage,
@@ -57,7 +92,7 @@ def cost_cny(
 ) -> float | None:
     """未知模型返回 None（界面显示“按服务商计费”）。支持传入热配置单价表覆盖默认 PRICES。"""
     table = PRICES if prices is None else prices
-    price = table.get(model)
+    price = lookup_price(model, table)
     if price is None:
         return None
     total = (

@@ -73,6 +73,8 @@ function makeOverview(overrides?: Partial<AdminOverview>): AdminOverview {
     active_jobs: [
       {
         job_id: "abcdef1234567890",
+        filename: "attention_study.pdf",
+        created_at: "2026-11-24T09:30:00Z",
         page_count: 12,
         stage: "translate",
         progress: 0.45,
@@ -173,9 +175,24 @@ function makeConfig(overrides?: Partial<AdminConfigView>): AdminConfigView {
     },
     pricing: {
       custom_configured: true,
-      models: [
-        { model: "deepseek-flash", cache_hit: 0.02, cache_miss: 1.0, output: 4.0, peak_factor: 2.0 },
-      ],
+      models: [{ model: "deepseek-flash", cache_hit: 0.02, cache_miss: 1.0, output: 4.0, peak_factor: 2.0 }],
+      sync: {
+        source_url:
+          "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json",
+        source_format: "auto",
+        usd_to_cny: 7.25,
+        auto_sync_enabled: true,
+        sync_interval_hours: 24,
+      },
+    },
+    pricing_sync_status: {
+      source_url:
+        "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json",
+      status: "never",
+      synced_at: null,
+      model_count: 0,
+      last_error: "",
+      syncing: false,
     },
     glossary: {
       sources: ["aitd", "d2l"],
@@ -344,6 +361,22 @@ describe("专业管理后台与登录组件", () => {
       latency_ms: 420,
       detail: "连接正常",
     });
+    vi.spyOn(adminApi, "listModels").mockResolvedValue({
+      ok: true,
+      models: ["nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3.5-super-vl-120b-a12b"],
+      latency_ms: 180,
+      detail: "已拉取 2 个可用模型",
+      requires_api_key: false,
+    });
+    vi.spyOn(adminApi, "syncPricing").mockResolvedValue({
+      source_url:
+        "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json",
+      status: "ok",
+      synced_at: "2026-11-24T12:00:00Z",
+      model_count: 276,
+      last_error: "",
+      syncing: false,
+    });
     vi.spyOn(adminApi, "listRevisions").mockResolvedValue(makeRevisions());
     vi.spyOn(adminApi, "rollbackConfig").mockResolvedValue(makeConfig({ revision: 16 }));
     vi.spyOn(adminApi, "reloadGlossary").mockResolvedValue(makeConfig().glossary);
@@ -388,12 +421,7 @@ describe("专业管理后台与登录组件", () => {
             />
             <Route
               path="/admin/submissions"
-              element={
-                <AdminSubmissionsPage
-                  adminPath="/admin"
-                  submissionAuditEnabled={submissionAuditEnabled}
-                />
-              }
+              element={<AdminSubmissionsPage adminPath="/admin" submissionAuditEnabled={submissionAuditEnabled} />}
             />
             <Route
               path="/admin/services"
@@ -559,7 +587,9 @@ describe("专业管理后台与登录组件", () => {
     expect(host.querySelector(".ac-ua-bar")?.getAttribute("aria-label")).toBe("近 7 日提交终端分布占比条");
     expect(host.textContent).toContain("100 篇");
     expect(host.textContent).toContain("Windows · Chrome");
+    expect(host.textContent).toContain("attention_study.pdf");
     expect(host.textContent).toContain("abcdef12");
+    expect(host.textContent).not.toContain("当前在途任务（脱敏）");
     expect(host.textContent).toContain("最近 24 小时有 1 条失败任务");
 
     // 切换为单并发无预留 + 访问来源统计
@@ -1041,5 +1071,67 @@ describe("专业管理后台与登录组件", () => {
     await act(async () => vi.advanceTimersByTimeAsync(1000));
     expect(host.textContent).toContain("管理登录");
     expect(host.textContent).toContain("管理会话已失效，请重新登录。");
+  });
+
+  it("后台支持拉取免费渠道与自备默认模型列表，以及 GitHub 远程模型单价一键同步", async () => {
+    await renderConsole("/admin/services");
+
+    // 1. 免费翻译池拉取模型并一键填入主模型
+    await clickButton("拉取模型");
+    expect(adminApi.listModels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: "free_provider",
+        provider_id: "nim-main",
+        base_url: "https://integrate.api.nvidia.com/v1",
+      }),
+      "synthetic-csrf",
+      expect.any(AbortSignal),
+    );
+    expect(host.textContent).toContain("nvidia/nemotron-3-ultra-550b-a55b");
+    const setMainBtn = [...host.querySelectorAll<HTMLButtonElement>(".ac-model-item button")].find(
+      (b) => b.textContent?.trim() === "设为主模型",
+    )!;
+    await act(async () => setMainBtn.click());
+    expect(host.querySelector<HTMLInputElement>("#provider-model-nim-main")!.value).toBe(
+      "nvidia/nemotron-3-ultra-550b-a55b",
+    );
+
+    // 2. 切到自备预设与计价：默认推荐 401 需要临时探测 Key -> 填入后拉取成功
+    await clickButton("自备预设与计价");
+    vi.mocked(adminApi.listModels)
+      .mockResolvedValueOnce({
+        ok: false,
+        models: [],
+        latency_ms: 90,
+        detail: "该服务商需要 API Key 才能查询模型列表",
+        requires_api_key: true,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        models: ["deepseek-chat", "deepseek-reasoner"],
+        latency_ms: 110,
+        detail: "已拉取 2 个可用模型",
+        requires_api_key: false,
+      });
+    await clickButton("拉取默认模型列表");
+    expect(host.querySelector('input[aria-label="默认推荐临时探测 Key"]')).not.toBeNull();
+    await setInput('input[aria-label="默认推荐临时探测 Key"]', "sk-temp-probe-123");
+    await clickButton("用临时 Key 拉取");
+    expect(adminApi.listModels).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        target: "default_llm",
+        probe_api_key: "sk-temp-probe-123",
+      }),
+      "synthetic-csrf",
+      expect.any(AbortSignal),
+    );
+    expect(host.textContent).toContain("deepseek-reasoner");
+
+    // 3. GitHub 远程模型单价源预填 Wei-Shaw 源、默认 24 小时自动同步，点击立即同步更新状态
+    expect(host.querySelector<HTMLInputElement>("#pricing-source-url")!.value).toContain("Wei-Shaw/model-price-repo");
+    expect(host.querySelector<HTMLInputElement>("#pricing-sync-interval")!.value).toBe("24");
+    await clickButton("立即同步");
+    expect(adminApi.syncPricing).toHaveBeenCalledWith("synthetic-csrf");
+    expect(host.textContent).toContain("已同步 · 276 个模型");
   });
 });

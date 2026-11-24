@@ -1,10 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 
 import { readBatches, rememberBatch, removeBatch, type BatchEntry } from "@/entities/batch/model";
 import { clearHistory, removeHistory, useHistory } from "@/entities/history/model";
 import { deleteJob, MY_JOBS_QUERY, myJobIds, restoreMyJobs, useMyJobs } from "@/entities/job/model";
+import { TermsModal } from "@/features/legal/TermsModal";
 import { UploadPanel } from "@/features/upload/UploadPanel";
 import { HomeTaskCard } from "@/pages/HomeBatch";
 import { api, type Job } from "@/shared/api/client";
@@ -29,6 +30,7 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
     queryFn: api.config,
   });
   const [notice, setNotice] = useState<string | null>(null);
+  const [termsOpen, setTermsOpen] = useState(false);
   const history = useHistory();
   const [batches, setBatches] = useState<BatchEntry[]>(readBatches);
   const batchIds = new Set(batches.flatMap((batch) => batch.jobIds));
@@ -110,30 +112,24 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
             <br />
             按原版式读中文
           </h1>
-          <p className="lead">
-            上传 PDF，译文排回原来的位置，与原文左右对照。公式、图表和表格保持原样，读完可以下载 PDF。
-          </p>
+          <p className="lead">上传 PDF，译文排回原位，与原文左右对照，支持逐段编辑并导出 PDF。</p>
           <ul className="facts">
             <li>
-              <strong>公式不走样</strong>
-              <span>行内公式交给模型时附带 LaTeX，译文里重新渲染；不会被翻成乱码。</span>
+              <strong>公式与图表保留</strong>
+              <span>行内公式按 LaTeX 重新渲染，图表与表格保持原位。</span>
             </li>
             <li>
-              <strong>一篇几分钱</strong>
+              <strong>双语对照可编辑</strong>
+              <span>逐段审校与术语微调，支持导出中文版或双语对照 PDF。</span>
+            </li>
+            <li>
+              <strong>{config?.free_channel?.enabled ? "免 Key 直接试用" : "Key 只在本机"}</strong>
               <span>
-                用 DeepSeek 翻一篇 15 页论文约 <span className="nowrap">¥0.03–0.07</span>，翻译前会先给出预估。
+                {config?.free_channel?.enabled
+                  ? "支持免填 Key 直接体验公开论文；自备 API Key 享独立队列且仅存本机。"
+                  : "自备 API Key 仅存在当前浏览器中，翻译前提供透明费用预估。"}
               </span>
             </li>
-            <li>
-              <strong>Key 只在本机</strong>
-              <span>API Key 只存在这个浏览器里，本站后端不保存。</span>
-            </li>
-            {config?.free_channel?.enabled && (
-              <li>
-                <strong>免费体验入口</strong>
-                <span>无需配置 Key 即可直接试用公开论文翻译；自备 Key 享有独立翻译队列。</span>
-              </li>
-            )}
           </ul>
         </div>
         <UploadPanel
@@ -145,6 +141,7 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
             setNotice(`已提交 ${created.length} 篇论文。`);
           }}
           onNeedSettings={openSettings}
+          onOpenTerms={() => setTermsOpen(true)}
         />
       </div>
       {notice && (
@@ -211,6 +208,20 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
           </ul>
         </section>
       )}
+      <footer className="home-footer" aria-label="条款与说明">
+        <button type="button" className="home-footer-btn" onClick={() => setTermsOpen(true)}>
+          服务条款与隐私说明（ToS）
+        </button>
+        <span className="home-footer-sep" aria-hidden="true">
+          ·
+        </span>
+        <Link to="/tos">独立条款页</Link>
+        <span className="home-footer-sep" aria-hidden="true">
+          ·
+        </span>
+        <Link to="/guide">使用指南</Link>
+      </footer>
+      {termsOpen && <TermsModal config={config} onClose={() => setTermsOpen(false)} />}
     </main>
   );
 }

@@ -629,6 +629,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/config/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List Admin Config Models */
+        post: operations["list_admin_config_models_api_admin_config_models_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/pricing/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync Admin Pricing */
+        post: operations["sync_admin_pricing_api_admin_pricing_sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/config/revisions": {
         parameters: {
             query?: never;
@@ -725,6 +759,13 @@ export interface components {
         ActiveJobSummaryOut: {
             /** Job Id */
             job_id: string;
+            /**
+             * Filename
+             * @default
+             */
+            filename: string;
+            /** Created At */
+            created_at?: string | null;
             /** Page Count */
             page_count: number;
             /** Stage */
@@ -768,10 +809,57 @@ export interface components {
             parser: components["schemas"]["ParserServiceView"];
             default_llm: components["schemas"]["DefaultLlmConfig"];
             pricing: components["schemas"]["PricingConfig"];
+            pricing_sync_status?: components["schemas"]["PricingSyncStatusView"];
             glossary: components["schemas"]["GlossaryAdminView"];
             system: components["schemas"]["SystemConfig"];
             /** Env Locks */
             env_locks: components["schemas"]["EnvLockItem"][];
+        };
+        /** AdminListModelsIn */
+        AdminListModelsIn: {
+            /**
+             * Target
+             * @enum {string}
+             */
+            target: "free_provider" | "default_llm";
+            /** Provider Id */
+            provider_id?: string | null;
+            /**
+             * Protocol
+             * @default openai
+             * @enum {string}
+             */
+            protocol: "openai" | "anthropic";
+            /** Base Url */
+            base_url: string;
+            api_key?: components["schemas"]["SecretUpdate"] | null;
+            /**
+             * Probe Api Key
+             * @default
+             */
+            probe_api_key: string;
+        };
+        /** AdminListModelsOut */
+        AdminListModelsOut: {
+            /** Ok */
+            ok: boolean;
+            /** Models */
+            models?: string[];
+            /**
+             * Latency Ms
+             * @default 0
+             */
+            latency_ms: number;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /**
+             * Requires Api Key
+             * @default false
+             */
+            requires_api_key: boolean;
         };
         /** AdminLoginIn */
         AdminLoginIn: {
@@ -1639,6 +1727,7 @@ export interface components {
              * @default false
              */
             custom_configured: boolean;
+            sync?: components["schemas"]["PricingSyncConfig"];
         };
         /** PricingPatch */
         PricingPatch: {
@@ -1646,6 +1735,67 @@ export interface components {
             expected_revision: number;
             /** Models */
             models?: components["schemas"]["ModelPriceEntry"][];
+            sync?: components["schemas"]["PricingSyncConfig"] | null;
+        };
+        /** PricingSyncConfig */
+        PricingSyncConfig: {
+            /**
+             * Source Url
+             * @default https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json
+             */
+            source_url: string;
+            /**
+             * Source Format
+             * @default auto
+             * @enum {string}
+             */
+            source_format: "auto" | "litellm" | "models_dev" | "pdftr";
+            /**
+             * Usd To Cny
+             * @default 7.25
+             */
+            usd_to_cny: number;
+            /**
+             * Auto Sync Enabled
+             * @default true
+             */
+            auto_sync_enabled: boolean;
+            /**
+             * Sync Interval Hours
+             * @default 24
+             */
+            sync_interval_hours: number;
+        };
+        /** PricingSyncStatusView */
+        PricingSyncStatusView: {
+            /**
+             * Source Url
+             * @default
+             */
+            source_url: string;
+            /**
+             * Status
+             * @default never
+             * @enum {string}
+             */
+            status: "never" | "ok" | "error" | "syncing";
+            /** Synced At */
+            synced_at?: string | null;
+            /**
+             * Model Count
+             * @default 0
+             */
+            model_count: number;
+            /**
+             * Last Error
+             * @default
+             */
+            last_error: string;
+            /**
+             * Syncing
+             * @default false
+             */
+            syncing: boolean;
         };
         /** QueueSlotStats */
         QueueSlotStats: {
@@ -3387,6 +3537,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_admin_config_models_api_admin_config_models_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminListModelsIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminListModelsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_admin_pricing_api_admin_pricing_sync_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PricingSyncStatusView"];
                 };
             };
         };

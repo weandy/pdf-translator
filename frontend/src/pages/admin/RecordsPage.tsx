@@ -119,6 +119,20 @@ function statusBadgeTone(status: SubmissionRecord["status"]): string {
   return "";
 }
 
+function buildPageNumbers(current: number, totalPages: number): Array<number | "ellipsis"> {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+  const pages: Array<number | "ellipsis"> = [1];
+  const start = Math.max(2, current - 1);
+  const end = Math.min(totalPages - 1, current + 1);
+  if (start > 2) pages.push("ellipsis");
+  for (let p = start; p <= end; p += 1) pages.push(p);
+  if (end < totalPages - 1) pages.push("ellipsis");
+  pages.push(totalPages);
+  return pages;
+}
+
 function RecordItem({ record }: { record: SubmissionRecord }) {
   const [ipCopyMessage, setIpCopyMessage] = useState("");
   const [titleCopyMessage, setTitleCopyMessage] = useState("");
@@ -161,16 +175,12 @@ function RecordItem({ record }: { record: SubmissionRecord }) {
   return (
     <li>
       <article className="ac-record-card admin-record">
-        <div className="ac-record-grid">
-          <div>
-            <p className="ac-record-title" title={title}>
+        <div className="ac-record-head">
+          <div className="ac-record-head-main">
+            <p className={`ac-record-title${titleExpanded ? " expanded" : ""}`} title={title}>
               {title}
             </p>
-            <div className="ac-record-meta">
-              <time dateTime={record.submitted_at}>{dateTime.format(new Date(record.submitted_at))}</time>
-              <span>{record.record_source === "backfill" ? "历史补录" : "实时记录"}</span>
-              <span>{TITLE_SOURCE_NAMES[record.title_source]}</span>
-              <span>{record.page_count} 页</span>
+            <div className="ac-record-head-actions">
               <button
                 type="button"
                 className="ac-link-btn"
@@ -179,86 +189,126 @@ function RecordItem({ record }: { record: SubmissionRecord }) {
               >
                 {titleExpanded ? "收起标题" : "查看完整标题"}
               </button>
-            </div>
-            {titleExpanded && (
-              <div className="ac-title-full">
-                <span>{title}</span>
-                <div className="ac-actions">
-                  <button type="button" className="ac-link-btn" onClick={() => void copyTitle()}>
-                    复制标题
-                  </button>
-                  {titleCopyMessage && (
-                    <span className="ac-copy-msg" role="status">
-                      {titleCopyMessage}
-                    </span>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="ac-ip-box">
-            <div className="ac-ip-line">
-              {record.submitter_ip ? (
-                <>
-                  <code className="admin-ip">{record.submitter_ip}</code>
-                  <button
-                    type="button"
-                    className="ac-link-btn"
-                    aria-label="复制提交 IP"
-                    onClick={() => void copyIp()}
-                  >
-                    复制
-                  </button>
-                </>
-              ) : (
-                <span className="ac-hint">未记录</span>
-              )}
-            </div>
-            {ipCopyMessage && (
-              <span className="ac-copy-msg" role="status">
-                {ipCopyMessage}
-              </span>
-            )}
-            <div className="ac-ua-line">
-              <span className={`ac-badge${record.client_device === "bot" ? " warn" : ""}`}>{clientLabel}</span>
-              {record.user_agent && (
-                <button
-                  type="button"
-                  className="ac-link-btn"
-                  aria-expanded={uaExpanded}
-                  onClick={() => setUaExpanded((prev) => !prev)}
-                >
-                  {uaExpanded ? "收起 UA" : "完整 UA"}
+              {titleExpanded && (
+                <button type="button" className="ac-link-btn" onClick={() => void copyTitle()}>
+                  复制标题
                 </button>
               )}
-            </div>
-          </div>
-
-          <div className="ac-record-right">
-            <div className="ac-actions" style={{ justifyContent: "flex-end" }}>
-              <span className={`ac-badge ${statusBadgeTone(record.status)}`}>{STATUS_NAMES[record.status]}</span>
-              {record.channel_mode && (
-                <span className={`ac-badge ${record.channel_mode === "free" ? "pen" : ""}`}>
-                  {record.channel_mode === "free" ? "免费体验" : "自备 Key"}
+              {titleCopyMessage && (
+                <span className="ac-copy-msg" role="status">
+                  {titleCopyMessage}
                 </span>
               )}
             </div>
+          </div>
+
+          <div className="ac-record-badges">
+            <span className={`ac-badge ${statusBadgeTone(record.status)}`}>{STATUS_NAMES[record.status]}</span>
+            {record.channel_mode && (
+              <span className={`ac-badge ${record.channel_mode === "free" ? "pen" : ""}`}>
+                {record.channel_mode === "free" ? "免费体验" : "自备 Key"}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="ac-record-body">
+          <div className="ac-record-col">
+            <div className="ac-record-kv">
+              <span className="ac-record-k">提交时间</span>
+              <span className="ac-record-v">
+                <time dateTime={record.submitted_at}>{dateTime.format(new Date(record.submitted_at))}</time>
+                <span className="ac-record-sep">·</span>
+                <span>{record.page_count} 页</span>
+                <span className="ac-record-sep">·</span>
+                <span>{record.record_source === "backfill" ? "历史补录" : "实时记录"}</span>
+                <span className="ac-record-sep">·</span>
+                <span>{TITLE_SOURCE_NAMES[record.title_source]}</span>
+              </span>
+            </div>
+
             {record.model_name && (
-              <div className="ac-mono">
-                {record.model_name}
-                {record.fallback_used && <span className="ac-badge warn" style={{ marginLeft: 6 }}>备选</span>}
+              <div className="ac-record-kv">
+                <span className="ac-record-k">使用模型</span>
+                <span className="ac-record-v ac-mono">
+                  {record.model_name}
+                  {record.fallback_used && (
+                    <span className="ac-badge warn" style={{ marginLeft: 6 }}>
+                      备选
+                    </span>
+                  )}
+                </span>
               </div>
             )}
-            {(record.current_stage || record.status === "running" || record.status === "queued") && (
-              <span>当前阶段：{STAGE_NAMES[record.current_stage ?? ""] ?? record.current_stage ?? "等待调度"}</span>
-            )}
-            <span>
-              首次完成：{record.first_completed_at ? dateTime.format(new Date(record.first_completed_at)) : "未记录"}
-            </span>
-            {record.failure_updated_at && (
-              <span>失败更新时间：{dateTime.format(new Date(record.failure_updated_at))}</span>
-            )}
+
+            <div className="ac-record-kv">
+              <span className="ac-record-k">执行进度</span>
+              <span className="ac-record-v">
+                {(record.current_stage || record.status === "running" || record.status === "queued") && (
+                  <>
+                    <span>
+                      当前阶段：{STAGE_NAMES[record.current_stage ?? ""] ?? record.current_stage ?? "等待调度"}
+                    </span>
+                    <span className="ac-record-sep">·</span>
+                  </>
+                )}
+                <span>
+                  首次完成：
+                  {record.first_completed_at ? dateTime.format(new Date(record.first_completed_at)) : "未记录"}
+                </span>
+                {record.failure_updated_at && (
+                  <>
+                    <span className="ac-record-sep">·</span>
+                    <span>失败更新：{dateTime.format(new Date(record.failure_updated_at))}</span>
+                  </>
+                )}
+              </span>
+            </div>
+          </div>
+
+          <div className="ac-record-col ac-ip-box">
+            <div className="ac-record-kv">
+              <span className="ac-record-k">提交 IP</span>
+              <span className="ac-record-v ac-ip-line">
+                {record.submitter_ip ? (
+                  <>
+                    <code className="admin-ip">{record.submitter_ip}</code>
+                    <button
+                      type="button"
+                      className="ac-link-btn"
+                      aria-label="复制提交 IP"
+                      onClick={() => void copyIp()}
+                    >
+                      复制
+                    </button>
+                    {ipCopyMessage && (
+                      <span className="ac-copy-msg" role="status">
+                        {ipCopyMessage}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span className="ac-hint">未记录</span>
+                )}
+              </span>
+            </div>
+
+            <div className="ac-record-kv">
+              <span className="ac-record-k">客户端</span>
+              <span className="ac-record-v ac-ua-line">
+                <span className={`ac-badge${record.client_device === "bot" ? " warn" : ""}`}>{clientLabel}</span>
+                {record.user_agent && (
+                  <button
+                    type="button"
+                    className="ac-link-btn"
+                    aria-expanded={uaExpanded}
+                    onClick={() => setUaExpanded((prev) => !prev)}
+                  >
+                    {uaExpanded ? "收起 UA" : "完整 UA"}
+                  </button>
+                )}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -429,9 +479,7 @@ export function RecordsPage() {
     <>
       {!submissionAuditEnabled && (
         <div className="ac-alert info" role="status">
-          <span>
-            当前站点未开启提交明细采集（仅展示已有历史记录或空列表）；运行概况、服务设置与系统设置不受影响。
-          </span>
+          <span>当前站点未开启提交明细采集（仅展示已有历史记录或空列表）；运行概况、服务设置与系统设置不受影响。</span>
         </div>
       )}
 
@@ -640,7 +688,12 @@ export function RecordsPage() {
                 </button>
               )}
               {!data && !csrfBroken && (
-                <button type="button" className="ac-btn sm" disabled={busy} onClick={() => void runSearch(queryRef.current)}>
+                <button
+                  type="button"
+                  className="ac-btn sm"
+                  disabled={busy}
+                  onClick={() => void runSearch(queryRef.current)}
+                >
                   重试查询
                 </button>
               )}
@@ -651,7 +704,8 @@ export function RecordsPage() {
         {data && (
           <>
             <p className="ac-hint" style={{ marginTop: 0, marginBottom: 10 }}>
-              更新于 {dateTime.format(new Date(data.generated_at))}。正文与 PDF 文件按保留期自动清理，新提交可能改变翻页位置。
+              更新于 {dateTime.format(new Date(data.generated_at))}。正文与 PDF
+              文件按保留期自动清理，新提交可能改变翻页位置。
             </p>
 
             {data.items.length > 0 ? (
@@ -671,6 +725,46 @@ export function RecordsPage() {
             )}
 
             <nav className="ac-pagination" aria-label="翻译记录分页">
+              <span className="ac-pagination-summary">共 {data.total} 条</span>
+              <div className="ac-pagination-controls">
+                <button
+                  type="button"
+                  className="ac-btn sm"
+                  disabled={busy || data.page <= 1}
+                  onClick={() => submitSearch({ ...successfulQueryRef.current, page: data.page - 1 })}
+                >
+                  上一页
+                </button>
+                {buildPageNumbers(data.page, Math.max(1, Math.ceil(data.total / data.page_size))).map((entry, idx) =>
+                  entry === "ellipsis" ? (
+                    <span key={`e-${idx}`} className="ac-page-ellipsis" aria-hidden="true">
+                      …
+                    </span>
+                  ) : (
+                    <button
+                      key={entry}
+                      type="button"
+                      className={`ac-btn sm ac-page-num${entry === data.page ? " primary" : ""}`}
+                      aria-current={entry === data.page ? "page" : undefined}
+                      disabled={busy || entry === data.page}
+                      onClick={() => submitSearch({ ...successfulQueryRef.current, page: entry })}
+                    >
+                      {entry}
+                    </button>
+                  ),
+                )}
+                <button
+                  type="button"
+                  className="ac-btn sm"
+                  disabled={busy || data.page * data.page_size >= data.total}
+                  onClick={() => submitSearch({ ...successfulQueryRef.current, page: data.page + 1 })}
+                >
+                  下一页
+                </button>
+              </div>
+              <span className="ac-pagination-summary">
+                第 {data.page} / {Math.max(1, Math.ceil(data.total / data.page_size))} 页
+              </span>
               <label htmlFor="admin-page-size" className="ac-actions">
                 <span>每页</span>
                 <select
@@ -692,25 +786,6 @@ export function RecordsPage() {
                   ))}
                 </select>
               </label>
-              <span>
-                第 {data.page} 页 / 共 {Math.max(1, Math.ceil(data.total / data.page_size))} 页
-              </span>
-              <button
-                type="button"
-                className="ac-btn sm"
-                disabled={busy || data.page <= 1}
-                onClick={() => submitSearch({ ...successfulQueryRef.current, page: data.page - 1 })}
-              >
-                上一页
-              </button>
-              <button
-                type="button"
-                className="ac-btn sm"
-                disabled={busy || data.page * data.page_size >= data.total}
-                onClick={() => submitSearch({ ...successfulQueryRef.current, page: data.page + 1 })}
-              >
-                下一页
-              </button>
             </nav>
           </>
         )}
