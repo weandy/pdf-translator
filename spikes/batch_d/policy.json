@@ -1,0 +1,38 @@
+{
+  "protocol_version": "batch_d.v1",
+  "baseline_sha": "c15018594d1078d943086221a38baa5f18d4466c",
+  "baseline_prompt_version": "v7",
+  "baseline_validation_version": 7,
+  "rounds": 2,
+  "dev_docs": 8,
+  "holdout_docs": 24,
+  "scored_segments_per_doc": 4,
+  "min_net_gain_b_concept": 4,
+  "min_net_gain_c_formula_relation": 4,
+  "min_net_gain_c_clause_boundary": 4,
+  "min_gain_disciplines": 2,
+  "min_overall_mean_delta": 0.0,
+  "min_control_mean_delta": 0.0,
+  "min_bootstrap_ci_low": -1.0,
+  "min_stratum_mean_delta": -1.0,
+  "bootstrap_resamples": 2000,
+  "bootstrap_seed": 20261125,
+  "sign_test_alpha": 0.05,
+  "max_disagreement_score_gap": 15,
+  "max_cost_ratio": 1.1,
+  "max_request_ratio": 1.1,
+  "max_p95_latency_ratio": 1.25,
+  "tr012_max_char_delta": 120,
+  "default_pricing": {
+    "deepseek-chat": {
+      "cache_hit_cny_per_m": 0.2,
+      "cache_miss_cny_per_m": 2.0,
+      "output_cny_per_m": 3.0
+    },
+    "deepseek-flash": {
+      "cache_hit_cny_per_m": 0.02,
+      "cache_miss_cny_per_m": 1.0,
+      "output_cny_per_m": 4.0
+    }
+  }
+}
