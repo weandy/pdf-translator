@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pdftr.domain.text import RICH_TAG, normalize_term_key
+from pdftr.glossary.filters import is_lazy_english_self_map
 
 if TYPE_CHECKING:
     from pdftr.glossary.extract import Extraction
@@ -165,6 +166,8 @@ class TermSelection:
                 continue
             if key in user_by_key:
                 paper[term] = user_terms.get(term, user_by_key[key])
+                continue
+            if is_lazy_english_self_map(term, target):
                 continue
             paper_tokens = _key_tokens(term)
             compact_target = _compact_target(target)

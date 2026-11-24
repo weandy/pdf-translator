@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from pdftr.domain.llm import ChatModel, ChatOptions, ChatUsage
 from pdftr.domain.text import RICH_TAG, normalize_term_key
+from pdftr.glossary.filters import is_lazy_english_self_map
 from pdftr.glossary.matcher import HORIZONTAL_SPACE, TERM_TOKEN, mask_term_boundaries
 
 log = logging.getLogger(__name__)
@@ -52,12 +53,6 @@ _GENERIC_UNIGRAM_WORDS = frozenset({
     "training", "learning", "problem", "problems", "error", "errors", "accuracy",
     "complexity", "plain", "optimize", "optimization", "performance", "communication", "dataset", "datasets",
 })  # fmt: skip
-# 允许保持全小写以 s 结尾自映射的常见协议/系统/工具名。
-_PLURAL_SELF_MAP_ALLOWLIST = frozenset({
-    "atlas", "blas", "cgroups", "emacs", "https", "iptables", "keras", "kubernetes",
-    "linux", "macos", "nexus", "pandas", "postgres", "procfs", "prometheus", "redis",
-    "rootfs", "sysfs", "tmpfs",
-})  # fmt: skip
 
 PROMPT = """阅读下面的论文信息，按顺序输出：
 1. 第一行输出「领域：……」，用一句话概括论文所属学科与研究主题。
@@ -72,8 +67,8 @@ PROMPT = """阅读下面的论文信息，按顺序输出：
    - 模型、架构（如 Transformer、BERT、ResNet）及应保留原文的方法和数据集名，输出「英文=英文」。
    - 仅在操作系统/Linux 权限语境下保留 root、sudo、系统调用名与命令行标识符原文
      （如 root privileges=root 权限、root user=root 用户）；树/图/数据结构中的 root node 仍译为「根节点」。
-   - 普通可译名词（如 sockets、layers、containers、nodes）必须译为规范中文，
-     严禁保留英文单复数自映射（如禁止 sockets=sockets、sockets=socket）。
+   - 普通可译名词与修饰语（如 sockets、layers、containers、nodes、heavy-tailed、drop-in、wall-clock）必须译为规范中文，
+     无法给出中文译法时省略该词条，严禁保留英文自映射（如禁止 sockets=sockets、sockets=socket、drop-in=drop-in）。
    - 常规临床/医学名词（如 Blood Pressure、Uterine contractions）应译为规范中文而非保留英文。
    - 严禁输出不伦不类的半中半英目标译法（如 Text信息片段）。
    - 使用中文学界通行译法。
@@ -298,7 +293,7 @@ class Extraction(BaseModel):
 
 
 def _skip_extracted_term(k: str, v: str) -> bool:
-    """过滤摘要冒出的通用孤立学术泛词、普通小写英文单复数自映射以及缩写=纯英文多词全称误抽。"""
+    """过滤摘要冒出的通用孤立学术泛词、偷懒英文自映射以及缩写=纯英文多词全称误抽。"""
     key = normalize_term_key(k)
     if (
         " " not in k
@@ -309,19 +304,7 @@ def _skip_extracted_term(k: str, v: str) -> bool:
         return True
     if key.startswith("acr:") and v.isascii() and " " in v.strip():
         return True
-    return (
-        k.isascii()
-        and v.isascii()
-        and k.islower()
-        and v.islower()
-        and k.isalpha()
-        and v.isalpha()
-        and len(k) >= 5
-        and (k.endswith("s") or v.endswith("s"))
-        and k not in _PLURAL_SELF_MAP_ALLOWLIST
-        and v not in _PLURAL_SELF_MAP_ALLOWLIST
-        and key == normalize_term_key(v)
-    )
+    return is_lazy_english_self_map(k, v)
 
 
 def parse(text: str, *, truncated: bool = False) -> Extraction:

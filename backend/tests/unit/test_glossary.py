@@ -6,9 +6,11 @@ import pytest
 from pdftr.config import Settings
 from pdftr.domain.llm import ChatOptions, ChatResult
 from pdftr.glossary import sources
+from pdftr.glossary.extract import PROMPT as EXTRACT_PROMPT
 from pdftr.glossary.extract import Extraction, extract_terms, frequent_candidates, parse
+from pdftr.glossary.filters import is_lazy_english_self_map
 from pdftr.glossary.gist import parse as parse_gist
-from pdftr.glossary.matcher import TermMatcher
+from pdftr.glossary.matcher import TermMatcher, TermSelection
 from pdftr.glossary.normalize import normalize_terms
 
 
@@ -249,3 +251,117 @@ def test_library_gate_on_legacy_artifacts_and_missing_model_line(domain):
     assert Extraction.model_validate({"domain": domain, "use_library": True}).use_library
     assert parse(f"领域：{domain}\nAI公共词库：启用\nnode=节点").use_library
     assert not parse(f"领域：{domain}\nAI公共词库：停用\nnode=节点").use_library
+
+
+def test_lazy_english_self_map_filters_compounds_phrases_and_plurals_while_keeping_legit_terms():
+    for source, target in [
+        ("heavy-tailed", "heavy-tailed"),
+        ("non-asymptotic", "non-asymptotic"),
+        ("drop-in", "drop-in"),
+        ("wall-clock", "wall-clock"),
+        ("ad-hoc", "ad-hoc"),
+        ("blood pressure", "blood pressure"),
+        ("heavy-tailed noise", "heavy-tailed noise"),
+        ("heavy-tailed noise", "heavy tailed noise"),
+        ("sockets", "sockets"),
+        ("sockets", "socket"),
+        ("policies", "policy"),
+        ("batches", "batch"),
+    ]:
+        assert is_lazy_english_self_map(source, target), f"should reject {(source, target)}"
+
+    for source, target in [
+        ("Transformer", "Transformer"),
+        ("ResNet-50", "ResNet-50"),
+        ("AdamW", "AdamW"),
+        ("Seccomp Notify", "Seccomp Notify"),
+        ("TCMs", "TCMs"),
+        ("lxc-user-nic", "lxc-user-nic"),
+        ("cgroups", "cgroups"),
+        ("iptables", "iptables"),
+        ("bypass4netns", "bypass4netns"),
+        ("top-5", "top-5"),
+        ("root", "root"),
+        ("nerdctl", "nerdctl"),
+        ("socket", "socket"),
+        ("news outlets", "new outlet"),
+        ("root privileges", "root 权限"),
+        ("veth pair", "veth 对"),
+    ]:
+        assert not is_lazy_english_self_map(source, target), f"should keep {(source, target)}"
+
+
+def test_parse_drops_lazy_self_maps_before_quota_and_keeps_prior_good_translation():
+    assert "heavy-tailed" in EXTRACT_PROMPT
+    assert "drop-in=drop-in" in EXTRACT_PROMPT
+    assert "无法给出中文译法时省略该词条" in EXTRACT_PROMPT
+
+    good_lines = [f"term_{i}=术语{i}" for i in range(44)]
+    text = "\n".join(
+        [
+            "领域：深度学习优化",
+            "AI公共词库：启用",
+            "heavy-tailed=heavy-tailed",
+            "non-asymptotic=non-asymptotic",
+            "wall-clock=wall-clock",
+            "drop-in=即插即用",
+            "drop-in=drop-in",
+            "lxc-user-nic=lxc-user-nic",
+            *good_lines,
+        ]
+    )
+    found = parse(text)
+    assert len(found.terms) == 45
+    assert found.terms["drop-in"] == "即插即用"
+    assert found.terms["lxc-user-nic"] == "lxc-user-nic"
+    assert "heavy-tailed" not in found.terms
+    assert "term_42" in found.terms and "term_43" not in found.terms
+
+
+def test_normalize_terms_blocks_fake_uppercase_bypass_and_protects_good_translations():
+    body = [
+        "We use sockets and drop-in with heavy-tailed noise, blood pressure, and lxc-user-nic in Seccomp Notify.",
+    ]
+    normalized = normalize_terms(
+        {
+            "Sockets": "Socket",
+            "Blood Pressure": "Blood Pressure",
+            "Drop-In": "即插即用",
+            "Drop-in": "drop-in",
+            "Heavy-Tailed Noise": "Heavy-Tailed Noise",
+            "lxc-user-nic": "lxc-user-nic",
+            "Seccomp Notify": "Seccomp Notify",
+        },
+        body,
+    )
+    assert normalized == {
+        "drop-in": "即插即用",
+        "lxc-user-nic": "lxc-user-nic",
+        "Seccomp Notify": "Seccomp Notify",
+    }
+    # 即使正文仅单数胜出，只要原输入含复数证据仍应拦截。
+    assert normalize_terms({"Sockets": "socket"}, ["We use socket."]) == {}
+    assert normalize_terms({"Sockets": "Socket"}, ["We use sockets."]) == {}
+
+
+def test_term_selection_filters_legacy_lazy_self_maps_lets_library_fill_and_keeps_user_terms():
+    library = TermMatcher({"drop-in": "即插即用"})
+    found = Extraction(
+        terms={
+            "drop-in": "drop-in",
+            "heavy-tailed": "heavy-tailed",
+            "lxc-user-nic": "lxc-user-nic",
+        },
+        use_library=True,
+    )
+    selection = TermSelection(found, {}, lambda: library)
+    assert selection.paper == {"lxc-user-nic": "lxc-user-nic"}
+    assert selection.match_segment("A drop-in module with lxc-user-nic.") == (
+        {},
+        {"lxc-user-nic": "lxc-user-nic"},
+        {"drop-in": "即插即用"},
+    )
+
+    # 用户显式指定的自映射不受自动抽取过滤影响，且优先于公共词库。
+    user_selection = TermSelection(found, {"drop-in": "drop-in"}, lambda: library)
+    assert user_selection.match_segment("A drop-in module.") == ({"drop-in": "drop-in"}, {}, {})

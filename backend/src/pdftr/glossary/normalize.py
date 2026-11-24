@@ -5,6 +5,7 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 
 from pdftr.domain.text import RICH_TAG, normalize_term_key
+from pdftr.glossary.filters import is_lazy_english_self_map
 from pdftr.glossary.matcher import mask_term_boundaries, term_windows
 
 _SECTION_ONLY = frozenset({
@@ -49,5 +50,7 @@ def normalize_terms(terms: dict[str, str], body: str | Sequence[str], headings: 
             continue
         written = forms.most_common(1)[0][0]
         target = target.strip()
+        if is_lazy_english_self_map(term, target, written=written):
+            continue
         out[written] = written if target.casefold() == term.strip().casefold() else target
     return out
