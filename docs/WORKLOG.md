@@ -2,7 +2,25 @@
 
 > 这份文件用于跨对话继续开发。每完成一个完整功能，更新“当前状态”“最近完成”和“下一步”，再单独提交 Git。
 >
-> 最后更新：2026-11-23（Asia/Shanghai）
+> 最后更新：2026-11-24（Asia/Shanghai）
+
+### 部署：Q3 翻译质量与源文保真全包（Q3a + Q3b + Q3c）合入与上线（2026-11-24）
+
+- **范围与提交**：在 `main` 线性合入三批后端/全栈升级并全部部署至 HW-SGP：
+  - **Q3a**（`fa3099d`）：源文假上下标识别、严格子序列补字、补字后重算粗斜体、私用区安全裁图、漏检独立公式屏障与撕裂公式合并、行内摘要与算法标题保留、历史坏源付费前拦截、跨端可见 Unicode 切点对齐、`PROMPT_VERSION = v3`、`EXPORT_CACHE_VERSION = 8`。
+  - **Q3b**（`ea3865d`）：Prompt 升至 `v4`（公式占位符随概念移动与中文定语倒装示例）、全文高频候选词入词库抽取（上限 45）、双标题/窄侧栏/悬挂列表拆块、评审稿等距行号排除、PDF 标题末两行均衡与网页 `text-wrap: balance`、`list_item` 首行缩进控制与 OpenAPI 同步、`EXPORT_CACHE_VERSION = 9`。
+  - **Q3c**（`4a930c1`）：孤立 `Cc`/`Cf` 控制符 span 跳过且不连坐整块弃译；`recover_dropped_chars` 允许词尾逗号/句号并拒绝词内插标点；`choose`/`_restore_tags` 修复脚本标签内坏字；`merge_torn_formulas` 放行中间斜体变量；词库 `clean_zh` 先剥括号再切分隔符、`normalize_terms` 保留正文高频非结构标题词且兼容连字符/空白与全大写缩写、`TermMatcher` 补 `-es` 复数并禁跨句匹配且兼容复数缩写与连字符统一归并、`TermSelection` 按规范键用用户术语覆盖本文术语；`bad_source()` 排除化学式误杀；`front_matter_ids()` 识别结构化摘要与长正文句段；`EditIn`/`edit_segment` 拒绝纯空格提交；翻译缓存键补齐 `domain`/`section`/`provider_id` 且 `use_cache=False` 不覆写共享缓存；单段重试注入具体校验错误诊断并按尝试次数升序调度。
+- **门禁验证**：后端在 `4a930c1` 串行通过 Ruff format/check（149 文件）、Pyright（0 错误）、import-linter（3/3 kept）、Pytest **706 passed / 6 skipped**（含 OpenAPI 同步与 Q3c 合成回归单测）及 `git diff --check`。Q3a+Q3b 合入前前端 Vitest/lint/typecheck/build 全绿，Q3c 无前端改动。
+- **HW-SGP 上线结果**（源码 `4a930c1`）：
+  - Q3a+Q3b 上线重建双镜像，Q3c 仅改后端故仅重建 `app`（沿用 `backend/Dockerfile` 运行阶段并复用已校验 `/app/fonts`，避免 1.8 GB 小机重跑字体精简 OOM）；
+  - 构建前后进行中任务均为空（`进行中: []`）；数据库备份 `/data/backups/pre-q3c-4a930c1-20261124.db`（`PRAGMA integrity_check: ok`）；回滚镜像保留 `pdf-translator-app:before-q3c-20261124`（`02e5fb1b7f4a`）及 `before-q3-20261124` 双镜像；新 `app` 镜像 `d08237a60eab`（healthy），`web` 保持 `0f8e22ab8de3`。
+- **公网与端到端验收**：
+  - `/api/health` 返回 200（`data_dir_writable: true`）；`PATCH /api/segments/{id}` 提交纯空格返回 422（`译文不能为空`）；
+  - 线上实测复杂英文学术 PDF 样例均 100% 首试通过且零失败段、单双语 PDF 导出正常，测试任务用完均已 `DELETE -> 204` 清理：
+    - 35 页长篇样例：218/218 段（较 Q3a+Q3b 找回此前被孤立控制符连坐弃译的 1 段正文，全篇非译文本块仅余预期的 1 处伪代码块），导出单语 PDF 对应页已含完整中文译文；
+    - 13 页密集公式样例：166/166 段（相较 Q2 大面积失败已彻底清零），此前残余的坏字（`\ufffd`）与词尾丢逗号均已清零，导出单语 PDF 全文 `\ufffd` 为 0。
+  - 注：本次 Q3c 线上复验于工作日 11:03–11:07（DeepSeek 2x 高峰价 + 新缓存键冷启动）执行，单篇费用分别为 ¥0.1647 与 ¥0.1334（折合 1x 常规时段约 ¥0.0823 与 ¥0.0667）。
+- **下一步**：后续可按第二档质量加固计划，择机评估批量失败快速止损、术语跨段一致性巡检与极少数跨样式撕裂公式合并的进一步增强。
 
 ### 本轮完成：Q2 翻译质量提升（2026-11-23）
 
