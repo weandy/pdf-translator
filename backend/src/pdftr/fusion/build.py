@@ -588,7 +588,6 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], report: FusionRepor
     formulas: list[InlineFormula] = []
     unresolved = False
     line_centers = [line.bbox.center[1] for line in lb.lines]
-    block_x1 = lb.bbox.x1
     for li, line in enumerate(lb.lines):
         formula_boxes = [s.bbox for s in line.spans if s.kind == "inline_formula" and s.located]
         text_candidates = [s.bbox for s in line.spans if s.kind == "text"]
@@ -617,8 +616,8 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], report: FusionRepor
                     default=s.bbox.x1,
                 )
                 if overflow_x1 > s.bbox.x1:
+                    # 仅扩展单行 Span.bbox 供背景去字擦除溢出尾字，不再撑大整块排版框 Block.bbox。
                     search_box = s.bbox.model_copy(update={"x1": overflow_x1})
-                    block_x1 = max(block_x1, overflow_x1 + 0.6)
             span_chars = chars_in(chars, search_box, exclude=formula_boxes) if cp.kind is PageKind.NATIVE else []
             pdf_text = text_of(span_chars)
             stripped = strip_fake_scripts(s.content, span_chars)
@@ -673,13 +672,12 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], report: FusionRepor
                     )
                 )
     report.formulas += len(formulas)
-    block_bbox = lb.bbox.model_copy(update={"x1": block_x1}) if block_x1 > lb.bbox.x1 else lb.bbox
     return Block(
         id=block_id(cp.index, lb.order),
         page=cp.index,
         type=lb.type,
         level=lb.level,
-        bbox=block_bbox,
+        bbox=lb.bbox,
         order=lb.order,
         spans=spans,
         formulas=formulas,

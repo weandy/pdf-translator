@@ -122,7 +122,7 @@ def test_parse_numbered_strips_inline_closing_and_leading_protocol_tags():
 
 
 def test_target_problems_rejects_protocol_and_malformed_formula_tags():
-    assert VALIDATION_VERSION == 4
+    assert VALIDATION_VERSION == 5
     assert any("协议标签" in p for p in _target_problems("A sentence.", "一句译文。</translations>"))
     assert any("协议标签" in p for p in _target_problems("A sentence.", "<translations>一句译文。"))
     assert any("公式标签" in p for p in _target_problems("Let <m1/> be x.", "设<m1>x</m1>为输入。"))
@@ -161,9 +161,9 @@ def test_high_formula_density_segments_auto_escalate_thinking_without_dragging_p
                 if not m:
                     continue
                 text = re.sub(r"<(m\d+)>.*?</\1>", r"<\1/>", m.group(2))
-                if self.fail_high_once and "<m4/>" in text:
+                if self.fail_high_once and "<m5/>" in text:
                     self.fail_high_once = False
-                    text = text.replace("<m4/>", "")
+                    text = text.replace("<m5/>", "")
                 out.append(f"{m.group(1)}|译:{text}")
             return ChatResult(text="\n".join(out), usage=ChatUsage(prompt_tokens=10, completion_tokens=10))
 
@@ -185,8 +185,8 @@ def test_high_formula_density_segments_auto_escalate_thinking_without_dragging_p
         id="s2",
         job_id="j",
         block_ids=["p0-b2"],
-        source="For <m1/> and <m2/>, we have <m3/> with <m4/>.",
-        formulas={"m1": "x", "m2": "y", "m3": "z", "m4": "w"},
+        source="For <m1/> and <m2/>, we have <m3/> with <m4/> and <m5/>.",
+        formulas={"m1": "x", "m2": "y", "m3": "z", "m4": "w", "m5": "v"},
         section="2 Method",
     )
     plain2 = Segment(id="s3", job_id="j", block_ids=["p0-b3"], source="Plain second sentence.", section="2 Method")
@@ -200,7 +200,7 @@ def test_high_formula_density_segments_auto_escalate_thinking_without_dragging_p
     assert all(s.status is SegmentStatus.DONE for s in out)
     assert report.requests == 3
     plain_calls = [opts for user, opts in chat.calls if "Plain first sentence." in user]
-    dense_calls = [opts for user, opts in chat.calls if "<m4>w</m4>" in user]
+    dense_calls = [opts for user, opts in chat.calls if "<m5>v</m5>" in user]
     assert len(plain_calls) == 1 and plain_calls[0].thinking == "off"
     # 首轮及第 2 轮重试均保持 thinking="low"
     assert len(dense_calls) == 2 and all(o.thinking == "low" for o in dense_calls)

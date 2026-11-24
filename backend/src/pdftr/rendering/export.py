@@ -288,6 +288,11 @@ def role(block: Block, *, translated: bool = True) -> str:
     return "body"
 
 
+_COLUMN_MIN_GAP = 8.0  # 双栏译文排版框与同页右栏块之间保留的最小安全栏距（pt）
+_COLUMN_RIGHT_OFFSET = 100.0
+_COLUMN_TOUCH_TOL = 6.0
+
+
 def _box(block: Block) -> pymupdf.Rect:
     """排版框：原文块的范围。解析器给单行文字的框只有字形高，装不下一整行时上下各补一半，
     不再统一往下放宽（那样会压到紧挨着的表格线、图片，如表格标题）。"""
@@ -295,6 +300,29 @@ def _box(block: Block) -> pymupdf.Rect:
     lack = block.style.font_size * LINE_HEIGHT + 0.5 - r.height
     pad = max(lack, 0) / 2
     return pymupdf.Rect(r.x0, r.y0 - pad, r.x1, r.y1 + pad)
+
+
+def _clamp_column_right(block: Block, box: pymupdf.Rect, neighbors: Sequence[Block]) -> pymupdf.Rect:
+    """双栏左栏块若与同页垂直重叠的右栏块栏距不足，则钳制左栏译文排版框右缘以保持 >= 8pt 栏距。"""
+    if block.type is BlockType.FIGURE_TEXT or box.is_empty:
+        return box
+    limit = box.x1
+    for other in neighbors:
+        if other.id == block.id or other.type is BlockType.FIGURE_TEXT:
+            continue
+        ob = other.bbox
+        if (
+            ob.width > 0
+            and ob.height > 0
+            and ob.x0 > block.bbox.x0 + _COLUMN_RIGHT_OFFSET
+            and ob.x0 >= block.bbox.x1 - _COLUMN_TOUCH_TOL
+            and ob.y0 < box.y1
+            and ob.y1 > box.y0
+        ):
+            limit = min(limit, ob.x0 - _COLUMN_MIN_GAP)
+    if limit < box.x1 and limit - box.x0 >= 0.7 * block.bbox.width:
+        return pymupdf.Rect(box.x0, box.y0, limit, box.y1)
+    return box
 
 
 def _formula_images(original: pymupdf.Document, seg: Segment) -> dict[str, tuple[bytes, float, float]]:
@@ -364,7 +392,7 @@ def _place(
     neighbors: Sequence[Block] = (),
 ) -> bool:
     """先收紧行距再缩小字号。返回译文是否有行未写入 PDF。"""
-    box = _box(block) & page.rect
+    box = _clamp_column_right(block, _box(block) & page.rect, neighbors)
     if box.is_empty:
         return translated and any(
             token.kind == "image" or (token.kind != "space" and any(run.text for run in token.runs)) for token in tokens

@@ -53,12 +53,18 @@ def make_background(pdf: Path, blocks: Iterable[Block], out: Path, scanned: set[
     """
     scanned = scanned or set()
     by_page: dict[int, list[Rect]] = defaultdict(list)
+    overflows: dict[int, list[Rect]] = defaultdict(list)
     labels: dict[int, list[Rect]] = defaultdict(list)
     for b in blocks:
         if b.type is BlockType.FIGURE_TEXT:
             labels[b.page].append(_label_band(b.bbox))
         else:
             by_page[b.page].append(b.bbox.shrink(SHRINK))
+            for span in b.spans:
+                if span.bbox.x1 > b.bbox.x1 and span.bbox.height > 0:
+                    overflows[b.page].append(
+                        Rect(x0=b.bbox.x1 - 1.0, y0=span.bbox.y0, x1=span.bbox.x1 + 0.5, y1=span.bbox.y1)
+                    )
     with pdf_destination(out) as tmp, pymupdf.open(pdf) as doc:
         for page_no in sorted(set(by_page) | set(labels)):
             if page_no >= len(doc):
@@ -69,11 +75,14 @@ def make_background(pdf: Path, blocks: Iterable[Block], out: Path, scanned: set[
                 for r in by_page[page_no]:
                     box = pymupdf.Rect(r.x0 - COVER_PAD, r.y0 - COVER_PAD, r.x1 + COVER_PAD, r.y1 + COVER_PAD)
                     covers.append((box & page.rect, paper_color(page, box & page.rect)))
-            for rects, graphics in ((labels[page_no], _LINE_ART_NONE), (by_page[page_no], _LINE_ART_REMOVE_IF_TOUCHED)):
+            body_rects = [*by_page[page_no], *overflows[page_no]]
+            for rects, graphics in ((labels[page_no], _LINE_ART_NONE), (body_rects, _LINE_ART_REMOVE_IF_TOUCHED)):
                 if not rects:
                     continue
                 for r in rects:
-                    page.add_redact_annot(pymupdf.Rect(r.x0, r.y0, r.x1, r.y1))
+                    clip = pymupdf.Rect(r.x0, r.y0, r.x1, r.y1) & page.rect
+                    if not clip.is_empty:
+                        page.add_redact_annot(clip)
                 page.apply_redactions(images=_IMAGE_NONE, graphics=graphics, text=_TEXT_REMOVE)
             for box, color in covers:
                 page.draw_rect(box, color=None, fill=color, overlay=True)
@@ -120,8 +129,9 @@ def _trim_formula_edges(pix: pymupdf.Pixmap, zoom: float) -> pymupdf.Pixmap:
 
     main_idx = max(range(len(runs)), key=lambda i: (runs[i][1] - runs[i][0], runs[i][2]))
     main_h = runs[main_idx][1] - runs[main_idx][0]
-    min_gap = max(3, round(1.0 * zoom))
-    strong_gap = max(4, round(1.5 * zoom))
+    # 合法数学符号笔画（≤/≥ 底横线、\tilde/\bar 重音）内部空白在 4x 下 <= 5px，跨行残影缝隙 >= 6px。
+    min_gap = max(5, round(1.4 * zoom))
+    strong_gap = max(6, round(1.5 * zoom))
     narrow_band = min(int(2.0 * zoom), height // 4)
     thin_bar_h = max(3, round(1.0 * zoom))
 
@@ -155,7 +165,7 @@ def _trim_formula_edges(pix: pymupdf.Pixmap, zoom: float) -> pymupdf.Pixmap:
             touches_border = y1 == height
             if is_fraction_like(len(runs) - 1, len(runs) - 2):
                 return False
-        if narrow_band and edge_h <= narrow_band and sep >= merge_gap and touches_border:
+        if narrow_band and edge_h <= narrow_band and sep >= min_gap and touches_border:
             return True
         return (
             sep >= min_gap

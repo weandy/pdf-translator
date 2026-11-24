@@ -29,7 +29,7 @@ from pdftr.translation.service import TranslateOptions, _request_timeout, _targe
 
 
 def test_sup_citation_accepts_chinese_enumeration_comma_dashes_and_formula_placeholders():
-    assert VALIDATION_VERSION == 4
+    assert VALIDATION_VERSION == 5
 
     # 02_chem_battery s5: 中文顿号、破折号、省略号后紧跟上标引文
     src_enum = (
@@ -176,7 +176,7 @@ def _formula_seg(idx: int, count: int, section: str = "3 Proofs") -> Segment:
     )
 
 
-def test_high_formula_batches_enforce_max_two_segments_and_twelve_formulas():
+def test_high_formula_batches_enforce_max_four_segments_and_eighteen_formulas():
     class BatchRecorder:
         model = "deepseek-flash"
 
@@ -195,30 +195,37 @@ def test_high_formula_batches_enforce_max_two_segments_and_twelve_formulas():
                 out.append(f"{num}|译:{compact}")
             return ChatResult(text="\n".join(out), usage=ChatUsage(prompt_tokens=10, completion_tokens=10))
 
-    # 3 段各 5 个公式 -> [2段(10公式), 1段(5公式)]
+    # 4 段各 5 个公式 -> [3段(15公式), 1段(5公式)]（累计公式上限 18）
     chat1 = BatchRecorder()
-    segs_5 = [_formula_seg(1, 5), _formula_seg(2, 5), _formula_seg(3, 5)]
+    segs_5 = [_formula_seg(1, 5), _formula_seg(2, 5), _formula_seg(3, 5), _formula_seg(4, 5)]
     out1, report1 = asyncio.run(
         translate(segs_5, chat=chat1, cache=_MemCache(), ctx=DocContext(), opts=TranslateOptions(concurrency=1))
     )
     assert all(s.status is SegmentStatus.DONE for s in out1) and report1.requests == 2
-    assert [len(b) for b, _ in chat1.batches] == [2, 1]
+    assert [len(b) for b, _ in chat1.batches] == [3, 1]
     assert all(opts.thinking == "low" for _, opts in chat1.batches)
 
-    # 两段各 6 个公式 -> 合并为 1 批(12公式)；单段 12 个公式 -> 单独 1 批
+    # 3 段各 6 个公式 -> 合并为 1 批(18公式)；单段 12 + 单段 6 -> 合并为 1 批(18公式)；4 公式段走普通快速批
     chat2 = BatchRecorder()
-    segs_mix = [_formula_seg(1, 6), _formula_seg(2, 6), _formula_seg(3, 12), _formula_seg(4, 4)]
+    segs_mix = [
+        _formula_seg(1, 6),
+        _formula_seg(2, 6),
+        _formula_seg(3, 6),
+        _formula_seg(4, 12),
+        _formula_seg(5, 6),
+        _formula_seg(6, 4),
+    ]
     out2, report2 = asyncio.run(
         translate(segs_mix, chat=chat2, cache=_MemCache(), ctx=DocContext(), opts=TranslateOptions(concurrency=1))
     )
     assert all(s.status is SegmentStatus.DONE for s in out2) and report2.requests == 3
-    assert [len(b) for b, _ in chat2.batches] == [2, 1, 1]
+    assert [(len(b), opts.thinking) for b, opts in chat2.batches] == [(1, "off"), (3, "low"), (2, "low")]
 
     # 普通段与高公式段混排：普通段合并保持不变，高公式段独立控容
     chat3 = BatchRecorder()
     plain1 = Segment(id="p1", job_id="j", block_ids=["p0-b0"], source="Plain one.", section="3 Proofs")
     plain2 = Segment(id="p2", job_id="j", block_ids=["p0-b9"], source="Plain two.", section="3 Proofs")
-    segs_mixed = [plain1, _formula_seg(1, 7), _formula_seg(2, 7), plain2]
+    segs_mixed = [plain1, _formula_seg(1, 10), _formula_seg(2, 10), plain2]
     out3, report3 = asyncio.run(
         translate(segs_mixed, chat=chat3, cache=_MemCache(), ctx=DocContext(), opts=TranslateOptions(concurrency=1))
     )

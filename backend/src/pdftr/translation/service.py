@@ -10,7 +10,7 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from itertools import pairwise
 from typing import Literal
 from urllib.parse import urlparse
@@ -93,11 +93,53 @@ class TranslateReport(BaseModel):
 
 _PROTOCOL_TAG = re.compile(r"</?translations\b[^>]*>", re.I)
 _MALFORMED_FORMULA_TAG = re.compile(r"</m\d+\s*>|<m\d+(?:\s[^<>]*?)?(?<!/)>|<m\d+\s+[^<>/\s][^<>]*/>", re.I)
-_HIGH_FORMULA_THRESHOLD = 4
-_HIGH_FORMULA_MAX_SEGMENTS = 2
-_HIGH_FORMULA_MAX_FORMULAS = 12
+_FORMULA_FOLLOWED_BY_EQ = re.compile(r"<(m\d+)/>\s*[=＝]")
+_HIGH_FORMULA_THRESHOLD = 5
+_HIGH_FORMULA_MAX_SEGMENTS = 4
+_HIGH_FORMULA_MAX_FORMULAS = 18
 _THINKING_MIN_TIMEOUT_S = 60.0
 _THINKING_TIMEOUT_SCALE_THRESHOLD_S = 5.0
+
+
+def _latex_has_top_level_equals(latex: str) -> bool:
+    """判断 LaTeX 外层（非花括号内部，如 \\sum_{i=1} 下标）是否已包含等号。"""
+    depth = 0
+    i = 0
+    n = len(latex)
+    while i < n:
+        ch = latex[i]
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+        elif ch == "=" and depth == 0:
+            return True
+        i += 1
+    return False
+
+
+def _duplicate_formula_equals_problems(source: str, target: str, formulas: Mapping[str, str] | None) -> list[str]:
+    if not formulas:
+        return []
+    src_counts: dict[str, int] = {}
+    for m in _FORMULA_FOLLOWED_BY_EQ.finditer(source):
+        key = m.group(1)
+        src_counts[key] = src_counts.get(key, 0) + 1
+    tgt_counts: dict[str, int] = {}
+    for m in _FORMULA_FOLLOWED_BY_EQ.finditer(target):
+        key = m.group(1)
+        tgt_counts[key] = tgt_counts.get(key, 0) + 1
+    problems: list[str] = []
+    for key, count in tgt_counts.items():
+        if count <= src_counts.get(key, 0):
+            continue
+        latex = formulas.get(key, "")
+        if latex and _latex_has_top_level_equals(latex):
+            problems.append(f"公式 <{key}/> 已包含等号，请勿在占位符后重复写出等号和数值")
+    return problems
 
 
 def _protocol_tag_problems(source: str, target: str) -> list[str]:
@@ -111,11 +153,19 @@ def _protocol_tag_problems(source: str, target: str) -> list[str]:
     return problems
 
 
-def _target_problems(source: str, target: str, *, translated_terms: dict[str, str] | None = None) -> list[str]:
+def _target_problems(
+    source: str,
+    target: str,
+    *,
+    translated_terms: dict[str, str] | None = None,
+    formulas: Mapping[str, str] | None = None,
+) -> list[str]:
     if problems := _protocol_tag_problems(source, target):
         return problems
     if problems := placeholder_problems(source, target):
         return ["公式占位符不一致：" + "；".join(problems)]
+    if problems := _duplicate_formula_equals_problems(source, target, formulas):
+        return problems
     errors: list[str] = []
     for label, check in (
         ("粗体标记", bold_problems),
@@ -254,7 +304,7 @@ def _request_timeout(base_timeout_s: float, thinking: str) -> float:
 
 
 def _chunk_high_formula(units: list[_Unit]) -> list[list[_Unit]]:
-    """对高公式密度段施加独立小批上限：每批最多 2 段且累计公式数 <= 12。"""
+    """对高公式密度段施加独立小批上限：每批最多 4 段且累计公式数 <= 18。"""
     chunks: list[list[_Unit]] = []
     cur: list[_Unit] = []
     formulas = 0
@@ -346,7 +396,7 @@ async def translate(
         if (
             o.use_cache
             and (hit := cache.get(key))
-            and not _target_problems(seg.source, hit, translated_terms=active_terms)
+            and not _target_problems(seg.source, hit, translated_terms=active_terms, formulas=seg.formulas)
         ):
             seg.target, seg.status = normalize_cjk_spacing(hit), SegmentStatus.DONE
             report.cached += 1
@@ -468,7 +518,9 @@ async def translate(
             raw_target = got.get(n, "")
             target = normalize_formula_placeholders(raw_target) if raw_target else ""
             active_terms = ctx.terms | u.user_terms if u.user_terms else ctx.terms
-            errors = _target_problems(u.source, target, translated_terms=active_terms) if target else []
+            errors = (
+                _target_problems(u.source, target, translated_terms=active_terms, formulas=u.formulas) if target else []
+            )
             if target and not errors:
                 target = normalize_cjk_spacing(target)
                 if o.use_cache and not result.compatibility_fallback:

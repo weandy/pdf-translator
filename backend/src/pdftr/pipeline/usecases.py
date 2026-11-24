@@ -317,7 +317,7 @@ def purge_expired(pipeline: Pipeline, retention_hours: int, now: datetime | None
 
 
 # 导出 PDF 的生成方式（排版、字体、链接等）变了就加一，让已缓存的导出文件失效
-EXPORT_CACHE_VERSION = 12  # 跨页归位、右溢出回收、公式残影与引文前缀链接
+EXPORT_CACHE_VERSION = 13  # 公式符号护栏、双栏安全栏距、单行溢出擦除与跨标签空格修复
 _EXPORT_LOCKS = tuple(threading.Lock() for _ in range(16))
 
 

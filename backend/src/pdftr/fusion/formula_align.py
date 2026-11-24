@@ -597,6 +597,10 @@ def merge_torn_formulas(line: LayoutLine, chars: Sequence[Char]) -> LayoutLine:
 
 _NATIVE_FONT_CMD = re.compile(r"\\(?:mathrm|text|textrm|operatorname|mathsf|mathbf|mathit|rm|sf)\s*\{([^{}\\]*)\}")
 _NATIVE_FONT_GROUP = re.compile(r"\{\s*\\(?:sf|rm|it|bf)\s+([^{}\\]*)\}")
+_BARE_FONT_SWITCH = re.compile(
+    r"\\(?:sf|rm|it|bf|tt|cal|displaystyle|textstyle|scriptstyle|scriptscriptstyle)(?![A-Za-z])"
+)
+_TRAILING_BARE_FONT_SWITCH = re.compile(rf"(?:\s*{_BARE_FONT_SWITCH.pattern})+$")
 _NATIVE_COLON_UNIT = re.compile(r"\\colon(?![A-Za-z])|\{\s*:\s*\}|:")
 _ITALIC_MATH_FONT = re.compile(r"CMMI", re.I)
 
@@ -693,6 +697,9 @@ def _scan_latex_surface_units(latex: str) -> list[tuple[str, int, int, str]]:
             units.append((":", i, m.end(), "colon"))
             i = m.end()
             continue
+        if m := _BARE_FONT_SWITCH.match(latex, i):
+            i = m.end()
+            continue
         if ch == "\\":
             m_cmd = re.match(r"\\(?:[A-Za-z]+|.)", latex[i:])
             end = i + (len(m_cmd[0]) if m_cmd else 1)
@@ -735,7 +742,7 @@ def _split_latex_at_if(latex: str, *, has_colon: bool, has_left: bool) -> tuple[
                 continue
             if not has_colon and b < len(units) and units[b][3] == "word" and cut_end == units[b][1]:
                 continue
-            left = latex[:cut_start].strip()
+            left = _TRAILING_BARE_FONT_SWITCH.sub("", latex[:cut_start].rstrip()).strip()
             right = latex[cut_end:].strip()
             if not right or not _HAS_MATH_ATOM.search(right) or _delimiters(right)[1]:
                 continue

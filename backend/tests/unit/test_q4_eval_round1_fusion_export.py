@@ -463,7 +463,7 @@ def test_split_layout_separates_non_first_keywords_line(kw_line: str):
 
 
 def test_heading_align_centers_symmetric_single_column_title_and_keeps_left_column_titles_left(tmp_path: Path):
-    assert EXPORT_CACHE_VERSION == 12
+    assert EXPORT_CACHE_VERSION == 13
 
     def title_block(bid: str, bbox: list[float], text: str) -> Block:
         r = Rect.of(bbox)

@@ -12,7 +12,7 @@ from pdftr.domain.ir import BlockType
 from pdftr.domain.text import RICH_TAG
 
 BATCH_TOKENS = 1500
-VALIDATION_VERSION = 4
+VALIDATION_VERSION = 5
 _PLACEHOLDER = re.compile(r"<m\d+/>")
 _SPACED_FORMULA_PLACEHOLDER = re.compile(r"<(m\d+)\s+/>")
 _RICH_TAG = re.compile(r"<(/?)(b|i|sup|sub)>")

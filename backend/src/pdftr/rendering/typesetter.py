@@ -23,6 +23,7 @@ _CJK = fonts.CJK_RUN  # 汉字与全角标点、中文引号等：逐字断行�
 # 不能出现在行首的符号（悬挂到上一行行尾）；不能出现在行尾的符号（移到下一行行首）
 _NO_START = set("，。、；：？！）》」』】〕〉”’…—,.;:?!)]}%")
 _NO_END = set("（《「『【〔〈“‘([{")
+_IMAGE_TRAILING_PUNCT = frozenset("，。；：、！？")
 _TOKEN = re.compile(r"<(/?)(sup|sub|b|i)>|<(m\d+)/>")
 _SCRIPT_SCALE = 0.7  # 上下标字号
 _WORD_BREAK = re.compile(r"(?<=[A-Za-z0-9][/_\-–])(?=[A-Za-z0-9])")
@@ -204,7 +205,12 @@ class Typesetter:
             tokens += self._text_tokens(caption_no, Style(role, no=True), size)
             pos = len(caption_no)
         for m in _TOKEN.finditer(text, pos):
-            tokens += self._text_tokens(text[pos : m.start()], self._style(role, stack), size)
+            tokens += self._text_tokens(
+                text[pos : m.start()],
+                self._style(role, stack),
+                size,
+                allow_leading_space=bool(tokens and tokens[-1].kind != "space"),
+            )
             pos = m.end()
             if key := m.group(3):
                 wh = image_size(key)
@@ -220,7 +226,12 @@ class Typesetter:
                     stack.remove(m.group(2))
             else:
                 stack.append(m.group(2))
-        tokens += self._text_tokens(text[pos:], self._style(role, stack), size)
+        tokens += self._text_tokens(
+            text[pos:],
+            self._style(role, stack),
+            size,
+            allow_leading_space=bool(tokens and tokens[-1].kind != "space"),
+        )
         return tokens
 
     @staticmethod
@@ -228,7 +239,7 @@ class Typesetter:
         script = next((t for t in reversed(stack) if t in ("sup", "sub")), "")
         return Style(role, bold="b" in stack, italic="i" in stack, script=script)
 
-    def _text_tokens(self, text: str, style: Style, size: float) -> list[Token]:
+    def _text_tokens(self, text: str, style: Style, size: float, *, allow_leading_space: bool = False) -> list[Token]:
         out: list[Token] = []
         word = ""
 
@@ -243,7 +254,7 @@ class Typesetter:
         for ch in text:
             if ch.isspace():
                 flush()
-                if out and out[-1].kind != "space":
+                if (out or allow_leading_space) and (not out or out[-1].kind != "space"):
                     runs = self._runs(" ", style, size)
                     out.append(Token("space", runs, sum(r.width for r in runs)))
             elif _CJK.fullmatch(ch):
@@ -258,12 +269,16 @@ class Typesetter:
     # ---- 断行 ----
     @staticmethod
     def _glue_before(prev: Token | None, tok: Token, size: float) -> float:
-        """汉字与西文、数字、公式之间四分之一个汉字宽（标点旁不加，已有空格时不加）。"""
+        """汉字与西文、数字、公式之间四分之一个汉字宽；公式图紧接中文标点时微补间距，已有空格时不加。"""
         if prev is None or prev.kind == "space" or tok.kind == "space" or tok.attach:
             return 0.0
         han = lambda t: t.kind == "cjk" and bool(_HAN.fullmatch(t.char))  # noqa: E731
         latin = lambda t: t.kind in ("word", "image")  # noqa: E731
-        return size / 4 if (han(prev) and latin(tok)) or (latin(prev) and han(tok)) else 0.0
+        if (han(prev) and latin(tok)) or (latin(prev) and han(tok)):
+            return size / 4
+        if prev.kind == "image" and tok.kind == "cjk" and tok.char in _IMAGE_TRAILING_PUNCT:
+            return 0.08 * size
+        return 0.0
 
     def break_lines(self, tokens: list[Token], width: float, size: float, indent: float) -> list[Line]:
         lines: list[Line] = []
