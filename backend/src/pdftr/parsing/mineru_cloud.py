@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import random
 import re
 import shutil
@@ -45,6 +46,10 @@ ADAPTIVE_FAST_INTERVAL = 1.0
 ADAPTIVE_SLOW_INTERVAL = 3.0
 ADAPTIVE_BACKOFF_AFTER = 30.0
 ADAPTIVE_JITTER_MAX = 0.15
+RATE_LIMIT_MAX_RETRIES = 5
+RATE_LIMIT_BASE_BACKOFF = 2.0
+RATE_LIMIT_MAX_BACKOFF = 30.0
+RATE_LIMIT_JITTER_MAX = 0.5
 
 log = logging.getLogger(__name__)
 _mineru_request = ContextVar("mineru_request", default=False)
@@ -570,6 +575,8 @@ class MinerUCloudParser:
         failure_deadline: float | None = None
         expected_count = len(batch) or 1
         pages_by_shard = {item.spec.index: len(item.spec.orig_pages) for item in batch.values()}
+        rate_limit_hits = 0
+        throttled = False
         await self._wait_before_first_poll(first_put_done_at, deadline_at)
         while (remaining := self._remaining(deadline_at)) > 0:
             r = await self._send(
@@ -578,6 +585,29 @@ class MinerUCloudParser:
                 f"{API}/extract-results/batch/{quote(batch_id, safe='')}",
                 deadline=min(180.0, remaining),
             )
+            if r.status_code == 429:
+                rate_limit_hits += 1
+                throttled = True
+                next_poll_deadline = min(deadline_at, failure_deadline) if failure_deadline is not None else deadline_at
+                wait_remaining = max(0.0, next_poll_deadline - time.monotonic())
+                if rate_limit_hits >= RATE_LIMIT_MAX_RETRIES or wait_remaining <= 0:
+                    _check(r, "查询解析进度")
+                backoff = _rate_limit_backoff(rate_limit_hits, r.headers.get("Retry-After"))
+                wait_s = min(backoff, wait_remaining)
+                log.warning(
+                    "MinerU 查询解析进度触发限流（HTTP 429，连续第 %d/%d 次），%.2f 秒后重试",
+                    rate_limit_hits,
+                    RATE_LIMIT_MAX_RETRIES,
+                    wait_s,
+                )
+                if wait_s > 0:
+                    await asyncio.sleep(wait_s)
+                if failure_deadline is not None and time.monotonic() >= failure_deadline:
+                    return done, next(iter(failed.values()))
+                if self._remaining(deadline_at) <= 0:
+                    _check(r, "查询解析进度")
+                continue
+            rate_limit_hits = 0
             body = _check(r, "查询解析进度")
             data = body.get("data")
             items = _align_batch(data.get("extract_result") if isinstance(data, dict) else None, batch)
@@ -627,7 +657,11 @@ class MinerUCloudParser:
                 on_progress(*status)
                 last = status
             next_poll_deadline = min(deadline_at, failure_deadline) if failure_deadline is not None else deadline_at
-            idle_since = await self._wait_before_next_poll(active, idle_since, next_poll_deadline)
+            idle_since = (
+                await self._wait_before_next_poll(active, idle_since, next_poll_deadline, throttled=True)
+                if throttled
+                else await self._wait_before_next_poll(active, idle_since, next_poll_deadline)
+            )
             if failure_deadline is not None and time.monotonic() >= failure_deadline:
                 return done, next(iter(failed.values()))
         on_progress("MinerU 云端解析等待超过 5 分钟，准备重新提交", None)
@@ -639,7 +673,9 @@ class MinerUCloudParser:
             if wait > 0:
                 await asyncio.sleep(wait)
 
-    async def _wait_before_next_poll(self, active: bool, idle_since: float | None, deadline_at: float) -> float | None:
+    async def _wait_before_next_poll(
+        self, active: bool, idle_since: float | None, deadline_at: float, *, throttled: bool = False
+    ) -> float | None:
         now = time.monotonic()
         remaining = deadline_at - now
         if remaining <= 0:
@@ -647,7 +683,7 @@ class MinerUCloudParser:
         interval = self._poll_interval
         if interval is None:
             idle_since = None if active else (now if idle_since is None else idle_since)
-            backoff = idle_since is not None and now - idle_since >= ADAPTIVE_BACKOFF_AFTER
+            backoff = throttled or (idle_since is not None and now - idle_since >= ADAPTIVE_BACKOFF_AFTER)
             interval = ADAPTIVE_SLOW_INTERVAL if backoff else ADAPTIVE_FAST_INTERVAL
             interval += random.uniform(0.0, ADAPTIVE_JITTER_MAX)
         await asyncio.sleep(min(interval, remaining))
@@ -927,6 +963,31 @@ def _safe_error(value: object, token: str) -> str:
         if re.search(pattern, value, re.IGNORECASE):
             return phrase
     return "云端未返回可公开的错误原因"
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    """解析 Retry-After 响应头：仅接受合法非负秒数，并夹紧到退避上限。"""
+    if not value:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        seconds = float(text)
+    except ValueError:
+        return None
+    if not math.isfinite(seconds) or seconds < 0:
+        return None
+    return min(seconds, RATE_LIMIT_MAX_BACKOFF)
+
+
+def _rate_limit_backoff(consecutive: int, retry_after: str | None) -> float:
+    """优先采用合法 Retry-After，否则按 2s→4s→8s→16s（上限 30s）指数退避并附带轻微抖动。"""
+    parsed = _retry_after_seconds(retry_after)
+    if parsed is not None:
+        return parsed
+    base = min(RATE_LIMIT_BASE_BACKOFF * (2 ** max(0, consecutive - 1)), RATE_LIMIT_MAX_BACKOFF)
+    return min(base + random.uniform(0.0, RATE_LIMIT_JITTER_MAX), RATE_LIMIT_MAX_BACKOFF)
 
 
 def _check(r: httpx2.Response, action: str, *, read_json: bool = True, presigned: bool = False) -> dict:

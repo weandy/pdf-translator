@@ -494,7 +494,7 @@ def test_poll_schedule(monkeypatch, interval, first_wait, fast, slow):
         now += delay
 
     parser = MinerUCloudParser("tok", poll_interval=interval)
-    monkeypatch.setattr(cloud, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(cloud, "time", SimpleNamespace(monotonic=lambda: now, perf_counter=lambda: now))
     monkeypatch.setattr(cloud, "asyncio", SimpleNamespace(sleep=sleep))
     monkeypatch.setattr(cloud.random, "uniform", lambda *_: 0)
 
@@ -1120,3 +1120,212 @@ def test_permanent_shard_error_does_not_resubmit(tmp_path, reason):
         asyncio.run(parser.parse(pdf))
     assert not error.value.retryable
     assert len(fake.batches) == 1 and not fake.downloaded
+
+
+def test_poll_429_respects_retry_after_slows_adaptive_polling_and_recovers(tmp_path: Path, monkeypatch, caplog):
+    import logging
+    from types import SimpleNamespace
+
+    import pdftr.parsing.mineru_cloud as cloud
+
+    assert cloud.ADAPTIVE_FAST_INTERVAL >= 1.0
+    now = 100.0
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    monkeypatch.setattr(cloud, "time", SimpleNamespace(monotonic=lambda: now, perf_counter=lambda: now))
+    monkeypatch.setattr(cloud.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(cloud.random, "uniform", lambda *_: 0.0)
+
+    poll_responses = [
+        httpx2.Response(429, headers={"Retry-After": "5"}),
+        httpx2.Response(429, headers={"Retry-After": "999"}),  # 夹紧到上限 30s
+        httpx2.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "extract_result": [
+                        {"state": "running", "extract_progress": {"extracted_pages": 1, "total_pages": 2}}
+                    ]
+                },
+            },
+        ),
+        httpx2.Response(200, json={"code": 0, "data": {"extract_result": [{"state": "done", "full_zip_url": ZIP}]}}),
+    ]
+    poll_idx = 0
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        nonlocal poll_idx
+        url = str(request.url)
+        if request.method == "POST" and url == f"{API}/file-urls/batch":
+            return httpx2.Response(200, json={"code": 0, "data": {"batch_id": "b-429", "file_urls": [UPLOAD]}})
+        if request.method == "PUT" and url == UPLOAD:
+            await request.aread()
+            return httpx2.Response(200)
+        if request.method == "GET" and url == f"{API}/extract-results/batch/b-429":
+            resp = poll_responses[poll_idx]
+            poll_idx += 1
+            return resp
+        if request.method == "GET" and url == ZIP:
+            return httpx2.Response(200, content=_zip(), headers={"content-type": "application/zip"})
+        return httpx2.Response(404)
+
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-fake")
+    parser = MinerUCloudParser("secret-token-xyz", transport=httpx2.MockTransport(handler))
+    with caplog.at_level(logging.WARNING):
+        result = asyncio.run(parser.parse(pdf))
+    assert len(result.pages) == 2
+    assert poll_idx == 4
+    # 首次轮询前等待 4.0s -> 429 Retry-After 5.0s -> 429 Retry-After 夹紧 30.0s -> 恢复 200 后自适应温和降频为 3.0s
+    assert sleeps == [4.0, 5.0, 30.0, cloud.ADAPTIVE_SLOW_INTERVAL]
+    assert "HTTP 429" in caplog.text
+    assert "secret-token-xyz" not in caplog.text
+    assert UPLOAD not in caplog.text and ZIP not in caplog.text
+
+
+def test_poll_429_exponential_backoff_and_reset_after_200(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    import pdftr.parsing.mineru_cloud as cloud
+
+    now = 100.0
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    monkeypatch.setattr(cloud, "time", SimpleNamespace(monotonic=lambda: now, perf_counter=lambda: now))
+    monkeypatch.setattr(cloud.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(cloud.random, "uniform", lambda *_: 0.0)
+
+    # 无 Retry-After 与非法/负数 Retry-After 均走默认指数退避，且恢复 200 后连续计数清零
+    poll_responses = [
+        httpx2.Response(429),
+        httpx2.Response(429, headers={"Retry-After": "-3"}),
+        httpx2.Response(200, json={"code": 0, "data": {"extract_result": [{"state": "pending"}]}}),
+        httpx2.Response(429, headers={"Retry-After": "not-a-number"}),
+        httpx2.Response(200, json={"code": 0, "data": {"extract_result": [{"state": "done", "full_zip_url": ZIP}]}}),
+    ]
+    poll_idx = 0
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        nonlocal poll_idx
+        url = str(request.url)
+        if request.method == "POST" and url == f"{API}/file-urls/batch":
+            return httpx2.Response(200, json={"code": 0, "data": {"batch_id": "b-exp", "file_urls": [UPLOAD]}})
+        if request.method == "PUT" and url == UPLOAD:
+            await request.aread()
+            return httpx2.Response(200)
+        if request.method == "GET" and url == f"{API}/extract-results/batch/b-exp":
+            resp = poll_responses[poll_idx]
+            poll_idx += 1
+            return resp
+        if request.method == "GET" and url == ZIP:
+            return httpx2.Response(200, content=_zip(), headers={"content-type": "application/zip"})
+        return httpx2.Response(404)
+
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-fake")
+    parser = MinerUCloudParser("tok", poll_interval=0, transport=httpx2.MockTransport(handler))
+    result = asyncio.run(parser.parse(pdf))
+    assert len(result.pages) == 2
+    assert poll_idx == 5
+    # 第 1/2 次 429 -> 2s, 4s -> 200 pending(poll_interval=0) 清零计数 -> 第 3 次 429 重新从 2s 开始
+    assert sleeps == [2.0, 4.0, 0, 2.0]
+
+
+def test_poll_429_consecutive_limit_raises_parse_error(monkeypatch):
+    from types import SimpleNamespace
+
+    import pdftr.parsing.mineru_cloud as cloud
+
+    now = 100.0
+    sleeps: list[float] = []
+    calls = 0
+
+    async def fake_sleep(delay: float) -> None:
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    async def always_429(request: httpx2.Request) -> httpx2.Response:
+        nonlocal calls
+        calls += 1
+        return httpx2.Response(429)
+
+    monkeypatch.setattr(cloud, "time", SimpleNamespace(monotonic=lambda: now, perf_counter=lambda: now))
+    monkeypatch.setattr(cloud.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(cloud.random, "uniform", lambda *_: 0.0)
+
+    parser = MinerUCloudParser("tok", poll_interval=0, timeout=300.0, transport=httpx2.MockTransport(always_429))
+
+    async def run() -> None:
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(always_429)) as client:
+            with pytest.raises(ParseError, match=r"过于频繁|额度不足") as exc:
+                await parser._wait(client, "batch-limit", lambda message, fraction=None: None)
+            assert not exc.value.retryable
+
+    asyncio.run(run())
+    assert calls == cloud.RATE_LIMIT_MAX_RETRIES
+    assert sleeps == [2.0, 4.0, 8.0, 16.0]
+
+
+def test_poll_429_backoff_clamped_by_deadline(monkeypatch):
+    from types import SimpleNamespace
+
+    import pdftr.parsing.mineru_cloud as cloud
+
+    now = 100.0
+    sleeps: list[float] = []
+    calls = 0
+
+    async def fake_sleep(delay: float) -> None:
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    async def throttled_429(request: httpx2.Request) -> httpx2.Response:
+        nonlocal calls
+        calls += 1
+        return httpx2.Response(429, headers={"Retry-After": "25"})
+
+    monkeypatch.setattr(cloud, "time", SimpleNamespace(monotonic=lambda: now, perf_counter=lambda: now))
+    monkeypatch.setattr(cloud.asyncio, "sleep", fake_sleep)
+
+    parser = MinerUCloudParser("tok", poll_interval=0, timeout=1.5, transport=httpx2.MockTransport(throttled_429))
+
+    async def run() -> None:
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(throttled_429)) as client:
+            with pytest.raises(ParseError, match=r"过于频繁|额度不足") as exc:
+                await parser._wait(client, "batch-deadline", lambda message, fraction=None: None, deadline_at=101.5)
+            assert not exc.value.retryable
+
+    asyncio.run(run())
+    assert calls == 1
+    assert sleeps == [1.5]
+    assert now == 101.5
+
+
+def test_request_upload_429_still_fails_fast(tmp_path: Path):
+    calls = 0
+
+    def rate_limited(request: httpx2.Request) -> httpx2.Response:
+        nonlocal calls
+        calls += 1
+        return httpx2.Response(429, headers={"Retry-After": "10"})
+
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-fake")
+    parser = MinerUCloudParser("tok", poll_interval=0, transport=httpx2.MockTransport(rate_limited))
+    with pytest.raises(ParseError, match=r"过于频繁|额度不足") as exc:
+        asyncio.run(parser.parse(pdf))
+    assert not exc.value.retryable
+    assert calls == 1
