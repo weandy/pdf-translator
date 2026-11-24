@@ -2,7 +2,31 @@
 
 > 这份文件用于跨对话继续开发。每完成一个完整功能，更新“当前状态”“最近完成”和“下一步”，再单独提交 Git。
 >
-> 最后更新：2026-11-24（Asia/Shanghai）
+> 最后更新：2026-11-25（Asia/Shanghai）
+
+### 部署与交付：翻译保真与排版确定性修复（TR-001~004/008~010/013/NEW-03）及批次 D 三组消融评测框架上线（2026-11-25）
+
+- **阶段 2 & 阶段 1：翻译保真与双端保版修复（`c150185`，已上线）**
+  - **离线确定性真文复验与二轮根治**：由 Codex（`apice/gpt-6.2-astra xhigh`）重建 13 页 68,142 字形英文矢量原页并按真实导出管线离线复验，首轮发现 6 项边界缺陷（2 P1 + 4 P2），在 `fix/translation-fidelity-layout` 全部根治后 R2 复验 **9/9 通过**，单/双语导出 **16/16 编号公式、表 3 240/240 格、表 5 84/84 格**零回归，P0/P1/P2 残留为 0：
+    - `service.py`：修正 `_context_leakage_problems` 中文篇幅门槛并扩大相邻段末句校验；
+    - `background.py`：`_safe_body_rects` 按原生行与字框几何裁分去字区避免误擦邻行公式，`crop_formula` 按紧邻外部字形收紧左右余量消除旁字符渗入；
+    - `formula_align.py`：`_trim_internal_script_copy` 剥离公式内部下标解析副本，`_trim_trailing_prose_punct` 按正文字号/基线剥离尾标点；
+    - `links.py`：支持 11 类英文前缀交叉引用完整编号匹配并防前缀误配，`links.VERSION` 升至 `7`，`EXPORT_CACHE_VERSION` 升至 `17`；`VALIDATION_VERSION` 升至 `7`。
+  - **合入前全量门禁**：后端 `ruff format/check`、`pyright`（0 错）、`lint-imports`（3/3 kept）、`pytest -q`（**1,657 passed, 6 skipped**），前端 `lint`/`typecheck`/`vitest`/`build` 全绿；已 Squash Merge 合入 `main`（`c150185`）并推送。
+- **阶段 3：批次 D（TR-011 / TR-012 三组消融与异构双盲评测框架，`b7a9260`，生产保持 `v7`）**
+  - **双盲设计 → 评审 → 定稿**：Neon 与 Codex（`apice/gpt-6.2-astra xhigh`）独立双盲出方案，经 Codex 独立评审并由 Neon 定稿落盘为正式规格文档 [docs/plans/2026-11-25-batch-d-glossary-prompt-v8-ablation.md](plans/2026-11-25-batch-d-glossary-prompt-v8-ablation.md)。
+  - **多 Agent 独立 worktree 并行实现与 Neon 审核**：在独立 worktree `feat/batch-d-glossary-prompt-v8` 零重叠并行交付完整实验框架（`spikes/batch_d/`）及生产入口单测（`backend/tests/unit/test_batch_d_entrypoints.py`）：
+    - 候选隔离补丁：`tr011.patch`（候选抽取 `PROMPT` SHA-256 `cd47c3aa...`）与 `tr012.patch`（净增严格 91 ≤ 120 码点，候选 `RULES` SHA-256 `7e036db1...`），纯 LF 并通过冻结基线 `c150185` 临时归档 `git apply --check --whitespace=error`；
+    - 分层原创合成语料：`fixtures/dev.jsonl`（8 篇 32 段）与 `fixtures/holdout.jsonl`（24 篇 96 段），4 学科均匀分层，预期术语入表 80/80；
+    - 全套确定性管线：`contract.py`、`policy.json`、`term_diagnostics.py`、`generate.py`（A/B/C 隔离三树，B/C 同篇同轮共享术语快照，`ForbiddenCache` 隔离）、`judge.py`（双盲平衡包与异构双评协议）、`gate.py`（纯确定性统计与放行门禁，支持 TR-011 独立放行与 TR-012 条件晋级 `v8`）、`run.py`（`selftest` / `live` / `report` / `promote`）与 `README.md`；
+    - **严守「达标才升 `v8`」**：`backend/src/` 与 `frontend/` 生产代码在 `b7a9260` 零侵入改动，生产继续保持 `PROMPT_VERSION = "v7"`。
+  - **全量门禁实测（`b7a9260`）**：`spikes/batch_d/tests` **80/80 OK**；两次完整 24 篇×2 轮 `selftest` 确定性一致（`OFFLINE_VERIFIED`、`eligible_b=False`、`eligible_c=False`、`network_calls=0`、`evidence_hash=caa1d9cb25cc8097db2c87ece8d052026c19e9d9e50a3de5171e15149e67fe77`）；隐私/emoji 扫描 0 命中；后端 `ruff format/check`（207 files）、`pyright` backend+spikes（0 错 0 警）、`lint-imports`（3/3 kept）、`pytest -q`（**1,660 passed, 6 skipped**）；前端 `eslint`/`tsc`/`vitest`（**41 files / 304 passed**）/`vite build`（498ms）全绿。
+- **HW-SGP 线上部署验收（源码 `b7a9260`，`app` + `web` 双镜像重建）**
+  - 构建与切换前后进行中任务均为空（`进行中: []`）；数据库备份 `/data/backups/pre-tr-fix-b7a9260-20261125.db`（4.6M，`PRAGMA integrity_check: [('ok',)]`）；
+  - 回滚镜像已留存：`pdf-translator-app:before-tr-fix-20261125`（`2b739fb1410a`）与 `pdf-translator-web:before-tr-fix-20261125`（`72c572799f33`）；
+  - 新上线镜像：`pdf-translator-app:latest`（`b1ddb78775bb`，复用已校验 19 文件 `/app/fonts` 防小机 OOM，启动 `healthy`）与 `pdf-translator-web:latest`（`39f0cc60cd56`）；
+  - 运行态与公网实测：容器内实测 `PROMPT_VERSION="v7"`、`VALIDATION_VERSION=7`、`links.VERSION=7`、`EXPORT_CACHE_VERSION=17`；公网 `https://pdf.667786.xyz/api/health` 返回 HTTP 200（`data_dir_writable: true`），`/` 返回 HTTP 200 并引用新资源 `/assets/index-D_XJ0HXQ.js` 与 `/assets/index-Byhd98Vk.css`（`Cache-Control: public, max-age=31536000, immutable`）；`docker image prune -f` 后根分区余 4.5G（89%）。
+- **下一步**：待配置好真实翻译与双盲评审 API Key 后，在 `D:\01\pdf-translator` 执行 `python -m spikes.batch_d.run live` 获取真实异构双盲证据，确认 `eligible_b` / `eligible_c` 达标后再执行 `promote` 放行 TR-011 或将生产提示词升至 `v8`；线上磁盘已达 89%，择机按需清理早于 2 代的历史 `before-*` 镜像与 build cache。
 
 ### 部署与结项：Q4 翻译质量与词库进阶加固及六轮跨学科双盲评测闭环（2026-11-24）
 
