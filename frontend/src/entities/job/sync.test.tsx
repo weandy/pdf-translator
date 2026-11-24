@@ -32,6 +32,8 @@ function job(status: Job["status"], id = ID, progress = 0.5): Job {
     },
     model: "test",
     cost_cny: null,
+    channel_mode: "byok",
+    fallback_used: false,
     created_at: "2026-01-01T00:00:00Z",
     stage_started_at: null,
     expires_at: null,

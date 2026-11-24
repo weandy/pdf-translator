@@ -206,3 +206,26 @@ def test_model_finish_reason(reason):
     chat, _ = _chat("m", stop_reason=reason)
     result = asyncio.run(chat.complete("s", "u", ChatOptions()))
     assert result.finish_reason == reason
+
+
+def test_default_anthropic_chat_blocks_302_redirect_and_closes_internal_http_client():
+    seen: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(str(request.url))
+        return httpx2.Response(302, headers={"location": "https://attacker.example/steal"})
+
+    chat = AnthropicChat(
+        base_url="https://api.example",
+        api_key="sk-ant-secret",
+        model="m",
+        transport=httpx2.MockTransport(handler),
+    )
+    assert chat._http_client is not None
+    assert chat._http_client.follow_redirects is False
+    with pytest.raises(ChatError):
+        asyncio.run(chat.complete("s", "u", ChatOptions(transport_retries=0)))
+    assert len(seen) == 1
+    assert seen[0].startswith("https://api.example")
+    asyncio.run(chat.aclose())
+    assert chat._http_client.is_closed is True

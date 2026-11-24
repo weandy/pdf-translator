@@ -20,12 +20,13 @@ const segment = (overrides: Partial<SegmentData> = {}): SegmentData => ({
   ...overrides,
 });
 
-function Harness({ initial }: { initial: SegmentData }) {
+function Harness({ initial, channelMode }: { initial: SegmentData; channelMode?: "byok" | "free" }) {
   const [current, setCurrent] = useState(initial);
   return (
     <SegmentEditor
       key={`${current.id}:${current.target ?? ""}`}
       segment={current}
+      channelMode={channelMode}
       onChange={setCurrent}
       onClose={() => {}}
     />
@@ -94,5 +95,12 @@ describe("段落翻译失败反馈", () => {
     await act(async () => retryButton().click());
     expect(host.textContent?.split("模型返回的公式不完整")).toHaveLength(2);
     expect(host.querySelectorAll('[role="alert"]')).toHaveLength(1);
+  });
+
+  it("免费任务重翻时透传 channelMode=free", async () => {
+    const req = vi.spyOn(api, "retranslate").mockResolvedValue(segment({ target: "免费译文", status: "done" }));
+    await act(async () => root.render(<Harness initial={segment()} channelMode="free" />));
+    await act(async () => retryButton().click());
+    expect(req).toHaveBeenCalledWith("synthetic", "default", expect.any(Object), { channelMode: "free" });
   });
 });

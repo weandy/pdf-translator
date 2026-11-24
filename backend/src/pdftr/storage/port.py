@@ -6,7 +6,7 @@ from typing import Protocol
 
 from pdftr.domain.ir import Revision, Segment, SegmentStatus
 from pdftr.domain.job import Job, JobStatus
-from pdftr.domain.stats import StatsOut
+from pdftr.domain.stats import AdminStatsSnapshot, StatsOut
 from pdftr.domain.submissions import SubmissionContext, SubmissionPage, SubmissionSearch
 
 
@@ -26,9 +26,11 @@ class ArtifactStore(Protocol):
 
 
 class JobStore(Protocol):
-    def record_visit(self, event_id: str, visitor_id: str) -> None: ...
+    def record_visit(self, event_id: str, visitor_id: str, *, user_agent: str | None = None) -> None: ...
 
     def stats(self, days: int = 7) -> StatsOut: ...
+
+    def admin_overview_stats(self, days: int = 7) -> AdminStatsSnapshot: ...
 
     def create_job(self, job: Job, context: SubmissionContext | None = None) -> None: ...
 
@@ -36,7 +38,7 @@ class JobStore(Protocol):
 
     def update_submission_title(self, job_id: str, title: str) -> None: ...
 
-    def save_job(self, job: Job) -> None: ...
+    def save_job(self, job: Job, context: SubmissionContext | None = None) -> None: ...
 
     def get_job(self, job_id: str) -> Job | None: ...
 

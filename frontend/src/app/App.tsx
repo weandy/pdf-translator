@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { lazy, Suspense, useState } from "react";
-import { createBrowserRouter, Link, Outlet, RouterProvider, useLocation, useOutletContext } from "react-router";
+import { createBrowserRouter, Link, Navigate, Outlet, RouterProvider, useLocation, useOutletContext } from "react-router";
 
 import { authHeaders } from "@/entities/settings/model";
 import { usePageVisit } from "@/entities/stats/model";
@@ -17,7 +17,7 @@ setAuthHeaders(() => authHeaders());
 // 阅读器连同 pdf.js、KaTeX 按需加载，首页不用下载它们
 const JobPage = lazy(() => import("@/pages/JobPage").then((m) => ({ default: m.JobPage })));
 const AdminLoginPage = lazy(() => import("@/pages/AdminPage").then((m) => ({ default: m.AdminLoginPage })));
-const AdminSubmissionsPage = lazy(() => import("@/pages/AdminPage").then((m) => ({ default: m.AdminSubmissionsPage })));
+const AdminConsolePage = lazy(() => import("@/pages/AdminPage").then((m) => ({ default: m.AdminConsolePage })));
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
@@ -84,18 +84,34 @@ function ConfiguredAdminRoute() {
   });
   if (isPending) return <main className="center muted">正在读取管理入口…</main>;
   if (isError || !data) return <main className="center muted">暂时无法读取管理入口配置，请稍后重试。</main>;
-  const adminPath = (data as ServerConfig & { admin_path?: string }).admin_path;
-  const loginPath = `${adminPath}/login`;
-  if (!adminPath || (location.pathname !== loginPath && location.pathname !== `${adminPath}/submissions`)) {
-    return <AdminNotFound />;
+  const config = data as ServerConfig;
+  const adminPath = config.admin_path?.replace(/\/+$/, "");
+  if (!adminPath) return <AdminNotFound />;
+  const normalizedPath = location.pathname.length > 1 ? location.pathname.replace(/\/+$/, "") : location.pathname;
+  if (normalizedPath === adminPath) {
+    return <Navigate to={`${adminPath}/overview`} replace />;
   }
+  if (normalizedPath === `${adminPath}/login`) {
+    return (
+      <Suspense fallback={<main className="center muted">加载管理页面…</main>}>
+        <AdminLoginPage adminPath={adminPath} />
+      </Suspense>
+    );
+  }
+  let section: "overview" | "records" | "services" | "settings" | null = null;
+  if (normalizedPath === `${adminPath}/overview`) section = "overview";
+  else if (normalizedPath === `${adminPath}/records` || normalizedPath === `${adminPath}/submissions`) {
+    section = "records";
+  } else if (normalizedPath === `${adminPath}/services`) section = "services";
+  else if (normalizedPath === `${adminPath}/settings`) section = "settings";
+  if (!section) return <AdminNotFound />;
   return (
     <Suspense fallback={<main className="center muted">加载管理页面…</main>}>
-      {location.pathname === `${adminPath}/submissions` ? (
-        <AdminSubmissionsPage adminPath={adminPath} />
-      ) : (
-        <AdminLoginPage adminPath={adminPath} />
-      )}
+      <AdminConsolePage
+        adminPath={adminPath}
+        section={section}
+        submissionAuditEnabled={config.submission_audit_enabled}
+      />
     </Suspense>
   );
 }

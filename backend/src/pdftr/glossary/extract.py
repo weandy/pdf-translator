@@ -3,6 +3,7 @@
 模型只读标题、摘要、正文开头、章节标题和本地统计出的有界候选词。
 """
 
+import asyncio
 import logging
 import re
 from collections import Counter, defaultdict
@@ -10,7 +11,7 @@ from collections.abc import Mapping, Sequence
 
 from pydantic import BaseModel, Field
 
-from pdftr.domain.llm import ChatModel, ChatOptions, ChatUsage
+from pdftr.domain.llm import ChatError, ChatModel, ChatOptions, ChatUsage
 from pdftr.domain.text import RICH_TAG, normalize_term_key
 from pdftr.glossary.filters import is_lazy_english_self_map
 from pdftr.glossary.matcher import HORIZONTAL_SPACE, TERM_TOKEN, mask_term_boundaries
@@ -290,6 +291,8 @@ class Extraction(BaseModel):
     terms: dict[str, str] = Field(default_factory=dict)
     use_library: bool = False
     usage: ChatUsage = Field(default_factory=ChatUsage)
+    actual_model: str | None = None
+    used_fallback: bool = False
 
 
 def _skip_extracted_term(k: str, v: str) -> bool:
@@ -359,7 +362,17 @@ async def extract_terms(
         formatted = "；".join(f"{k}={v}" for k, v in user_terms.items() if k.strip() and v.strip())
         if formatted:
             prompt += "\n用户已指定术语（若抽取包含这些词的复合术语，译法须与之保持一致）：" + formatted
-    result = await chat.complete("你是学术术语专家。", prompt, ChatOptions(max_tokens=1500))
+    chain_timeout = getattr(chat, "total_timeout_s", None) or getattr(chat, "call_timeout_s", None)
+    if isinstance(chain_timeout, (int, float)) and chain_timeout > 0:
+        try:
+            result = await asyncio.wait_for(
+                chat.complete("你是学术术语专家。", prompt, ChatOptions(max_tokens=1500)),
+                float(chain_timeout),
+            )
+        except TimeoutError as exc:
+            raise ChatError("术语抽取请求超时", retryable=True) from exc
+    else:
+        result = await chat.complete("你是学术术语专家。", prompt, ChatOptions(max_tokens=1500))
     truncated = result.finish_reason in ("length", "max_tokens")
     found = (
         Extraction()
@@ -369,4 +382,6 @@ async def extract_terms(
     if truncated:
         log.info("术语抽取截断，保留 %d 条", len(found.terms))
     found.usage = result.usage
+    found.actual_model = result.actual_model
+    found.used_fallback = result.used_fallback
     return found

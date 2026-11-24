@@ -6,7 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo, useRef, useState } from "react";
 
 import { termMap, upsertTerms, useTerms } from "@/entities/glossary/model";
-import { api, type DocumentData, type SegmentData } from "@/shared/api/client";
+import { api, type DocumentData, type SegmentData, type TranslationMode } from "@/shared/api/client";
 
 import { ORIGIN_LABELS, termRows, type TermRow } from "./terms";
 
@@ -15,13 +15,14 @@ const CHUNK = 20; // 与后端一次重翻的上限一致
 interface Props {
   jobId: string;
   doc: DocumentData;
+  channelMode?: TranslationMode;
   onChange: (seg: SegmentData) => void;
   onSpot: (segmentId: string, term?: { source: string; target: string }) => void; // 滚到术语所在词并短暂高亮
   onMark: (segmentIds: string[]) => void; // 标出当前术语出现的所有段落
   onClose: () => void;
 }
 
-export function TermsPanel({ jobId, doc, onChange, onSpot, onMark, onClose }: Props) {
+export function TermsPanel({ jobId, doc, channelMode, onChange, onSpot, onMark, onClose }: Props) {
   const { data: uses, error } = useQuery({ queryKey: ["terms", jobId], queryFn: () => api.jobTerms(jobId) });
   const mine = useTerms();
   const rows = useMemo(() => termRows(uses ?? [], mine, doc.segments), [uses, mine, doc.segments]);
@@ -112,7 +113,14 @@ export function TermsPanel({ jobId, doc, onChange, onSpot, onMark, onClose }: Pr
               </small>
             </button>
             {open === row.source && (
-              <TermDetail row={row} jobId={jobId} doc={doc} onChange={onChange} onSpot={onSpot} />
+              <TermDetail
+                row={row}
+                jobId={jobId}
+                doc={doc}
+                channelMode={channelMode}
+                onChange={onChange}
+                onSpot={onSpot}
+              />
             )}
           </li>
         ))}
@@ -125,12 +133,14 @@ function TermDetail({
   row,
   jobId,
   doc,
+  channelMode,
   onChange,
   onSpot,
 }: {
   row: TermRow;
   jobId: string;
   doc: DocumentData;
+  channelMode?: TranslationMode;
   onChange: (seg: SegmentData) => void;
   onSpot: (segmentId: string, term?: { source: string; target: string }) => void;
 }) {
@@ -175,7 +185,9 @@ function TermDetail({
       for (let i = 0; i < list.length; i += CHUNK) {
         setBusy(`正在重翻 ${i}/${list.length} 段…`);
         const batch = list.slice(i, i + CHUNK);
-        const results = new Map((await api.retranslateMany(jobId, batch, terms)).map((seg) => [seg.id, seg]));
+        const results = new Map(
+          (await api.retranslateMany(jobId, batch, terms, { channelMode })).map((seg) => [seg.id, seg]),
+        );
         for (const id of batch) {
           const seg = results.get(id);
           // 失败也会更新尝试次数与费用，必须交给页面刷新，不能只处理成功段。

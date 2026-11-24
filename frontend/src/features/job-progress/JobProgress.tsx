@@ -40,7 +40,7 @@ export function JobProgress({ job, onRetried }: Props) {
   const retry = async () => {
     setError(null);
     try {
-      await api.retryJob(job.id);
+      await api.retryJob(job.id, { channelMode: job.channel_mode });
       onRetried();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

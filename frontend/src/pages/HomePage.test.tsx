@@ -68,6 +68,8 @@ function syntheticJob(id: string, filename: string, status: Job["status"], day: 
     },
     model: "test",
     cost_cny: null,
+    channel_mode: "byok",
+    fallback_used: false,
     created_at: `2026-11-${day}T00:00:00Z`,
     stage_started_at: null,
     expires_at: null,

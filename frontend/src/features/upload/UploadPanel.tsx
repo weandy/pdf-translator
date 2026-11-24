@@ -5,9 +5,20 @@ import { Link } from "react-router";
 import { addHistory, findByHash, type HistoryEntry } from "@/entities/history/model";
 import { rememberJob } from "@/entities/job/model";
 import { termMap } from "@/entities/glossary/model";
-import { getSettings, saveSettings, useSettings } from "@/entities/settings/model";
+import {
+  confirmLlmKeyBinding,
+  confirmParserKeyBinding,
+  getSettings,
+  llmKeyNeedsRebind,
+  parserKeyNeedsRebind,
+  resolveTranslationMode,
+  saveSettings,
+  uploadAuthHeaders,
+  useSettings,
+  type TranslationMode,
+} from "@/entities/settings/model";
 import { parsePageRange } from "@/features/upload/pages";
-import { api, type Job } from "@/shared/api/client";
+import { api, type Job, type JobOptions } from "@/shared/api/client";
 import { fingerprint } from "@/shared/file/fingerprint";
 
 interface Props {
@@ -71,24 +82,63 @@ function SketchPage({ lang }: { lang: "en" | "zh" }) {
 
 export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props) {
   const settings = useSettings();
-  const { data: config } = useQuery({
+  const {
+    data: config,
+    isPending: configLoading,
+    isError: configError,
+    refetch: refetchConfig,
+  } = useQuery({
     queryKey: ["config"],
     queryFn: api.config,
   });
   const [items, setItems] = useState<Item[]>([]);
   const [rangeText, setRangeText] = useState("");
+  const [userSelectedParser, setUserSelectedParser] = useState<JobOptions["parser"] | null>(null);
   const consent = settings.cloudConsent; // 勾一次就记在浏览器里，以后默认勾上
   const setConsent = (v: boolean) => saveSettings({ ...getSettings(), cloudConsent: v });
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const usable = items.filter((it) => !it.error);
+  const configWaiting = !config && !configError && configLoading;
+  const configFailed = !config && configError;
+  const maintenance = Boolean(config?.maintenance_mode);
+  const siteNotice = config?.site_notice?.trim() ?? "";
+  const freeChannel = config?.free_channel;
+  const freeEnabled = Boolean(freeChannel?.enabled);
+  const mode = resolveTranslationMode(settings, config);
+  const isFree = freeEnabled && mode === "free";
+  const selectMode = (next: TranslationMode) => saveSettings({ ...getSettings(), translationMode: next });
+  const paddleAvailable = Boolean(config?.paddle_public_enabled && config?.server_has_paddle_token);
+  const mineruAvailable = isFree
+    ? Boolean(config?.server_has_parser_token)
+    : Boolean(config?.server_has_parser_token || settings.parserKey.trim());
+  const effectiveParser: JobOptions["parser"] = !paddleAvailable
+    ? "mineru-cloud"
+    : isFree && !mineruAvailable
+      ? "paddleocr-vl"
+      : (userSelectedParser ?? (!mineruAvailable ? "paddleocr-vl" : "mineru-cloud"));
+  const isPaddle = effectiveParser === "paddleocr-vl";
+  const service = isPaddle ? "PaddleOCR" : "MinerU";
+
+  const freeLimit =
+    isFree && freeChannel?.max_pages != null
+      ? Math.min(config?.max_pages ?? freeChannel.max_pages, freeChannel.max_pages)
+      : null;
+  const freeLimitError = (it: Item): string | null =>
+    freeLimit !== null && it.pages !== null && !it.error && it.pages > freeLimit
+      ? `共 ${it.pages} 页，超过免费体验上限 ${freeLimit} 页`
+      : null;
+  const itemError = (it: Item): string | null => it.error ?? freeLimitError(it);
+
+  const usable = items.filter((it) => !itemError(it));
+  const overFreeLimit = items.filter((it) => Boolean(freeLimitError(it)));
   const undecided = usable.filter((it) => it.seen && !it.confirmed); // 翻译过、还没确认要不要重翻
   const counted = usable.every((it) => it.pages !== null);
   const file = items.length === 1 ? items[0] : null;
+  const fileError = file ? itemError(file) : null;
   // 只选一个文件时可以只翻部分页（版面仍解析全文，翻译与费用按所选页数）
-  const range = file && file.pages !== null && !file.error ? parsePageRange(rangeText, file.pages) : null;
+  const range = file && file.pages !== null && !fileError ? parsePageRange(rangeText, file.pages) : null;
   const rangeError = range && !Array.isArray(range) ? range.error : null;
   const selected = Array.isArray(range) ? range : null;
   const pages = items.length && counted ? (selected?.length ?? usable.reduce((n, it) => n + (it.pages ?? 0), 0)) : null;
@@ -96,7 +146,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
   const { data: estimate } = useQuery({
     queryKey: ["estimate", pages, settings.quality, settings.model],
     queryFn: () => api.estimate(pages ?? 1, settings.quality, settings.model || undefined),
-    enabled: pages !== null && pages > 0,
+    enabled: Boolean(config) && !isFree && pages !== null && pages > 0,
   });
 
   const actions = useRef<HTMLDivElement>(null);
@@ -109,15 +159,17 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
     [],
   );
   const ready = items.length > 0 && items.every((it) => it.pages !== null || it.error);
-  const shown = ready && Boolean(estimate);
+  const shown = ready && (isFree || Boolean(estimate));
   useEffect(() => {
     // 选好文件后，小屏上“开始翻译”可能在屏幕外：费用预估出来（会把按钮往下推）后滚到能看见的位置
     if (shown) actions.current?.scrollIntoView({ block: "nearest" });
   }, [shown]);
 
-  const missingKey = config && !settings.llmKey && !config.server_has_llm_key;
-  const service = "MinerU";
-  const missingToken = config && !settings.parserKey && !config.server_has_parser_token;
+  const missingKey = !isFree && Boolean(config && !settings.llmKey && !config.server_has_llm_key);
+  const missingToken = isPaddle ? false : Boolean(config && !mineruAvailable);
+  const keyNeedsRebind = !isFree && Boolean(config) && llmKeyNeedsRebind(settings, config);
+  const parserNeedsRebind = !isFree && !isPaddle && Boolean(config) && parserKeyNeedsRebind(settings, config);
+  const freeClosedWarning = Boolean(config && !freeEnabled && settings.translationMode === "free");
   const update = (f: File, patch: Partial<Item>) =>
     setItems((list) => list.map((it) => (it.file === f ? { ...it, ...patch } : it)));
 
@@ -184,24 +236,30 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
   };
 
   const submit = async () => {
-    const queue = items.filter((it) => !it.error && it.state === "ready");
+    if (!config || maintenance) return;
+    if (!isFree && llmKeyNeedsRebind(getSettings(), config)) return;
+    if (!isFree && !isPaddle && parserKeyNeedsRebind(getSettings(), config)) return;
+    const queue = items.filter((it) => !itemError(it) && it.state === "ready");
     if (!queue.length) return;
     setBusy(true);
     setError(null);
-    const options = {
+    const options: Partial<JobOptions> = {
       cloud_consent: consent,
       user_terms: termMap(),
       quality: settings.quality,
       include_references: settings.includeReferences,
+      ...(isPaddle ? { parser: "paddleocr-vl" as const } : {}),
       ...(items.length === 1 && selected ? { pages: selected } : {}),
     };
+    const submitMode: TranslationMode = isFree ? "free" : "byok";
+    const submitHeaders = uploadAuthHeaders(submitMode, getSettings());
     const created: Job[] = [];
     // 最多同时上传 PARALLEL_UPLOADS 个；某个失败（如服务器排队已满）只标在那个文件上
     const worker = async () => {
       for (let it = queue.shift(); it; it = queue.shift()) {
         update(it.file, { state: "uploading" });
         try {
-          const job = await api.createJob(it.file, options);
+          const job = await api.createJob(it.file, options, { mode: submitMode, headers: submitHeaders });
           rememberJob(job.id);
           if (it.hash) {
             addHistory({ id: job.id, hash: it.hash, filename: job.filename, pages: job.page_count,
@@ -225,6 +283,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
   const uploading = items.filter((it) => it.state !== "ready").length;
 
   const cost =
+    !isFree &&
     estimate &&
     (estimate.cny_low === null
       ? "按你的服务商计费"
@@ -232,6 +291,84 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
 
   return (
     <section className="upload" aria-label="上传论文">
+      {configWaiting && (
+        <p className="hint" role="status">
+          正在加载站点配置…
+        </p>
+      )}
+      {configFailed && (
+        <div className="site-banner maintenance" role="alert">
+          无法获取站点配置，为避免误用计费通道已暂停提交。
+          <button type="button" className="link" onClick={() => void refetchConfig()}>
+            重试加载配置
+          </button>
+        </div>
+      )}
+      {maintenance ? (
+        <div className="site-banner maintenance" role="alert">
+          {siteNotice || "系统正在维护，暂不接收新任务；已完成的任务仍可继续阅读与下载。"}
+        </div>
+      ) : siteNotice ? (
+        <div className="site-banner info" role="status">
+          {siteNotice}
+        </div>
+      ) : null}
+      {freeClosedWarning && (
+        <div className="site-banner info" role="status">
+          {settings.llmKey
+            ? "免费体验通道当前未开放，如需继续翻译将使用你已配置的自备 API Key 按实际用量计费。"
+            : "免费体验通道当前未开放，如需继续翻译请使用自备 API Key。"}
+        </div>
+      )}
+
+      {freeEnabled && (
+        <div className="mode-panel">
+          <div className="segmented mode-switch" role="group" aria-label="翻译通道">
+            <button
+              type="button"
+              className={isFree ? "on" : undefined}
+              aria-pressed={isFree}
+              onClick={() => selectMode("free")}
+            >
+              免费体验（免填 API Key）
+            </button>
+            <button
+              type="button"
+              className={!isFree ? "on" : undefined}
+              aria-pressed={!isFree}
+              onClick={() => selectMode("byok")}
+            >
+              自备 API Key
+            </button>
+          </div>
+          {isFree ? (
+            <div className="mode-card free" role="status">
+              <div className="mode-card-head">
+                {freeChannel?.model_display && (
+                  <span>
+                    当前免费模型：<strong>{freeChannel.model_display}</strong>
+                  </span>
+                )}
+                {freeLimit !== null && <span className="num">单篇上限 {freeLimit} 页</span>}
+              </div>
+              <p className="hint">
+                {freeChannel?.notice?.trim() ||
+                  `经 ${service} 云端解析版面，并通过站点公共推理接口翻译，仅建议用于公开论文体验。`}
+              </p>
+            </div>
+          ) : (
+            <div className="mode-card byok">
+              <p className="hint">
+                翻译队列独立，支持自定义服务商与模型。
+                <button type="button" className="link" onClick={onNeedSettings}>
+                  设置服务商与 Key
+                </button>
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
       <label
         className={`spread${dragging ? " dragging" : ""}`}
         onDragOver={(e) => {
@@ -258,7 +395,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
             <>
               <span className="file-name">{file.file.name}</span>
               <span>
-                {file.error ?? (file.pages === null ? "正在读取页数…" : `${file.pages} 页，点击可换一个文件`)}
+                {fileError ?? (file.pages === null ? "正在读取页数…" : `${file.pages} 页，点击可换一个文件`)}
               </span>
             </>
           ) : items.length > 1 ? (
@@ -275,7 +412,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
         </span>
       </label>
 
-      {estimate && (
+      {!isFree && estimate && (
         <dl className="upload-meta">
           <div>
             <dt>预计费用</dt>
@@ -294,42 +431,53 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
       )}
       {items.length > 1 && (
         <ul className="batch-list" aria-label="待上传的文件">
-          {items.map((it) => (
-            <li key={`${it.file.name}:${it.file.size}:${it.file.lastModified}`}>
-              <span className="file-name" title={it.file.name}>
-                {it.file.name}
-              </span>
-              <span className={it.error ? "error" : "muted num"}>
-                {it.error ??
-                  (it.state === "uploading"
-                    ? "上传中…"
-                    : it.state === "done"
-                      ? "已加入"
-                      : it.pages === null
-                        ? "读取中…"
-                        : `${it.pages} 页`)}
-                {it.seen && !it.error && it.state === "ready" && (
-                  <small className="seen-tag"> · {when(it.seen.entry.createdAt)} 翻译过</small>
+          {items.map((it) => {
+            const err = itemError(it);
+            return (
+              <li key={`${it.file.name}:${it.file.size}:${it.file.lastModified}`}>
+                <span className="file-name" title={it.file.name}>
+                  {it.file.name}
+                </span>
+                <span className={err ? "error" : "muted num"}>
+                  {err ??
+                    (it.state === "uploading"
+                      ? "上传中…"
+                      : it.state === "done"
+                        ? "已加入"
+                        : it.pages === null
+                          ? "读取中…"
+                          : `${it.pages} 页`)}
+                  {it.seen && !err && it.state === "ready" && (
+                    <small className="seen-tag"> · {when(it.seen.entry.createdAt)} 翻译过</small>
+                  )}
+                </span>
+                {it.seen && !it.confirmed && it.state === "ready" && !err && !busy && (
+                  <button type="button" className="quiet" onClick={() => update(it.file, { confirmed: true })}>
+                    仍要翻译
+                  </button>
                 )}
-              </span>
-              {it.seen && !it.confirmed && it.state === "ready" && !it.error && !busy && (
-                <button type="button" className="quiet" onClick={() => update(it.file, { confirmed: true })}>
-                  仍要翻译
-                </button>
-              )}
-              {it.state === "ready" && !busy && (
-                <button
-                  type="button"
-                  className="quiet"
-                  aria-label={`移除 ${it.file.name}`}
-                  onClick={() => setItems((list) => list.filter((x) => x !== it))}
-                >
-                  移除
-                </button>
-              )}
-            </li>
-          ))}
+                {it.state === "ready" && !busy && (
+                  <button
+                    type="button"
+                    className="quiet"
+                    aria-label={`移除 ${it.file.name}`}
+                    onClick={() => setItems((list) => list.filter((x) => x !== it))}
+                  >
+                    移除
+                  </button>
+                )}
+              </li>
+            );
+          })}
         </ul>
+      )}
+      {overFreeLimit.length > 0 && freeLimit !== null && (
+        <p className="free-limit-notice" role="status">
+          当前免费体验单篇上限为 {freeLimit} 页，超出上限的论文可改用自备 API Key 翻译。
+          <button type="button" className="link" onClick={() => selectMode("byok")}>
+            切换到自备 API Key
+          </button>
+        </p>
       )}
       {items.length > 1 && <p className="hint">上传后可在下方“我的任务”查看进度，每篇翻译完成后即可下载。</p>}
       {items.length > 1 && undecided.length > 0 && (
@@ -337,7 +485,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
           有 {undecided.length} 篇你在这个浏览器里翻译过，请先对每篇选择“仍要翻译”或“移除”。
         </p>
       )}
-      {file?.seen && !file.confirmed && !file.error && (
+      {file?.seen && !file.confirmed && !fileError && (
         <div className="seen-notice" role="status">
           <p>
             这篇你在 {when(file.seen.entry.createdAt)} 翻译过（{file.seen.entry.filename}）。
@@ -361,7 +509,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
           </div>
         </div>
       )}
-      {file && file.pages !== null && !file.error && (
+      {file && file.pages !== null && !fileError && (
         <label className="field page-range">
           <span>页码范围（可选）</span>
           <input
@@ -377,10 +525,42 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
           ) : null}
         </label>
       )}
-      {file?.error && (
+      {file && fileError && (
         <p className="error">
-          {file.file.name}：{file.error}
+          {file.file.name}：{fileError}
         </p>
+      )}
+
+      {keyNeedsRebind && config?.default_base_url && (
+        <div className="key-rebind-notice" role="alert">
+          <p>
+            当前个人 API Key 尚未绑定到新默认服务地址（目标：{config.default_base_url}），请确认目标地址或重新填写。
+          </p>
+          <div className="row-actions">
+            <button type="button" onClick={() => confirmLlmKeyBinding(config)}>
+              确认发送到此地址
+            </button>
+            <button type="button" className="quiet" onClick={onNeedSettings}>
+              打开设置更换 Key
+            </button>
+          </div>
+        </div>
+      )}
+
+      {parserNeedsRebind && config?.default_mineru_base_url && (
+        <div className="key-rebind-notice" role="alert">
+          <p>
+            当前个人 MinerU Token 尚未绑定到当前解析服务地址（目标：{config.default_mineru_base_url}），请确认目标地址或更换 Token。
+          </p>
+          <div className="row-actions">
+            <button type="button" onClick={() => saveSettings(confirmParserKeyBinding(getSettings(), config))}>
+              确认发送到此解析地址
+            </button>
+            <button type="button" className="quiet" onClick={onNeedSettings}>
+              打开设置更换 Token
+            </button>
+          </div>
+        </div>
       )}
 
       {(missingKey || missingToken) && (
@@ -394,11 +574,13 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
           。
           {missingToken
             ? "MinerU Token 在 MinerU API 管理中申请。"
-            : settings.parserKey
-              ? "版面解析将使用你自己的 MinerU Token。"
-              : config?.server_has_parser_token
-                ? "本站已提供 MinerU 版面解析。"
-                : null}
+            : isPaddle
+              ? "本站已提供 PaddleOCR 版面解析。"
+              : settings.parserKey
+                ? "版面解析将使用你自己的 MinerU Token。"
+                : config?.server_has_parser_token
+                  ? "本站已提供 MinerU 版面解析。"
+                  : null}
           {missingKey && "翻译费用由你选择的服务商收取。"}
           <button type="button" className="link" onClick={onNeedSettings}>
             打开设置
@@ -406,8 +588,36 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
         </p>
       )}
 
+      {paddleAvailable && (
+        <div className="parser-choice">
+          <span className="hint">版面解析服务</span>
+          <div className="segmented" role="group" aria-label="版面解析服务">
+            {(!isFree || mineruAvailable) && (
+              <button
+                type="button"
+                className={!isPaddle ? "on" : undefined}
+                aria-pressed={!isPaddle}
+                onClick={() => setUserSelectedParser("mineru-cloud")}
+              >
+                MinerU
+              </button>
+            )}
+            <button
+              type="button"
+              className={isPaddle ? "on" : undefined}
+              aria-pressed={isPaddle}
+              onClick={() => setUserSelectedParser("paddleocr-vl")}
+            >
+              PaddleOCR-VL
+            </button>
+          </div>
+        </div>
+      )}
+
       <p className="notice">
-        文件会上传到 {service} 云端解析版面，正文会发给你设置的翻译服务，请不要上传涉密或未公开的文档。
+        {isFree
+          ? `文件会上传到 ${service} 云端解析版面，正文会发往本站提供的免费公共推理接口翻译，请仅上传公开论文，不要上传涉密或未公开的文档。`
+          : `文件会上传到 ${service} 云端解析版面，正文会发给你设置的翻译服务，请不要上传涉密或未公开的文档。`}
         {config &&
           config.retention_hours > 0 &&
           `原文与译文在服务器上只保留 ${config.retention_hours} 小时，之后自动删除，请及时下载。`}
@@ -415,7 +625,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
       </p>
       {config?.submission_audit_enabled && (
         <p className="notice" role="note">
-          本服务会按数据保留说明处理使用过程中的必要信息，公开统计仅展示聚合数量；正文和文件按保留期清理，正在运行的任务可能延后。
+          本服务已开启提交审计，会按数据保留说明留存任务摘要、提交 IP 与客户端 User-Agent（浏览器/系统标识）等必要信息用于排障与审计（免费体验与自备 Key 模式均适用），公开统计仅展示聚合数量；正文和文件按保留期清理，正在运行的任务可能延后。
           <a href="/guide#privacy">查看数据保留说明</a>
         </p>
       )}
@@ -439,13 +649,15 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings }: Props
           type="button"
           className="primary"
           disabled={
+            !config ||
             !usable.length ||
             !counted ||
             !consent ||
             busy ||
+            maintenance ||
             undecided.length > 0 ||
             Boolean(rangeError) ||
-            Boolean(missingKey || missingToken)
+            Boolean(missingKey || missingToken || keyNeedsRebind || parserNeedsRebind)
           }
           onClick={() => void submit()}
         >

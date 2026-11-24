@@ -476,6 +476,210 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Admin Overview */
+        get: operations["admin_overview_api_admin_overview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Admin Config */
+        get: operations["get_admin_config_api_admin_config_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/config/free_translation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Admin Config Free Translation */
+        put: operations["update_admin_config_free_translation_api_admin_config_free_translation_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/config/parser": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Admin Config Parser */
+        put: operations["update_admin_config_parser_api_admin_config_parser_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/config/default_llm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Admin Config Default Llm */
+        put: operations["update_admin_config_default_llm_api_admin_config_default_llm_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/config/pricing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Admin Config Pricing */
+        put: operations["update_admin_config_pricing_api_admin_config_pricing_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/config/glossary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Admin Config Glossary */
+        put: operations["update_admin_config_glossary_api_admin_config_glossary_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/config/system": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Admin Config System */
+        put: operations["update_admin_config_system_api_admin_config_system_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/config/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test Admin Config */
+        post: operations["test_admin_config_api_admin_config_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/config/revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Config Revisions */
+        get: operations["list_config_revisions_api_admin_config_revisions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/config/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rollback Config */
+        post: operations["rollback_config_api_admin_config_rollback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/glossary/reload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reload Glossary */
+        post: operations["reload_glossary_api_admin_glossary_reload_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/submissions/client": {
         parameters: {
             query?: never;
@@ -517,10 +721,106 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ActiveJobSummaryOut */
+        ActiveJobSummaryOut: {
+            /** Job Id */
+            job_id: string;
+            /** Page Count */
+            page_count: number;
+            /** Stage */
+            stage: string;
+            /** Progress */
+            progress: number;
+            /**
+             * Channel Mode
+             * @enum {string}
+             */
+            channel_mode: "byok" | "free";
+            /** Model */
+            model: string;
+            /** Status */
+            status: string;
+        };
+        /** AdminClientOut */
+        AdminClientOut: {
+            /** Submitter Ip */
+            submitter_ip?: string | null;
+            /**
+             * Ip Source
+             * @default unknown
+             * @enum {string}
+             */
+            ip_source: "trusted_proxy" | "direct" | "unknown";
+            /** Notice Version */
+            notice_version?: string | null;
+        };
+        /** AdminConfigView */
+        AdminConfigView: {
+            /** Revision */
+            revision: number;
+            /** Updated At */
+            updated_at: string | null;
+            /** Secret Key Ready */
+            secret_key_ready: boolean;
+            /** Warnings */
+            warnings: string[];
+            free_translation: components["schemas"]["FreeTranslationView"];
+            parser: components["schemas"]["ParserServiceView"];
+            default_llm: components["schemas"]["DefaultLlmConfig"];
+            pricing: components["schemas"]["PricingConfig"];
+            glossary: components["schemas"]["GlossaryAdminView"];
+            system: components["schemas"]["SystemConfig"];
+            /** Env Locks */
+            env_locks: components["schemas"]["EnvLockItem"][];
+        };
         /** AdminLoginIn */
         AdminLoginIn: {
             /** Password */
             password: string;
+        };
+        /** AdminOverviewOut */
+        AdminOverviewOut: {
+            queues: components["schemas"]["AdminQueuesOut"];
+            services: components["schemas"]["AdminServiceSummaryOut"];
+            /** Warnings */
+            warnings: string[];
+            stats: components["schemas"]["AdminStatsSnapshot"];
+            /** Active Jobs */
+            active_jobs: components["schemas"]["ActiveJobSummaryOut"][];
+            /** Maintenance Mode */
+            maintenance_mode: boolean;
+            /** Revision */
+            revision: number;
+            /** Secret Key Ready */
+            secret_key_ready: boolean;
+        };
+        /** AdminQueuesOut */
+        AdminQueuesOut: {
+            parse: components["schemas"]["QueueSlotStats"];
+            free: components["schemas"]["QueueSlotStats"];
+            byok: components["schemas"]["QueueSlotStats"];
+            /**
+             * Parse Reserved For Byok
+             * @default false
+             */
+            parse_reserved_for_byok: boolean;
+        };
+        /** AdminServiceSummaryOut */
+        AdminServiceSummaryOut: {
+            /** Free Enabled */
+            free_enabled: boolean;
+            /** Free Ready */
+            free_ready: boolean;
+            /** Usable Providers */
+            usable_providers: number;
+            /** Mineru Configured */
+            mineru_configured: boolean;
+            /** Paddle Configured */
+            paddle_configured: boolean;
+            /** Glossary Terms */
+            glossary_terms: number;
+            /** Glossary Reloading */
+            glossary_reloading: boolean;
         };
         /** AdminSessionOut */
         AdminSessionOut: {
@@ -531,6 +831,43 @@ export interface components {
              * Format: date-time
              */
             expires_at: string;
+        };
+        /** AdminStatsSnapshot */
+        AdminStatsSnapshot: {
+            /**
+             * Today Submitted
+             * @default 0
+             */
+            today_submitted: number;
+            /**
+             * Today Completed
+             * @default 0
+             */
+            today_completed: number;
+            /**
+             * Period Submitted
+             * @default 0
+             */
+            period_submitted: number;
+            /**
+             * Period Completed
+             * @default 0
+             */
+            period_completed: number;
+            /**
+             * Failed 24H
+             * @default 0
+             */
+            failed_24h: number;
+            /** Recent Failures */
+            recent_failures?: components["schemas"]["OverviewFailureSummary"][];
+            client_breakdown?: components["schemas"]["ClientBreakdown"];
+            /**
+             * Client Breakdown Source
+             * @default job
+             * @enum {string}
+             */
+            client_breakdown_source: "job" | "visit";
         };
         /** BlockOut */
         BlockOut: {
@@ -604,6 +941,27 @@ export interface components {
              */
             reasoning_tokens: number;
         };
+        /** ClientBreakdown */
+        ClientBreakdown: {
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /** Devices */
+            devices?: components["schemas"]["ClientBucket"][];
+            /** Platforms */
+            platforms?: components["schemas"]["ClientBucket"][];
+        };
+        /** ClientBucket */
+        ClientBucket: {
+            /** Label */
+            label: string;
+            /** Count */
+            count: number;
+            /** Share */
+            share: number;
+        };
         /**
          * ConfigOut
          * @description 前端需要的公开配置（不含任何 Key）。
@@ -622,6 +980,11 @@ export interface components {
              * @enum {string}
              */
             default_protocol: "openai" | "anthropic";
+            /**
+             * Default Mineru Base Url
+             * @default https://mineru.net
+             */
+            default_mineru_base_url: string;
             /** Server Has Parser Token */
             server_has_parser_token: boolean;
             /** Server Has Paddle Token */
@@ -641,6 +1004,125 @@ export interface components {
             submission_audit_enabled: boolean;
             /** Attributions */
             attributions: string[];
+            free_channel?: components["schemas"]["FreeChannelPublicOut"];
+            /** Llm Presets */
+            llm_presets?: components["schemas"]["LlmPreset"][];
+            /**
+             * Paddle Public Enabled
+             * @default false
+             */
+            paddle_public_enabled: boolean;
+            /**
+             * Maintenance Mode
+             * @default false
+             */
+            maintenance_mode: boolean;
+            /**
+             * Site Notice
+             * @default
+             */
+            site_notice: string;
+        };
+        /** ConfigRevisionSummary */
+        ConfigRevisionSummary: {
+            /** Revision */
+            revision: number;
+            /** Section */
+            section: string;
+            /** Changed Fields */
+            changed_fields: string[];
+            /** Summary */
+            summary: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** ConfigRevisionsOut */
+        ConfigRevisionsOut: {
+            /** Items */
+            items: components["schemas"]["ConfigRevisionSummary"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /** ConnectionTestIn */
+        ConnectionTestIn: {
+            /**
+             * Target
+             * @enum {string}
+             */
+            target: "free_provider" | "mineru" | "paddle";
+            /** Provider Id */
+            provider_id?: string | null;
+            /** Protocol */
+            protocol?: ("openai" | "anthropic") | null;
+            /** Base Url */
+            base_url?: string | null;
+            /** Model */
+            model?: string | null;
+            /** Timeout S */
+            timeout_s?: number | null;
+            api_key?: components["schemas"]["SecretUpdate"] | null;
+            token?: components["schemas"]["SecretUpdate"] | null;
+            proxy?: components["schemas"]["SecretUpdate"] | null;
+        };
+        /** ConnectionTestOut */
+        ConnectionTestOut: {
+            /** Ok */
+            ok: boolean;
+            /** Status Code */
+            status_code?: number | null;
+            /**
+             * Latency Ms
+             * @default 0
+             */
+            latency_ms: number;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+        };
+        /** DefaultLlmConfig */
+        DefaultLlmConfig: {
+            /**
+             * Base Url
+             * @default https://api.deepseek.com
+             */
+            base_url: string;
+            /**
+             * Protocol
+             * @default openai
+             * @enum {string}
+             */
+            protocol: "openai" | "anthropic";
+            /**
+             * Model
+             * @default deepseek-flash
+             */
+            model: string;
+            /** Presets */
+            presets?: components["schemas"]["LlmPreset"][];
+        };
+        /** DefaultLlmPatch */
+        DefaultLlmPatch: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Base Url */
+            base_url: string;
+            /**
+             * Protocol
+             * @default openai
+             * @enum {string}
+             */
+            protocol: "openai" | "anthropic";
+            /** Model */
+            model: string;
+            /** Presets */
+            presets?: components["schemas"]["LlmPreset"][];
         };
         /** DocumentOut */
         DocumentOut: {
@@ -666,6 +1148,15 @@ export interface components {
         EditIn: {
             /** Target */
             target: string;
+        };
+        /** EnvLockItem */
+        EnvLockItem: {
+            /** Name */
+            name: string;
+            /** Status */
+            status: string;
+            /** Detail */
+            detail: string;
         };
         /** Estimate */
         Estimate: {
@@ -704,6 +1195,151 @@ export interface components {
             /** Page */
             page: number | null;
             bbox: components["schemas"]["RectOut"] | null;
+        };
+        /** FreeChannelPublicOut */
+        FreeChannelPublicOut: {
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /**
+             * Model Display
+             * @default
+             */
+            model_display: string;
+            /** Max Pages */
+            max_pages?: number | null;
+            /**
+             * Notice
+             * @default
+             */
+            notice: string;
+        };
+        /** FreeProviderPatch */
+        FreeProviderPatch: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /**
+             * Protocol
+             * @default openai
+             * @enum {string}
+             */
+            protocol: "openai" | "anthropic";
+            /** Base Url */
+            base_url: string;
+            /** Model */
+            model: string;
+            /**
+             * Fallback Model
+             * @default
+             */
+            fallback_model: string;
+            /**
+             * Timeout S
+             * @default 65
+             */
+            timeout_s: number;
+            api_key?: components["schemas"]["SecretUpdate"];
+        };
+        /** FreeProviderView */
+        FreeProviderView: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Enabled */
+            enabled: boolean;
+            /**
+             * Protocol
+             * @enum {string}
+             */
+            protocol: "openai" | "anthropic";
+            /** Base Url */
+            base_url: string;
+            /** Model */
+            model: string;
+            /** Fallback Model */
+            fallback_model: string;
+            /** Timeout S */
+            timeout_s: number;
+            api_key: components["schemas"]["SecretView"];
+            /** Usable */
+            usable: boolean;
+        };
+        /** FreeTranslationPatch */
+        FreeTranslationPatch: {
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /** Max Pages */
+            max_pages?: number | null;
+            /**
+             * Notice
+             * @default
+             */
+            notice: string;
+            /** Providers */
+            providers?: components["schemas"]["FreeProviderPatch"][];
+        };
+        /** FreeTranslationView */
+        FreeTranslationView: {
+            /** Enabled */
+            enabled: boolean;
+            /** Max Pages */
+            max_pages: number | null;
+            /** Notice */
+            notice: string;
+            /** Ready */
+            ready: boolean;
+            /** Providers */
+            providers: components["schemas"]["FreeProviderView"][];
+        };
+        /** GlossaryAdminView */
+        GlossaryAdminView: {
+            /** Sources */
+            sources: string[];
+            /** Available */
+            available: components["schemas"]["GlossarySourceView"][];
+            /** Loaded Terms */
+            loaded_terms: number;
+            /** Reloading */
+            reloading: boolean;
+        };
+        /** GlossaryPatch */
+        GlossaryPatch: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Sources */
+            sources?: string[];
+        };
+        /** GlossarySourceView */
+        GlossarySourceView: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** License */
+            license: string;
+            /** Commercial Ok */
+            commercial_ok: boolean;
+            /** Enabled */
+            enabled: boolean;
+            /** Priority */
+            priority: number | null;
+            /** Cached */
+            cached: boolean;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -782,6 +1418,17 @@ export interface components {
             /** Cost Cny */
             cost_cny: number | null;
             /**
+             * Channel Mode
+             * @default byok
+             * @enum {string}
+             */
+            channel_mode: "byok" | "free";
+            /**
+             * Fallback Used
+             * @default false
+             */
+            fallback_used: boolean;
+            /**
              * Created At
              * Format: date-time
              */
@@ -836,6 +1483,39 @@ export interface components {
              */
             detail: string;
         };
+        /** LlmPreset */
+        LlmPreset: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Protocol
+             * @default openai
+             * @enum {string}
+             */
+            protocol: "openai" | "anthropic";
+            /** Base Url */
+            base_url: string;
+            /** Models */
+            models?: string[];
+        };
+        /** ModelPriceEntry */
+        ModelPriceEntry: {
+            /** Model */
+            model: string;
+            /** Cache Hit */
+            cache_hit: number;
+            /** Cache Miss */
+            cache_miss: number;
+            /** Output */
+            output: number;
+            /**
+             * Peak Factor
+             * @default 1
+             */
+            peak_factor: number;
+        };
         /** ModelsOut */
         ModelsOut: {
             /** Models */
@@ -855,6 +1535,27 @@ export interface components {
             top: number;
             /** Segment Id */
             segment_id: string | null;
+        };
+        /**
+         * OverviewFailureSummary
+         * @description 总览页近 24 小时失败任务脱敏摘要（不含完整 IP 与原始 User-Agent）。
+         */
+        OverviewFailureSummary: {
+            /** Job Id */
+            job_id: string;
+            /** Title */
+            title: string;
+            /**
+             * Submitted At
+             * Format: date-time
+             */
+            submitted_at: string;
+            /** Channel Mode */
+            channel_mode?: ("byok" | "free") | null;
+            /** Failure Reason */
+            failure_reason: string;
+            /** Retryable */
+            retryable?: boolean | null;
         };
         /** PageOut */
         PageOut: {
@@ -892,12 +1593,77 @@ export interface components {
              */
             usage: components["schemas"]["ChatUsage"];
         };
+        /** ParserPatch */
+        ParserPatch: {
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Mineru Base Url
+             * @default https://mineru.net
+             */
+            mineru_base_url: string;
+            mineru_token?: components["schemas"]["SecretUpdate"];
+            mineru_proxy?: components["schemas"]["SecretUpdate"];
+            /**
+             * Paddle Public Enabled
+             * @default false
+             */
+            paddle_public_enabled: boolean;
+            paddle_token?: components["schemas"]["SecretUpdate"];
+            paddle_proxy?: components["schemas"]["SecretUpdate"];
+        };
+        /** ParserServiceView */
+        ParserServiceView: {
+            /** Mineru Base Url */
+            mineru_base_url: string;
+            mineru_token: components["schemas"]["SecretView"];
+            mineru_proxy: components["schemas"]["SecretView"];
+            /** Paddle Public Enabled */
+            paddle_public_enabled: boolean;
+            paddle_token: components["schemas"]["SecretView"];
+            paddle_proxy: components["schemas"]["SecretView"];
+        };
         /** PartOut */
         PartOut: {
             /** Block Id */
             block_id: string;
             /** Chars */
             chars: number;
+        };
+        /** PricingConfig */
+        PricingConfig: {
+            /** Models */
+            models?: components["schemas"]["ModelPriceEntry"][];
+            /**
+             * Custom Configured
+             * @default false
+             */
+            custom_configured: boolean;
+        };
+        /** PricingPatch */
+        PricingPatch: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Models */
+            models?: components["schemas"]["ModelPriceEntry"][];
+        };
+        /** QueueSlotStats */
+        QueueSlotStats: {
+            /**
+             * In Use
+             * @default 0
+             */
+            in_use: number;
+            /**
+             * Limit
+             * @default 0
+             */
+            limit: number;
+            /**
+             * Waiting
+             * @default 0
+             */
+            waiting: number;
         };
         /** RectOut */
         RectOut: {
@@ -972,6 +1738,61 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /** RollbackIn */
+        RollbackIn: {
+            /** Target Revision */
+            target_revision: number;
+            /** Expected Revision */
+            expected_revision: number;
+        };
+        /** SecretUpdate */
+        SecretUpdate: {
+            /**
+             * Action
+             * @default keep
+             * @enum {string}
+             */
+            action: "keep" | "replace" | "disable" | "inherit_env";
+            /**
+             * Value
+             * @default
+             */
+            value: string;
+        };
+        /** SecretView */
+        SecretView: {
+            /**
+             * Mode
+             * @default inherit_env
+             * @enum {string}
+             */
+            mode: "custom" | "disabled" | "inherit_env";
+            /**
+             * Configured
+             * @default false
+             */
+            configured: boolean;
+            /**
+             * Mask
+             * @default
+             */
+            mask: string;
+            /**
+             * Bound Url
+             * @default
+             */
+            bound_url: string;
+            /**
+             * Bound Protocol
+             * @default
+             */
+            bound_protocol: string;
+            /**
+             * Corrupted
+             * @default false
+             */
+            corrupted: boolean;
         };
         /** SegmentOut */
         SegmentOut: {
@@ -1114,19 +1935,6 @@ export interface components {
              */
             visitor_id: string;
         };
-        /** SubmissionContext */
-        SubmissionContext: {
-            /** Submitter Ip */
-            submitter_ip?: string | null;
-            /**
-             * Ip Source
-             * @default unknown
-             * @enum {string}
-             */
-            ip_source: "trusted_proxy" | "direct" | "unknown";
-            /** Notice Version */
-            notice_version?: string | null;
-        };
         /** SubmissionPage */
         SubmissionPage: {
             /**
@@ -1196,6 +2004,20 @@ export interface components {
             retryable?: boolean | null;
             /** Failure Updated At */
             failure_updated_at?: string | null;
+            /** Channel Mode */
+            channel_mode?: ("byok" | "free") | null;
+            /** Model Name */
+            model_name?: string | null;
+            /** Fallback Used */
+            fallback_used?: boolean | null;
+            /** User Agent */
+            user_agent?: string | null;
+            /** Client Device */
+            client_device?: ("desktop" | "mobile" | "tablet" | "bot" | "unknown") | null;
+            /** Client Os */
+            client_os?: string | null;
+            /** Client Browser */
+            client_browser?: string | null;
         };
         /** SubmissionSearch */
         SubmissionSearch: {
@@ -1210,6 +2032,11 @@ export interface components {
             date_from?: string | null;
             /** Date To */
             date_to?: string | null;
+            /** Channel Mode */
+            channel_mode?: ("byok" | "free") | null;
+            status?: components["schemas"]["JobStatus"] | null;
+            /** Client Device */
+            client_device?: ("desktop" | "mobile" | "tablet" | "bot" | "unknown") | null;
             /**
              * Page
              * @default 1
@@ -1221,6 +2048,124 @@ export interface components {
              * @enum {integer}
              */
             page_size: 25 | 50 | 100;
+        };
+        /** SystemConfig */
+        SystemConfig: {
+            /**
+             * Max Upload Mb
+             * @default 200
+             */
+            max_upload_mb: number;
+            /**
+             * Max Pages
+             * @default 200
+             */
+            max_pages: number;
+            /**
+             * Max Concurrent Jobs
+             * @default 4
+             */
+            max_concurrent_jobs: number;
+            /**
+             * Max Concurrent Translations
+             * @default 1
+             */
+            max_concurrent_translations: number;
+            /**
+             * Free Max Concurrent Translations
+             * @default 1
+             */
+            free_max_concurrent_translations: number;
+            /**
+             * Max Queued Jobs
+             * @default 10
+             */
+            max_queued_jobs: number;
+            /**
+             * Free Max Queued Jobs
+             * @default 6
+             */
+            free_max_queued_jobs: number;
+            /**
+             * Retention Hours
+             * @default 24
+             */
+            retention_hours: number;
+            /**
+             * Min Free Disk Mb
+             * @default 1024
+             */
+            min_free_disk_mb: number;
+            /**
+             * Maintenance Mode
+             * @default false
+             */
+            maintenance_mode: boolean;
+            /**
+             * Site Notice
+             * @default
+             */
+            site_notice: string;
+        };
+        /** SystemPatch */
+        SystemPatch: {
+            /**
+             * Max Upload Mb
+             * @default 200
+             */
+            max_upload_mb: number;
+            /**
+             * Max Pages
+             * @default 200
+             */
+            max_pages: number;
+            /**
+             * Max Concurrent Jobs
+             * @default 4
+             */
+            max_concurrent_jobs: number;
+            /**
+             * Max Concurrent Translations
+             * @default 1
+             */
+            max_concurrent_translations: number;
+            /**
+             * Free Max Concurrent Translations
+             * @default 1
+             */
+            free_max_concurrent_translations: number;
+            /**
+             * Max Queued Jobs
+             * @default 10
+             */
+            max_queued_jobs: number;
+            /**
+             * Free Max Queued Jobs
+             * @default 6
+             */
+            free_max_queued_jobs: number;
+            /**
+             * Retention Hours
+             * @default 24
+             */
+            retention_hours: number;
+            /**
+             * Min Free Disk Mb
+             * @default 1024
+             */
+            min_free_disk_mb: number;
+            /**
+             * Maintenance Mode
+             * @default false
+             */
+            maintenance_mode: boolean;
+            /**
+             * Site Notice
+             * @default
+             */
+            site_notice: string;
+            /** Expected Revision */
+            expected_revision: number;
         };
         /** TermEntry */
         TermEntry: {
@@ -1283,6 +2228,7 @@ export interface operations {
                 "x-parser-key"?: string | null;
                 "x-paddle-key"?: string | null;
                 "x-llm-protocol"?: ("openai" | "anthropic") | null;
+                "x-translation-mode"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -1319,6 +2265,7 @@ export interface operations {
                 "x-parser-key"?: string | null;
                 "x-paddle-key"?: string | null;
                 "x-llm-protocol"?: ("openai" | "anthropic") | null;
+                "x-translation-mode"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -1359,6 +2306,7 @@ export interface operations {
                 "x-parser-key"?: string | null;
                 "x-paddle-key"?: string | null;
                 "x-llm-protocol"?: ("openai" | "anthropic") | null;
+                "x-translation-mode"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -1493,12 +2441,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                "x-llm-base-url"?: string | null;
-                "x-llm-key"?: string | null;
-                "x-llm-model"?: string | null;
-                "x-parser-key"?: string | null;
-                "x-paddle-key"?: string | null;
-                "x-llm-protocol"?: ("openai" | "anthropic") | null;
+                "x-translation-mode"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -1786,14 +2729,7 @@ export interface operations {
     retranslate_many_api_jobs__job_id__retranslate_post: {
         parameters: {
             query?: never;
-            header?: {
-                "x-llm-base-url"?: string | null;
-                "x-llm-key"?: string | null;
-                "x-llm-model"?: string | null;
-                "x-parser-key"?: string | null;
-                "x-paddle-key"?: string | null;
-                "x-llm-protocol"?: ("openai" | "anthropic") | null;
-            };
+            header?: never;
             path: {
                 job_id: string;
             };
@@ -1890,14 +2826,7 @@ export interface operations {
     retry_job_api_jobs__job_id__retry_post: {
         parameters: {
             query?: never;
-            header?: {
-                "x-llm-base-url"?: string | null;
-                "x-llm-key"?: string | null;
-                "x-llm-model"?: string | null;
-                "x-parser-key"?: string | null;
-                "x-paddle-key"?: string | null;
-                "x-llm-protocol"?: ("openai" | "anthropic") | null;
-            };
+            header?: never;
             path: {
                 job_id: string;
             };
@@ -1963,14 +2892,7 @@ export interface operations {
     retranslate_api_segments__segment_id__retranslate_post: {
         parameters: {
             query?: never;
-            header?: {
-                "x-llm-base-url"?: string | null;
-                "x-llm-key"?: string | null;
-                "x-llm-model"?: string | null;
-                "x-parser-key"?: string | null;
-                "x-paddle-key"?: string | null;
-                "x-llm-protocol"?: ("openai" | "anthropic") | null;
-            };
+            header?: never;
             path: {
                 segment_id: string;
             };
@@ -2198,6 +3120,362 @@ export interface operations {
             };
         };
     };
+    admin_overview_api_admin_overview_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminOverviewOut"];
+                };
+            };
+        };
+    };
+    get_admin_config_api_admin_config_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminConfigView"];
+                };
+            };
+        };
+    };
+    update_admin_config_free_translation_api_admin_config_free_translation_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FreeTranslationPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminConfigView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_admin_config_parser_api_admin_config_parser_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ParserPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminConfigView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_admin_config_default_llm_api_admin_config_default_llm_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DefaultLlmPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminConfigView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_admin_config_pricing_api_admin_config_pricing_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PricingPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminConfigView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_admin_config_glossary_api_admin_config_glossary_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GlossaryPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminConfigView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_admin_config_system_api_admin_config_system_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SystemPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminConfigView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_admin_config_api_admin_config_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConnectionTestIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionTestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_config_revisions_api_admin_config_revisions_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigRevisionsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rollback_config_api_admin_config_rollback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RollbackIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminConfigView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reload_glossary_api_admin_glossary_reload_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GlossaryAdminView"];
+                };
+            };
+        };
+    };
     current_client_api_admin_submissions_client_get: {
         parameters: {
             query?: never;
@@ -2213,7 +3491,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SubmissionContext"];
+                    "application/json": components["schemas"]["AdminClientOut"];
                 };
             };
         };

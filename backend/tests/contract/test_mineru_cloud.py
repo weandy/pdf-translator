@@ -91,7 +91,7 @@ def test_full_flow(tmp_path: Path):
 
 @pytest.mark.parametrize(
     ("fake", "message"),
-    [(FakeMinerU(auth_ok=False), "Token 无效"), (FakeMinerU(fail=True), "坏文件")],
+    [(FakeMinerU(auth_ok=False), "Token 无效"), (FakeMinerU(fail=True), "文件损坏")],
 )
 def test_errors_are_user_facing(tmp_path: Path, fake: FakeMinerU, message: str):
     pdf = tmp_path / "paper.pdf"
@@ -974,10 +974,16 @@ def test_presigned_hooks_retry_transient_dns_directly_and_skip_dns_through_proxy
     pdf.write_bytes(b"%PDF-fake")
     fake = FakeMinerU()
     resolved = []
+    seen_proxies = []
     client = httpx2.AsyncClient
+    real_transport = cloud.build_safe_async_transport
+
+    def spy_transport(*, proxy=None, allow_private=False):
+        seen_proxies.append(proxy)
+        return real_transport(proxy=proxy, allow_private=allow_private)
 
     def mocked_client(**kwargs):
-        assert kwargs["proxy"] == proxy
+        assert kwargs["transport"] is not None
         return client(
             headers=kwargs.get("headers"), transport=httpx2.MockTransport(fake), event_hooks=kwargs.get("event_hooks")
         )
@@ -989,10 +995,12 @@ def test_presigned_hooks_retry_transient_dns_directly_and_skip_dns_through_proxy
             raise OSError("暂时无法解析")
         return [(0, 0, 0, "", ("1.1.1.1", port))]
 
+    monkeypatch.setattr(cloud, "build_safe_async_transport", spy_transport)
     monkeypatch.setattr(cloud.httpx2, "AsyncClient", mocked_client)
     monkeypatch.setattr(cloud.socket, "getaddrinfo", resolve)
     parser = MinerUCloudParser("tok", poll_interval=0, proxy=proxy, retry_delays=(0,))
     assert asyncio.run(parser.parse(pdf)).pages
+    assert seen_proxies == [proxy, proxy]
     assert resolved == ([] if proxy is not None else ["oss.example", "oss.example", "cdn.example", "cdn.example"])
     assert sum(line.startswith("POST ") for line in fake.seen) == 1
 
@@ -1329,3 +1337,148 @@ def test_request_upload_429_still_fails_fast(tmp_path: Path):
         asyncio.run(parser.parse(pdf))
     assert not exc.value.retryable
     assert calls == 1
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "http://169.254.169.254/latest/meta-data",
+        "http://127.0.0.1:8080/internal",
+        "http://10.0.0.5/secret",
+    ],
+)
+def test_presigned_upload_and_redirect_to_private_targets_are_blocked(tmp_path: Path, bad_url: str) -> None:
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-fake")
+    reached_private: list[str] = []
+
+    async def direct_private(request: httpx2.Request) -> httpx2.Response:
+        url = str(request.url)
+        if url == f"{API}/file-urls/batch":
+            return httpx2.Response(200, json={"code": 0, "data": {"batch_id": "b1", "file_urls": [bad_url]}})
+        reached_private.append(url)
+        return httpx2.Response(200)
+
+    parser = MinerUCloudParser("tok", poll_interval=0, retry_delays=(), transport=httpx2.MockTransport(direct_private))
+    with pytest.raises(ParseError, match="不安全"):
+        asyncio.run(parser.parse(pdf))
+    assert reached_private == []
+
+    # 302 跳转到私网地址也必须在跳转请求发出前拦截
+    async def redirect_to_private(request: httpx2.Request) -> httpx2.Response:
+        url = str(request.url)
+        if url == f"{API}/file-urls/batch":
+            return httpx2.Response(200, json={"code": 0, "data": {"batch_id": "b1", "file_urls": [UPLOAD]}})
+        if url == UPLOAD:
+            return httpx2.Response(302, headers={"location": bad_url})
+        reached_private.append(url)
+        return httpx2.Response(200)
+
+    parser2 = MinerUCloudParser(
+        "tok", poll_interval=0, retry_delays=(), transport=httpx2.MockTransport(redirect_to_private)
+    )
+    with pytest.raises(ParseError, match="不安全"):
+        asyncio.run(parser2.parse(pdf))
+    assert reached_private == []
+
+
+def test_check_connection_rejects_503_302_and_redacts_upstream_auth_msg() -> None:
+    for status in (302, 429, 503):
+        p = MinerUCloudParser(
+            "tok",
+            transport=httpx2.MockTransport(lambda _r, s=status: httpx2.Response(s, headers={"location": "https://x"})),
+        )
+        with pytest.raises(ParseError):
+            asyncio.run(p.check_connection())
+
+    secret_upstream_msg = "invalid token SECRET_UPSTREAM_LEAK_777"
+    p_auth = MinerUCloudParser(
+        "tok",
+        transport=httpx2.MockTransport(
+            lambda _r: httpx2.Response(200, json={"code": "A0202", "msg": secret_upstream_msg})
+        ),
+    )
+    with pytest.raises(ParseError) as exc:
+        asyncio.run(p_auth.check_connection())
+    assert "SECRET_UPSTREAM_LEAK_777" not in str(exc.value)
+
+    # 正常鉴权返回 code=0 或 -60012（测试批次不存在）视为连通
+    p_ok = MinerUCloudParser(
+        "tok",
+        transport=httpx2.MockTransport(lambda _r: httpx2.Response(200, json={"code": -60012, "msg": "not found"})),
+    )
+    code, _ = asyncio.run(p_ok.check_connection())
+    assert code == 200
+
+
+def test_file_transfer_blocks_plaintext_http_and_redirects_and_redacts_upstream_errors(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-fake")
+
+    # 1. 公网模式拒绝明文 http:// 预签名上传地址
+    async def http_upload_url(request: httpx2.Request) -> httpx2.Response:
+        if str(request.url) == f"{API}/file-urls/batch":
+            return httpx2.Response(
+                200, json={"code": 0, "data": {"batch_id": "b1", "file_urls": ["http://oss.example/upload"]}}
+            )
+        pytest.fail("不应访问明文 http 上传地址")
+
+    p_http = MinerUCloudParser("tok", poll_interval=0, retry_delays=(), transport=httpx2.MockTransport(http_upload_url))
+    with pytest.raises(ParseError, match="https"):
+        asyncio.run(p_http.parse(pdf))
+
+    # 2. 公网模式下载遇到 302 跳转公网域名也不得跟随
+    followed: list[str] = []
+
+    async def redirect_download(request: httpx2.Request) -> httpx2.Response:
+        url = str(request.url)
+        if url == f"{API}/file-urls/batch":
+            return httpx2.Response(200, json={"code": 0, "data": {"batch_id": "b1", "file_urls": [UPLOAD]}})
+        if url == UPLOAD:
+            return httpx2.Response(200)
+        if url == f"{API}/extract-results/batch/b1":
+            return httpx2.Response(
+                200, json={"code": 0, "data": {"extract_result": [{"state": "done", "full_zip_url": ZIP}]}}
+            )
+        if url == ZIP:
+            return httpx2.Response(302, headers={"location": "https://other.example/redirected.zip"})
+        followed.append(url)
+        return httpx2.Response(200, content=_zip())
+
+    p_redir = MinerUCloudParser(
+        "tok", poll_interval=0, retry_delays=(), transport=httpx2.MockTransport(redirect_download)
+    )
+    with pytest.raises(ParseError, match="重定向"):
+        asyncio.run(p_redir.parse(pdf))
+    assert followed == []
+
+    # 3. 正常解析路径所有上游错误响应（申请上传、业务错误码、解析失败 err_msg）绝不透传原始文本
+    secret_marker = "UPSTREAM_RAW_SECRET_882"
+    scenarios = [
+        lambda _r: httpx2.Response(200, json={"code": 0, "data": {"raw": secret_marker}}),
+        lambda _r: httpx2.Response(200, json={"code": -9999, "msg": f"boom {secret_marker}"}),
+        lambda r: (
+            httpx2.Response(200, json={"code": 0, "data": {"batch_id": "b1", "file_urls": [UPLOAD]}})
+            if str(r.url) == f"{API}/file-urls/batch"
+            else (
+                httpx2.Response(200)
+                if str(r.url) == UPLOAD
+                else httpx2.Response(
+                    200,
+                    json={
+                        "code": 0,
+                        "data": {"extract_result": [{"state": "failed", "err_msg": f"detail {secret_marker}"}]},
+                    },
+                )
+            )
+        ),
+    ]
+    with caplog.at_level("DEBUG"):
+        for handler in scenarios:
+            parser = MinerUCloudParser("tok", poll_interval=0, retry_delays=(), transport=httpx2.MockTransport(handler))
+            with pytest.raises(ParseError) as exc:
+                asyncio.run(parser.parse(pdf))
+            assert secret_marker not in str(exc.value)
+    assert secret_marker not in caplog.text

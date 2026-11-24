@@ -288,3 +288,51 @@ def test_storage_rejects_non_public_windows(tmp_path: Path, monkeypatch: pytest.
 def test_counts_reject_negative_values(field: str):
     with pytest.raises(ValueError):
         StatsCounts(**{field: -1})
+
+
+def test_failed_24h_persists_across_audit_toggle_and_job_purge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pdftr.config import Settings
+    from pdftr.container import build_container
+    from pdftr.pipeline import usecases
+
+    set_now(monkeypatch, FIRST)
+    db_path = tmp_path / "app.db"
+    # 1. 关闭审计时任务失败 -> 开启审计重启后 failed_24h 仍准确包含该失败
+    store_off = SqliteStore(db_path, submission_audit_enabled=False)
+    try:
+        j1 = Job(id="job-fail-no-audit", filename="a.pdf", page_count=2, status=JobStatus.FAILED, error="超时")
+        store_off.create_job(j1)
+        assert store_off.admin_overview_stats().failed_24h == 1
+    finally:
+        store_off.close()
+
+    store_on = SqliteStore(db_path, submission_audit_enabled=True)
+    try:
+        assert store_on.admin_overview_stats().failed_24h == 1
+    finally:
+        store_on.close()
+
+    # 2. 关闭审计且任务到期被 purge_expired 从 jobs 表清理后，24 小时内 failed_24h 仍保持准确
+    purge_settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        data_dir=tmp_path / "purge",
+        glossary_sources="",
+        submission_audit_enabled=False,
+    )
+    c = build_container(purge_settings)
+    try:
+        j2 = Job(
+            id="job-fail-purged",
+            filename="b.pdf",
+            page_count=1,
+            status=JobStatus.FAILED,
+            error="解析失败",
+            expires_at=FIRST - timedelta(minutes=5),
+        )
+        c.pipeline.deps.store.create_job(j2)
+        removed = usecases.purge_expired(c.pipeline, retention_hours=1, now=FIRST)
+        assert removed == 1
+        assert c.pipeline.deps.store.get_job(j2.id) is None
+        assert c.pipeline.deps.store.admin_overview_stats().failed_24h == 1
+    finally:
+        c.close()

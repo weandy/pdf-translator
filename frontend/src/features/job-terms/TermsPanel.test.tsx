@@ -42,7 +42,7 @@ describe("术语批量重翻结果", () => {
     vi.useRealTimers();
   });
 
-  async function render(count = 3) {
+  async function render(count = 3, channelMode?: "byok" | "free") {
     const segments = Array.from({ length: count }, (_, i) => segment(`s${i + 1}`));
     const uses = [
       { source: "Synthetic", target: "合成术语", origin: "paper" as const, segment_ids: segments.map((s) => s.id) },
@@ -63,6 +63,7 @@ describe("术语批量重翻结果", () => {
           <TermsPanel
             jobId="synthetic"
             doc={doc}
+            channelMode={channelMode}
             onChange={changed}
             onSpot={() => {}}
             onMark={() => {}}
@@ -130,5 +131,12 @@ describe("术语批量重翻结果", () => {
     expect(button.disabled).toBe(true);
     expect(host.textContent).toContain("单段最多尝试 10 次");
     await act(async () => finish(segments));
+  });
+
+  it("免费任务批量重翻时透传 channelMode=free", async () => {
+    const segments = await render(2, "free");
+    const request = vi.spyOn(api, "retranslateMany").mockResolvedValue(segments);
+    await act(async () => retryButton().click());
+    expect(request).toHaveBeenCalledWith("synthetic", ["s1", "s2"], expect.any(Object), { channelMode: "free" });
   });
 });

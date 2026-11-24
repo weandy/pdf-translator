@@ -1,4 +1,4 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 
@@ -24,6 +24,10 @@ function uploadTimestamp(entry: TaskEntry): number {
 export function HomePage({ openSettings }: { openSettings: () => void }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { data: config } = useQuery({
+    queryKey: ["config"],
+    queryFn: api.config,
+  });
   const [notice, setNotice] = useState<string | null>(null);
   const history = useHistory();
   const [batches, setBatches] = useState<BatchEntry[]>(readBatches);
@@ -84,7 +88,9 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
   };
 
   const retry = async (id: string) => {
-    await updateJob(id, await api.retryJob(id));
+    const job = jobsById.get(id);
+    const next = job?.channel_mode === "free" ? await api.retryJob(id, { mode: "free" }) : await api.retryJob(id);
+    await updateJob(id, next);
   };
 
   const ungroup = (batch: BatchEntry) => {
@@ -122,6 +128,12 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
               <strong>Key 只在本机</strong>
               <span>API Key 只存在这个浏览器里，本站后端不保存。</span>
             </li>
+            {config?.free_channel?.enabled && (
+              <li>
+                <strong>免费体验入口</strong>
+                <span>无需配置 Key 即可直接试用公开论文翻译；自备 Key 享有独立翻译队列。</span>
+              </li>
+            )}
           </ul>
         </div>
         <UploadPanel

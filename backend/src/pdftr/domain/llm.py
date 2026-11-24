@@ -43,14 +43,25 @@ class ChatResult(BaseModel):
     finish_reason: str | None = None
     usage: ChatUsage = ChatUsage()
     compatibility_fallback: bool = False  # 本次请求因思考/采样参数降级而偏离默认能力时为 True，不写入共享缓存
+    actual_model: str | None = None
+    used_fallback: bool = False
 
 
 class ChatError(RuntimeError):
     """调用大模型失败（鉴权、额度、网络等），消息面向用户。"""
 
-    def __init__(self, message: str, *, retryable: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        status_code: int | None = None,
+        error_code: str = "",
+    ) -> None:
         super().__init__(message)
         self.retryable = retryable
+        self.status_code = status_code
+        self.error_code = error_code
 
 
 class ChatModel(Protocol):

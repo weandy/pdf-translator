@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from pdftr.domain.ir import Document, OutlineItem, Revision, Segment
 from pdftr.domain.job import Job, JobOptions
+from pdftr.domain.runtime_config import LlmPreset
 from pdftr.rendering.links import PdfLink
 
 
@@ -14,6 +15,13 @@ class HealthOut(BaseModel):
     status: str
     version: str
     data_dir_writable: bool
+
+
+class FreeChannelPublicOut(BaseModel):
+    enabled: bool = False
+    model_display: str = ""
+    max_pages: int | None = None
+    notice: str = ""
 
 
 class ConfigOut(BaseModel):
@@ -24,6 +32,7 @@ class ConfigOut(BaseModel):
     default_model: str
     server_has_llm_key: bool
     default_protocol: Literal["openai", "anthropic"]
+    default_mineru_base_url: str = "https://mineru.net"
     server_has_parser_token: bool
     server_has_paddle_token: bool
     max_upload_mb: int
@@ -32,6 +41,11 @@ class ConfigOut(BaseModel):
     admin_path: str
     submission_audit_enabled: bool = False
     attributions: list[str]
+    free_channel: FreeChannelPublicOut = Field(default_factory=FreeChannelPublicOut)
+    llm_presets: list[LlmPreset] = Field(default_factory=list)
+    paddle_public_enabled: bool = False
+    maintenance_mode: bool = False
+    site_notice: str = ""
 
 
 class JobOut(BaseModel):
@@ -46,13 +60,15 @@ class JobOut(BaseModel):
     options: JobOptions
     model: str
     cost_cny: float | None
+    channel_mode: Literal["byok", "free"] = "byok"
+    fallback_used: bool = False
     created_at: datetime
     stage_started_at: datetime | None
     expires_at: datetime | None  # 到期后服务器自动删除；None 表示不自动删除
 
     @classmethod
     def of(cls, job: Job) -> "JobOut":
-        return cls(**job.model_dump(exclude={"updated_at"}))
+        return cls(**job.model_dump(exclude={"updated_at", "channel_provider_id"}))
 
 
 class ExportPrepareOut(BaseModel):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 from ipaddress import ip_network
@@ -13,6 +14,28 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from pdftr.domain.admin import AdminPassword
+
+_CONFIG_SECRET_KEY_ERROR = "PDFTR_CONFIG_SECRET_KEY 必须是 32 字节 URL-safe Base64 密钥"
+
+
+def decode_config_secret_key(raw: str) -> bytes | None:
+    """解码 32 字节（256-bit）URL-safe Base64 配置加密主密钥；空字符串返回 None。"""
+    if raw == "":
+        return None
+    if any(ch.isspace() for ch in raw):
+        raise ValueError(_CONFIG_SECRET_KEY_ERROR)
+    padded = raw if "=" in raw else raw + "=" * (-len(raw) % 4)
+    try:
+        key = base64.b64decode(padded.encode("ascii"), altchars=b"-_", validate=True)
+    except (ValueError, UnicodeEncodeError) as exc:
+        raise ValueError(_CONFIG_SECRET_KEY_ERROR) from exc
+    if len(key) != 32:
+        raise ValueError(_CONFIG_SECRET_KEY_ERROR)
+    canonical_padded = base64.urlsafe_b64encode(key).decode("ascii")
+    canonical_unpadded = canonical_padded.rstrip("=")
+    if raw not in (canonical_padded, canonical_unpadded):
+        raise ValueError(_CONFIG_SECRET_KEY_ERROR)
+    return key
 
 
 class Settings(BaseSettings):
@@ -56,9 +79,10 @@ class Settings(BaseSettings):
     font_dir: Path = Path("fonts")  # 导出 PDF 与网页阅读器用的字体（scripts/fetch_fonts.py 生成）
     cors_origins: list[str] = []  # 开发时前端单独运行可填 ["http://localhost:5173"]
 
-    # 明细采集必须由部署者显式开启；管理密码摘要不出现在配置接口或对象 repr 中。
+    # 明细采集必须由部署者显式开启；管理密码摘要与配置主密钥不出现在配置接口或对象 repr 中。
     submission_audit_enabled: bool = False
     admin_password_hash: str = Field(default="", repr=False)
+    config_secret_key: str = Field(default="", repr=False)
     admin_origin: str = ""
     admin_path: str = "/weandy"
     admin_session_days: int = Field(default=30, ge=1, le=30)
@@ -77,6 +101,13 @@ class Settings(BaseSettings):
     def validate_admin_password_hash(cls, value: str) -> str:
         if value:
             AdminPassword.parse(value)
+        return value
+
+    @field_validator("config_secret_key")
+    @classmethod
+    def validate_config_secret_key(cls, value: str) -> str:
+        if value:
+            decode_config_secret_key(value)
         return value
 
     @field_validator("admin_origin")

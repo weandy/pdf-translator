@@ -6,12 +6,21 @@
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 from pdftr.domain.ir import Revision, Segment, SegmentStatus
 from pdftr.domain.job import Job, JobStatus
-from pdftr.domain.stats import StatsOut
-from pdftr.domain.submissions import SubmissionContext, SubmissionPage, SubmissionSearch
+from pdftr.domain.stats import AdminStatsSnapshot, OverviewFailureSummary, StatsOut
+from pdftr.domain.submissions import (
+    SubmissionContext,
+    SubmissionPage,
+    SubmissionSearch,
+    clean_title,
+    failure_details,
+)
+from pdftr.domain.user_agent import parse_user_agent
 from pdftr.storage.connection import connect, retry_busy, write_tx
 from pdftr.storage.stats import SCHEMA as STATS_SCHEMA
 from pdftr.storage.stats import SqliteStats, utc_now
@@ -85,35 +94,44 @@ class SqliteStore:
         """首次成功接收的任务、公开统计、可选账本必须原子提交。"""
         now = utc_now()
         job.updated_at = now
+        client = parse_user_agent(context.user_agent) if context is not None and context.user_agent else None
         with self._lock, write_tx(self._db):
             self._db.execute(
                 "INSERT INTO jobs (id, status, data, created_at) VALUES (?, ?, ?, ?)",
                 (job.id, job.status, job.model_dump_json(), job.created_at.isoformat()),
             )
-            self._stats.job_saved(job, now)
+            if client is not None:
+                self._stats.job_saved(job, now, client=client)
+            else:
+                self._stats.job_saved(job, now)
             if self._submission_audit_enabled:
                 self._submissions.create(job, context, now)
 
     @retry_busy
-    def save_job(self, job: Job) -> None:
+    def save_job(self, job: Job, context: SubmissionContext | None = None) -> None:
         now = utc_now()
         job.updated_at = now
+        client = parse_user_agent(context.user_agent) if context is not None and context.user_agent else None
         with self._lock, write_tx(self._db):
             completed = self._db.execute("SELECT completed FROM analytics_jobs WHERE job_id = ?", (job.id,)).fetchone()
             self._db.execute(
                 "INSERT OR REPLACE INTO jobs (id, status, data, created_at) VALUES (?, ?, ?, ?)",
                 (job.id, job.status, job.model_dump_json(), job.created_at.isoformat()),
             )
-            self._stats.job_saved(job, now)
+            if client is not None:
+                self._stats.job_saved(job, now, client=client)
+            else:
+                self._stats.job_saved(job, now)
             if self._submission_audit_enabled:
                 # 统计去重状态在停采时也保留，避免恢复采集后伪造真正的首次完成时间。
                 first_completion = job.status is JobStatus.DONE and not (completed and completed[0])
                 self._submissions.job_saved(job, now, first_completion=first_completion)
 
     @retry_busy
-    def record_visit(self, event_id: str, visitor_id: str) -> None:
+    def record_visit(self, event_id: str, visitor_id: str, *, user_agent: str | None = None) -> None:
+        client = parse_user_agent(user_agent)
         with self._lock, write_tx(self._db):
-            self._stats.visit(event_id, visitor_id, utc_now())
+            self._stats.visit(event_id, visitor_id, utc_now(), client=client)
 
     @contextmanager
     def _read_snapshot(self) -> Iterator[None]:
@@ -128,6 +146,78 @@ class SqliteStore:
     def stats(self, days: int = 7) -> StatsOut:
         with self._lock, self._read_snapshot():
             return self._stats.summary(days, utc_now())
+
+    def _recent_failures_from_jobs(
+        self, now: datetime, *, hours: int = 24, limit: int = 5
+    ) -> tuple[int, list[OverviewFailureSummary]]:
+        cutoff = now - timedelta(hours=hours)
+        rows = self._db.execute("SELECT data FROM jobs WHERE status = ?", (JobStatus.FAILED,)).fetchall()
+        matched: list[tuple[datetime, Job]] = []
+        for row in rows:
+            try:
+                job = Job.model_validate_json(row[0])
+            except (TypeError, ValueError):
+                continue
+            failed_at = job.updated_at or job.created_at
+            if failed_at >= cutoff:
+                matched.append((failed_at, job))
+        matched.sort(key=lambda item: (item[0], item[1].id), reverse=True)
+        summaries: list[OverviewFailureSummary] = []
+        for failed_at, job in matched[:limit]:
+            _, reason, retryable, _ = failure_details(job, failed_at)
+            title = clean_title(job.filename, filename=True) or "未知标题"
+            summaries.append(
+                OverviewFailureSummary(
+                    job_id=job.id,
+                    title=title,
+                    submitted_at=job.created_at,
+                    channel_mode=job.channel_mode,
+                    failure_reason=reason or "任务处理失败，可重试；如持续失败请检查服务日志",
+                    retryable=retryable,
+                )
+            )
+        return len(matched), summaries
+
+    @retry_busy
+    def admin_overview_stats(self, days: int = 7) -> AdminStatsSnapshot:
+        with self._lock, self._read_snapshot():
+            now = utc_now()
+            today_submitted, today_completed, period_submitted, period_completed = self._stats.overview_counts(
+                days, now
+            )
+            failed_24h = self._stats.failed_count_since(now, hours=24)
+            if self._submission_audit_enabled:
+                _, raw_failures = self._submissions.recent_failures(now, hours=24, limit=5)
+                recent_failures = [
+                    OverviewFailureSummary(
+                        job_id=rec.job_id,
+                        title=rec.title,
+                        submitted_at=rec.submitted_at,
+                        channel_mode=rec.channel_mode,
+                        failure_reason=rec.failure_reason or "任务处理失败，可重试；如持续失败请检查服务日志",
+                        retryable=rec.retryable,
+                    )
+                    for rec in raw_failures
+                ]
+            else:
+                _, recent_failures = self._recent_failures_from_jobs(now, hours=24, limit=5)
+            breakdown = self._stats.client_breakdown(days, now, metric_type="job")
+            breakdown_source: Literal["job", "visit"] = "job"
+            if breakdown.total == 0:
+                visit_breakdown = self._stats.client_breakdown(days, now, metric_type="visit")
+                if visit_breakdown.total > 0:
+                    breakdown = visit_breakdown
+                    breakdown_source = "visit"
+            return AdminStatsSnapshot(
+                today_submitted=today_submitted,
+                today_completed=today_completed,
+                period_submitted=period_submitted,
+                period_completed=period_completed,
+                failed_24h=failed_24h,
+                recent_failures=recent_failures,
+                client_breakdown=breakdown,
+                client_breakdown_source=breakdown_source,
+            )
 
     @retry_busy
     def search_submissions(self, query: SubmissionSearch) -> SubmissionPage:

@@ -1,8 +1,21 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type SubmitEvent } from "react";
 
-import { authHeaders, clearKeys, saveSettings, useSettings, type Settings } from "@/entities/settings/model";
-import { api, type LlmCheck } from "@/shared/api/client";
+import {
+  authHeaders,
+  bindKeysForSave,
+  clearKeys,
+  confirmParserKeyBinding,
+  effectiveLlmTarget,
+  isHttpUrl,
+  llmKeyNeedsRebind,
+  normalizeBoundUrl,
+  parserKeyNeedsRebind,
+  saveSettings,
+  useSettings,
+  type Settings,
+} from "@/entities/settings/model";
+import { api, type LlmCheck, type LlmPreset } from "@/shared/api/client";
 
 const BASE_URLS = { openai: "https://api.deepseek.com", anthropic: "https://api.anthropic.com" } as const;
 
@@ -13,6 +26,7 @@ interface Props {
 export function SettingsPanel({ onClose }: Props) {
   const saved = useSettings();
   const [form, setForm] = useState<Settings>(saved);
+  const [keyClearedNotice, setKeyClearedNotice] = useState<string | null>(null);
   const dirty = JSON.stringify(form) !== JSON.stringify(saved);
   const { data: config } = useQuery({
     queryKey: ["config"],
@@ -31,6 +45,8 @@ export function SettingsPanel({ onClose }: Props) {
   });
 
   const protocol = form.protocol || config?.default_protocol || "openai";
+  const needsRebind = llmKeyNeedsRebind(form, config);
+  const parserNeedsRebind = parserKeyNeedsRebind(form, config);
   const [models, setModels] = useState<{ list: string[]; error: string | null; busy: boolean; loaded?: boolean }>({
     list: [],
     error: null,
@@ -46,22 +62,116 @@ export function SettingsPanel({ onClose }: Props) {
     },
     [],
   );
-  // 用面板里还没保存的值请求；没填 Key 且用的是本站默认服务时，后端用本站的共享 Key
-  const headers = () =>
-    Object.fromEntries(Object.entries(authHeaders({ ...form, protocol })).filter(([key]) => key.startsWith("X-LLM-")));
-  const canAsk = Boolean(form.llmKey || (config?.server_has_llm_key && !form.baseUrl && !form.protocol));
-  const set = <K extends keyof Settings>(key: K, value: Settings[K]) => {
-    if (key === "protocol" || key === "baseUrl" || key === "llmKey") {
+  const abortProbes = (resetModels: boolean, resetCheck: boolean) => {
+    if (resetModels) {
       modelRequest.current?.abort();
       modelRequest.current = null;
       setModels({ list: [], error: null, busy: false });
     }
-    if (key === "protocol" || key === "baseUrl" || key === "llmKey" || key === "model") {
+    if (resetCheck) {
       checkRequest.current?.abort();
       checkRequest.current = null;
       setCheck(null);
     }
+  };
+  // 用面板里还没保存的值请求；没填 Key 且用的是本站默认服务时，后端用本站的共享 Key
+  const headers = () =>
+    Object.fromEntries(Object.entries(authHeaders({ ...form, protocol })).filter(([key]) => key.startsWith("X-LLM-")));
+  // 只要个人 Key 处于待重新绑定状态，强制禁止探测，绝不借 server_has_llm_key 旁路放行
+  const canAsk =
+    !needsRebind &&
+    Boolean(form.llmKey.trim() || (config?.server_has_llm_key && !form.baseUrl && !form.protocol));
+  const set = <K extends keyof Settings>(key: K, value: Settings[K]) => {
+    if (key === "protocol" || key === "baseUrl" || key === "llmKey") {
+      abortProbes(true, true);
+    } else if (key === "model") {
+      abortProbes(false, true);
+    }
+    if (key === "llmKey") {
+      const nextKey = value as string;
+      setKeyClearedNotice(null);
+      setForm((f) => {
+        if (!nextKey.trim()) {
+          return { ...f, llmKey: nextKey, llmKeyBoundUrl: "", llmKeyBoundProtocol: "" };
+        }
+        const target = effectiveLlmTarget(f, config);
+        return {
+          ...f,
+          llmKey: nextKey,
+          llmKeyBoundUrl: normalizeBoundUrl(target.url),
+          llmKeyBoundProtocol: target.protocol,
+        };
+      });
+      return;
+    }
+    if (key === "parserKey") {
+      const nextParserKey = value as string;
+      setForm((f) => {
+        if (!nextParserKey.trim()) {
+          return { ...f, parserKey: nextParserKey, parserKeyBoundUrl: "" };
+        }
+        const defaultMineruUrl = config?.default_mineru_base_url?.trim() ?? "";
+        return {
+          ...f,
+          parserKey: nextParserKey,
+          parserKeyBoundUrl: isHttpUrl(defaultMineruUrl) ? normalizeBoundUrl(defaultMineruUrl) : "",
+        };
+      });
+      return;
+    }
+    if (key === "baseUrl" || key === "protocol") {
+      const nextForm = { ...form, [key]: value };
+      const prevTarget = effectiveLlmTarget(form, config);
+      const nextTarget = effectiveLlmTarget(nextForm, config);
+      const targetChanged =
+        normalizeBoundUrl(prevTarget.url) !== normalizeBoundUrl(nextTarget.url) ||
+        prevTarget.protocol !== nextTarget.protocol;
+      if (form.llmKey.trim() && targetChanged) {
+        setKeyClearedNotice("切换服务商/协议已清空旧 API Key，请填入新服务商的 Key。");
+        setForm({
+          ...nextForm,
+          llmKey: "",
+          llmKeyBoundUrl: "",
+          llmKeyBoundProtocol: "",
+        });
+      } else {
+        setForm(nextForm);
+      }
+      return;
+    }
     setForm((f) => ({ ...f, [key]: value }));
+  };
+  const presets = config?.llm_presets ?? [];
+  const applyPreset = (preset: LlmPreset) => {
+    abortProbes(true, true);
+    const prevTarget = effectiveLlmTarget(form, config);
+    const targetChanged =
+      normalizeBoundUrl(prevTarget.url) !== normalizeBoundUrl(preset.base_url) ||
+      prevTarget.protocol !== preset.protocol;
+    const shouldClearKey = Boolean(form.llmKey.trim() && targetChanged);
+    if (shouldClearKey) {
+      setKeyClearedNotice("切换服务商/协议已清空旧 API Key，请填入新服务商的 Key。");
+    }
+    setForm({
+      ...form,
+      protocol: preset.protocol,
+      baseUrl: preset.base_url,
+      model: preset.models?.[0] ?? "",
+      ...(shouldClearKey ? { llmKey: "", llmKeyBoundUrl: "", llmKeyBoundProtocol: "" } : {}),
+    });
+  };
+  const confirmCurrentTarget = () => {
+    const target = effectiveLlmTarget(form, config);
+    setKeyClearedNotice(null);
+    setForm((f) => ({
+      ...f,
+      llmKeyBoundUrl: normalizeBoundUrl(target.url),
+      llmKeyBoundProtocol: target.protocol,
+    }));
+  };
+  const confirmParserTarget = () => {
+    if (!config) return;
+    setForm((f) => confirmParserKeyBinding(f, config));
   };
   const sharedParser = Boolean(config?.server_has_parser_token);
   const parserFields = (
@@ -76,6 +186,21 @@ export function SettingsPanel({ onClose }: Props) {
           placeholder={sharedParser ? "留空使用本站的版面解析服务" : "在 mineru.net 申请 API Token"}
         />
       </label>
+      {parserNeedsRebind && config?.default_mineru_base_url && (
+        <div className="key-rebind-notice" role="alert">
+          <p>
+            当前个人 MinerU Token 尚未绑定到当前解析服务地址（目标：{config.default_mineru_base_url}），请确认目标地址或清空后重新填写。
+          </p>
+          <div className="row-actions">
+            <button type="button" onClick={confirmParserTarget}>
+              确认发送到此地址
+            </button>
+            <button type="button" className="quiet danger" onClick={() => set("parserKey", "")}>
+              清空旧 Token
+            </button>
+          </div>
+        </div>
+      )}
       <p className="hint">
         在{" "}
         <a href="https://mineru.net/apiManage" target="_blank" rel="noreferrer">
@@ -108,6 +233,7 @@ export function SettingsPanel({ onClose }: Props) {
     }
   };
   const runCheck = async () => {
+    if (!canAsk) return;
     checkRequest.current?.abort();
     const controller = new AbortController();
     checkRequest.current = controller;
@@ -129,7 +255,7 @@ export function SettingsPanel({ onClose }: Props) {
 
   const submit = (e: SubmitEvent<HTMLFormElement>) => {
     e.preventDefault();
-    saveSettings(form);
+    saveSettings(bindKeysForSave(form, config));
     onClose();
   };
 
@@ -161,6 +287,30 @@ export function SettingsPanel({ onClose }: Props) {
               1
             </span>
             <div className="step-body">
+              {presets.length > 0 && (
+                <div className="preset-bar" role="group" aria-label="常用服务商快捷预设">
+                  <span className="preset-label">常用服务商快捷预设</span>
+                  <div className="preset-list">
+                    {presets.map((preset) => {
+                      const active =
+                        protocol === preset.protocol &&
+                        (form.baseUrl === preset.base_url ||
+                          (!form.baseUrl && config?.default_base_url === preset.base_url));
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          className={active ? "preset-btn on" : "preset-btn"}
+                          aria-pressed={active}
+                          onClick={() => applyPreset(preset)}
+                        >
+                          {preset.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               <label className="field">
                 <span>翻译服务 API Key</span>
                 <input
@@ -171,6 +321,31 @@ export function SettingsPanel({ onClose }: Props) {
                   placeholder={config?.server_has_llm_key ? "留空则使用本站提供的 Key" : "sk-..."}
                 />
               </label>
+              {keyClearedNotice && (
+                <p className="key-rebind-notice" role="status">
+                  {keyClearedNotice}
+                </p>
+              )}
+              {needsRebind && config?.default_base_url && (
+                <div className="key-rebind-notice" role="alert">
+                  <p>
+                    当前个人 API Key 尚未绑定到新默认服务地址（目标：{config.default_base_url}），请确认目标地址或重新填写后再测试或保存。
+                  </p>
+                  <div className="row-actions">
+                    <button type="button" onClick={confirmCurrentTarget}>
+                      确认发送到此地址
+                    </button>
+                    <button type="button" className="quiet danger" onClick={() => set("llmKey", "")}>
+                      清空旧 Key
+                    </button>
+                  </div>
+                </div>
+              )}
+              {form.llmKey && !form.baseUrl && config?.default_base_url && (
+                <p className="hint preset-target-hint" role="note">
+                  当前未填写自定义接口地址，你的 API Key 将发往默认服务商地址：{config.default_base_url}
+                </p>
+              )}
               <p className="hint">
                 默认使用 DeepSeek：在{" "}
                 <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer">
@@ -276,7 +451,7 @@ export function SettingsPanel({ onClose }: Props) {
                   ? "当前选择：使用你自己的 MinerU Token。"
                   : "本站已提供 MinerU 版面解析，无需再填写 Token。"}
               </p>
-              <details className="more">
+              <details className="more" open={parserNeedsRebind || undefined}>
                 <summary>使用自己的 MinerU Token（可选）</summary>
                 {parserFields}
               </details>
@@ -356,8 +531,16 @@ export function SettingsPanel({ onClose }: Props) {
             className="quiet danger"
             onClick={() => {
               clearKeys();
-              set("llmKey", "");
-              set("parserKey", "");
+              abortProbes(true, true);
+              setKeyClearedNotice(null);
+              setForm((f) => ({
+                ...f,
+                llmKey: "",
+                llmKeyBoundUrl: "",
+                llmKeyBoundProtocol: "",
+                parserKey: "",
+                parserKeyBoundUrl: "",
+              }));
             }}
           >
             清除已保存的 Key

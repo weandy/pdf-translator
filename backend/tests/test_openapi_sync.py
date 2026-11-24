@@ -11,7 +11,11 @@ FRONTEND_SCHEMA = Path(__file__).parents[2] / "frontend" / "openapi.json"
 
 
 def test_frontend_openapi_is_up_to_date(tmp_path: Path):
-    current = create_app(build_container(Settings(data_dir=tmp_path, glossary_sources=""))).openapi()
+    container = build_container(Settings(data_dir=tmp_path, glossary_sources=""))
+    try:
+        current = create_app(container).openapi()
+    finally:
+        container.close()
     committed = json.loads(FRONTEND_SCHEMA.read_text(encoding="utf-8"))
     assert current == committed, (
         "接口已变更：请运行 `uv run python scripts/export_openapi.py ../frontend/openapi.json` "

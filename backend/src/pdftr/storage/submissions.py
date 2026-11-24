@@ -1,7 +1,7 @@
 """独立于任务 TTL 的提交账本；调用者负责数据库锁、事务与采集开关。"""
 
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from pdftr.domain.job import Job, JobStatus
 from pdftr.domain.submissions import (
@@ -12,6 +12,7 @@ from pdftr.domain.submissions import (
     clean_title,
     failure_details,
 )
+from pdftr.domain.user_agent import parse_user_agent
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS submission_audit (
@@ -31,7 +32,14 @@ CREATE TABLE IF NOT EXISTS submission_audit (
     failure_code TEXT,
     failure_reason TEXT,
     retryable INTEGER,
-    failure_updated_at TEXT
+    failure_updated_at TEXT,
+    channel_mode TEXT,
+    model_name TEXT,
+    fallback_used INTEGER,
+    user_agent TEXT,
+    client_device TEXT,
+    client_os TEXT,
+    client_browser TEXT
 );
 CREATE INDEX IF NOT EXISTS submission_audit_time ON submission_audit (submitted_at DESC, job_id DESC);
 CREATE INDEX IF NOT EXISTS submission_audit_ip ON submission_audit (submitter_ip, submitted_at DESC, job_id DESC);
@@ -39,7 +47,8 @@ CREATE INDEX IF NOT EXISTS submission_audit_ip ON submission_audit (submitter_ip
 _COLUMNS = (
     "job_id, title, title_source, submitted_at, submitter_ip, ip_source, page_count, status, "
     "first_completed_at, updated_at, record_source, notice_version, current_stage, failure_code, "
-    "failure_reason, retryable, failure_updated_at"
+    "failure_reason, retryable, failure_updated_at, channel_mode, model_name, fallback_used, "
+    "user_agent, client_device, client_os, client_browser"
 )
 
 _MIGRATION_COLUMNS = {
@@ -48,6 +57,13 @@ _MIGRATION_COLUMNS = {
     "failure_reason": "TEXT",
     "retryable": "INTEGER",
     "failure_updated_at": "TEXT",
+    "channel_mode": "TEXT",
+    "model_name": "TEXT",
+    "fallback_used": "INTEGER",
+    "user_agent": "TEXT",
+    "client_device": "TEXT",
+    "client_os": "TEXT",
+    "client_browser": "TEXT",
 }
 
 
@@ -88,15 +104,42 @@ class SqliteSubmissions:
     def __init__(self, db: sqlite3.Connection) -> None:
         self.db = db
 
+    @staticmethod
+    def _row_to_record(row: tuple[object, ...]) -> SubmissionRecord:
+        fields = tuple(SubmissionRecord.model_fields)
+        values = dict(zip(fields, row, strict=True))
+        if values["retryable"] is not None:
+            values["retryable"] = bool(values["retryable"])
+        if values["fallback_used"] is not None:
+            values["fallback_used"] = bool(values["fallback_used"])
+        return SubmissionRecord.model_validate(values)
+
     def create(self, job: Job, context: SubmissionContext | None, now: datetime, *, backfill: bool = False) -> bool:
         context = context or SubmissionContext()
         title = clean_title(job.filename, filename=True)
         # 补录没有可靠的首次完成时间，不能用最后更新时间猜测。
         completed = timestamp(now) if job.status is JobStatus.DONE and not backfill else None
         code, reason, retryable, failure_at = failure_details(job, now)
+        if backfill:
+            channel_mode = None
+            model_name = None
+            fallback_used = None
+            user_agent = None
+            client_device = None
+            client_os = None
+            client_browser = None
+        else:
+            channel_mode = context.channel_mode
+            model_name = (job.model or context.model_name).strip() or None
+            fallback_used = int(bool(getattr(job, "fallback_used", False)))
+            client = parse_user_agent(context.user_agent)
+            user_agent = client.raw or None
+            client_device = client.device
+            client_os = client.os
+            client_browser = client.browser
         return bool(
             self.db.execute(
-                f"INSERT OR IGNORE INTO submission_audit ({_COLUMNS}) VALUES ({', '.join('?' for _ in range(17))})",
+                f"INSERT OR IGNORE INTO submission_audit ({_COLUMNS}) VALUES ({', '.join('?' for _ in range(24))})",
                 (
                     job.id,
                     title or "未知标题",
@@ -115,16 +158,28 @@ class SqliteSubmissions:
                     reason,
                     None if retryable is None else int(retryable),
                     failure_at,
+                    channel_mode,
+                    model_name,
+                    fallback_used,
+                    user_agent,
+                    client_device,
+                    client_os,
+                    client_browser,
                 ),
             ).rowcount
         )
 
-    def job_saved(self, job: Job, now: datetime, *, first_completion: bool) -> None:
+    def job_saved(self, job: Job, now: datetime, *, first_completion: bool = False) -> None:
         code, reason, retryable, failure_at = failure_details(job, now)
+        model_name = job.model.strip() or None
+        fallback_flag = 1 if getattr(job, "fallback_used", False) else 0
         self.db.execute(
             "UPDATE submission_audit SET status = ?, updated_at = ?, "
             "first_completed_at = COALESCE(first_completed_at, ?), current_stage = ?, failure_code = ?, "
-            "failure_reason = ?, retryable = ?, failure_updated_at = ? WHERE job_id = ?",
+            "failure_reason = ?, retryable = ?, failure_updated_at = ?, "
+            "model_name = COALESCE(?, model_name), "
+            "fallback_used = CASE WHEN ? = 1 THEN 1 ELSE fallback_used END "
+            "WHERE job_id = ?",
             (
                 job.status,
                 timestamp(now),
@@ -134,9 +189,14 @@ class SqliteSubmissions:
                 reason,
                 None if retryable is None else int(retryable),
                 failure_at,
+                model_name,
+                fallback_flag,
                 job.id,
             ),
         )
+
+    def sync(self, job: Job, now: datetime, *, first_completion: bool = False) -> None:
+        self.job_saved(job, now, first_completion=first_completion)
 
     def update_title(self, job_id: str, title: str, now: datetime) -> None:
         if title := clean_title(title):
@@ -162,19 +222,22 @@ class SqliteSubmissions:
         if end:
             conditions.append("submitted_at < ?")
             params.append(timestamp(end))
+        if query.channel_mode is not None:
+            conditions.append("channel_mode = ?")
+            params.append(query.channel_mode)
+        if query.status is not None:
+            conditions.append("status = ?")
+            params.append(query.status)
+        if query.client_device is not None:
+            conditions.append("client_device = ?")
+            params.append(query.client_device)
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
         total = self.db.execute(f"SELECT COUNT(*) FROM submission_audit{where}", params).fetchone()[0]
         rows = self.db.execute(
             f"SELECT {_COLUMNS} FROM submission_audit{where} ORDER BY submitted_at DESC, job_id DESC LIMIT ? OFFSET ?",
             [*params, query.page_size, (query.page - 1) * query.page_size],
         ).fetchall()
-        fields = tuple(SubmissionRecord.model_fields)
-        items = []
-        for row in rows:
-            values = dict(zip(fields, row, strict=True))
-            if values["retryable"] is not None:
-                values["retryable"] = bool(values["retryable"])
-            items.append(SubmissionRecord.model_validate(values))
+        items = [self._row_to_record(row) for row in rows]
         return SubmissionPage(
             generated_at=now,
             total=total,
@@ -182,3 +245,20 @@ class SqliteSubmissions:
             page_size=query.page_size,
             items=items,
         )
+
+    def recent_failures(self, now: datetime, *, hours: int = 24, limit: int = 5) -> tuple[int, list[SubmissionRecord]]:
+        cutoff = timestamp(now - timedelta(hours=hours))
+        total = int(
+            self.db.execute(
+                "SELECT COUNT(*) FROM submission_audit "
+                "WHERE status = 'failed' AND COALESCE(failure_updated_at, updated_at) >= ?",
+                (cutoff,),
+            ).fetchone()[0]
+        )
+        rows = self.db.execute(
+            f"SELECT {_COLUMNS} FROM submission_audit "
+            "WHERE status = 'failed' AND COALESCE(failure_updated_at, updated_at) >= ? "
+            "ORDER BY COALESCE(failure_updated_at, updated_at) DESC, job_id DESC LIMIT ?",
+            (cutoff, limit),
+        ).fetchall()
+        return total, [self._row_to_record(row) for row in rows]

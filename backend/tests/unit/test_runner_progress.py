@@ -69,7 +69,7 @@ def test_paddle_keeps_jsonl_while_selected_pages_stay_in_the_pipeline(tmp_path):
             assert pages is None
             return await super().parse(pdf, pages, raw_dir, on_progress)
 
-        async def _run(self, data, name, progress):
+        async def _run(self, pdf, progress):
             return json.dumps({"result": {"layoutParsingResults": [{"prunedResult": {"width": 595}}]}})
 
     pipeline = build_container(

@@ -92,3 +92,79 @@ def test_post_checks_disk_space_before_creating_staging_file(setup_upload, monke
     response = post_pdf(client, b"%PDF-synthetic")
     assert response.status_code == 503 and "存储空间不足" in response.json()["detail"]
     assert not sizes
+
+
+def test_post_jobs_reserves_channel_slot_before_multipart_read(tmp_path, monkeypatch) -> None:
+    import asyncio
+    import threading
+
+    import httpx2
+
+    # 将 BYOK 通道总容量限制为 2（max_concurrent_jobs=1 + max_queued_jobs=1）
+    c = build_container(
+        Settings(
+            _env_file=None,  # type: ignore[call-arg]
+            data_dir=tmp_path,
+            glossary_sources="",
+            max_concurrent_jobs=1,
+            max_queued_jobs=1,
+            min_free_disk_mb=0,
+        )
+    )
+    entered_two = threading.Event()
+    release_body = threading.Event()
+    in_flight = 0
+    max_in_flight = 0
+    guard = threading.Lock()
+    orig_receive = usecases.receive_upload
+
+    async def slow_receive(pipeline, upload, *args, **kwargs):
+        nonlocal in_flight, max_in_flight
+        with guard:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            if in_flight >= 2:
+                entered_two.set()
+        try:
+            await asyncio.to_thread(release_body.wait, 2.0)
+            return await orig_receive(pipeline, upload, *args, **kwargs)
+        finally:
+            with guard:
+                in_flight -= 1
+
+    monkeypatch.setattr(usecases, "receive_upload", slow_receive)
+    app = create_app(c)
+
+    async def scenario() -> None:
+        transport = httpx2.ASGITransport(app=app)
+        async with httpx2.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
+            async def send_one() -> httpx2.Response:
+                return await client.post(
+                    "/api/jobs",
+                    files={"file": ("bad.pdf", b"NOTPDF", "application/pdf")},
+                    data={"options": '{"cloud_consent":true}'},
+                    headers=HEADERS,
+                )
+
+            t1 = asyncio.create_task(send_one())
+            t2 = asyncio.create_task(send_one())
+            assert await asyncio.to_thread(entered_two.wait, 2.0)
+            # t1、t2 占满 2 席仍在读取阶段时并发打入两个请求：必须在读取请求体前直接被中间件 503 拒绝
+            r3, r4 = await asyncio.gather(send_one(), send_one())
+            assert r3.status_code == 503
+            assert r4.status_code == 503
+            release_body.set()
+            r1, r2 = await asyncio.gather(t1, t2)
+            assert r1.status_code == 400
+            assert r2.status_code == 400
+            # 名额已准确归还：后续请求可正常进入（不被残留占位 503 锁死）
+            r5 = await send_one()
+            assert r5.status_code == 400
+
+    try:
+        asyncio.run(scenario())
+        assert max_in_flight == 2
+        assert c.pipeline.receiving == 0
+    finally:
+        c.close()

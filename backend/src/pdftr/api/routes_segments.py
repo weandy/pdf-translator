@@ -2,14 +2,13 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
 
-from pdftr.api.deps import pipeline, secrets
+from pdftr.api.deps import container, pipeline, resolve_existing_job_secrets
 from pdftr.api.schemas import EditIn, RetranslateIn, SegmentOut
 from pdftr.pipeline import usecases
 from pdftr.pipeline.runner import Pipeline
-from pdftr.pipeline.secrets import Secrets
 
 router = APIRouter(prefix="/api/segments", tags=["segments"])
 
@@ -22,10 +21,27 @@ def edit_segment(segment_id: str, body: EditIn, p: PipelineDep) -> SegmentOut:
 
 
 @router.post("/{segment_id}/retranslate", response_model=SegmentOut)
-async def retranslate(
-    segment_id: str, body: RetranslateIn, p: PipelineDep, sec: Annotated[Secrets, Depends(secrets)]
-) -> SegmentOut:
-    return SegmentOut.of(await usecases.retranslate_segment(p, segment_id, body.quality, sec, body.user_terms))
+async def retranslate(segment_id: str, body: RetranslateIn, request: Request, p: PipelineDep) -> SegmentOut:
+    c = container(request)
+    sys_cfg = c.runtime_config.snapshot().data.system if c.runtime_config is not None else None
+    maintenance_mode = sys_cfg.maintenance_mode if sys_cfg is not None else False
+    site_notice = sys_cfg.site_notice if sys_cfg is not None else ""
+    seg = p.deps.store.segment(segment_id)
+    if seg is None:
+        raise usecases.NotFound("段落不存在")
+    job = usecases.get_job(p, seg.job_id)
+    sec = resolve_existing_job_secrets(request, job, for_retranslate=True)
+    return SegmentOut.of(
+        await usecases.retranslate_segment(
+            p,
+            segment_id,
+            body.quality,
+            sec,
+            body.user_terms,
+            maintenance_mode=maintenance_mode,
+            site_notice=site_notice,
+        )
+    )
 
 
 @router.post("/revisions/{revision_id}/revert", response_model=SegmentOut)

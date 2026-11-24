@@ -112,6 +112,8 @@ GitHub 加速只作用于仓库和脚本下载，Docker 基础镜像和 Python/N
 
 在 `backend/` 执行 `uv run python scripts/hash_admin_password.py`，交互输入至少 16 字符的管理密码，将输出的哈希用**单引号**包裹后写入部署 `.env` 的 `PDFTR_ADMIN_PASSWORD_HASH`；不要将明文密码写入命令行或仓库。设置 `PDFTR_ADMIN_ORIGIN=https://你的域名`（无尾斜杠或路径）后可启用管理登录。Cookie 仅在 HTTPS 下工作，会话默认有效 30 天，可通过 `PDFTR_ADMIN_SESSION_DAYS` 设置为 1～30 天；不会自动滑动续期，退出或更换密码哈希可使会话失效。
 
+在管理后台热配置并加密保存免费翻译渠道 API Key、解析服务 Token 或出站代理时，服务端使用 AES-256-GCM 加密落库：**默认无需手动配置**，未填写 `PDFTR_CONFIG_SECRET_KEY` 时服务首次启动会自动在数据目录生成并持久化 32 字节本地主密钥文件（`.config_secret.key`，权限 `0600`）。如需将主密钥与数据目录物理分离，也可在 `backend/` 执行 `uv run python scripts/generate_config_key.py` 并将结果写入 `.env` 的 `PDFTR_CONFIG_SECRET_KEY` 显式覆盖。如后续更换主密钥，原有加密存储的密文会自动降级停用并在后台展示告警（不会阻止服务启动），在管理后台重新填写并保存即可恢复。
+
 采集需额外设置 `PDFTR_SUBMISSION_AUDIT_ENABLED=true`，并按[可信代理与发布方案](docs/07-statistics-and-submission-audit-design.md)核验 OpenResty → Caddy → FastAPI 的地址链，配置 `PDFTR_WEB_TRUSTED_PROXIES` 与 `PDFTR_TRUSTED_PROXY_CIDRS`。不能照抄其他机器的 Docker 地址，也不要信任所有私网或任意 X-Forwarded-For。缺少管理、HTTPS Origin 或可信代理配置时，开启采集将拒绝启动。上传处会明确显示长期留存说明。
 
 启用后长期记录论文标题（识别失败则回退去路径、去扩展名的上传名）、提交时间、提交 IP、页数与状态；正文/PDF仍按保留期清理。删除任务不会删除该元数据。现有任务可由部署者显式补录标题，旧提交 IP 和首次完成时间无法可靠补回。关闭采集停止新增及更新，不自动删除既有账本。
@@ -139,7 +141,7 @@ PyMuPDF 对齐文字与坐标，翻译正文并生成背景页
 - 公开统计保存聚合计数与匿名去重信息。若部署者开启管理员提交明细，会按上传处的说明长期保存标题、提交 IP 和少量任务元数据，仅供管理员查看；不在长期账本中保存论文内容或 API Key。宿主机反向代理日志由部署者另行管理。
 - 请勿上传涉密、未公开或受第三方协议限制的文档。
 
-当前 Docker Compose 部署使用云端解析，不需要 GPU，也不会在服务器上运行本地大模型。后端仍保留 PaddleOCR-VL 适配器，但前端不开放该选项；默认解析器是 MinerU。
+当前 Docker Compose 部署使用云端解析，不需要 GPU，也不会在服务器上运行本地大模型。后端仍保留 PaddleOCR-VL 适配器，默认关闭，可由管理员在管理后台「服务设置」中按需向公众开放；默认解析器是 MinerU。
 
 任务、译文段落、修改记录、翻译缓存、统计和可选的提交账本保存在 SQLite `/data/app.db`，PDF等文件在 `/data/jobs/`。Docker 使用命名数据卷持久化 `/data`，无需额外部署 MySQL、PostgreSQL 或 Redis。到期清理失败会排队重试并巡检孤儿目录；运行中的任务受保护。手动删除任务后的共享译文缓存仍按缓存保留期清理，不承诺立即删除所有共享命中。
 
@@ -257,7 +259,7 @@ docker compose \
 | `PDFTR_LLM_API_KEY` | 空 | 共享翻译服务 Key，可留空改用网页设置 |
 | `PDFTR_MINERU_API_TOKEN` | 空 | 共享 MinerU Token，可留空改用网页设置 |
 | `PDFTR_MINERU_PROXY` | 空 | MinerU 上传、轮询和下载代理 |
-| `PDFTR_PADDLE_TOKEN` | 空 | 后端保留的 PaddleOCR Token，前端暂不开放 |
+| `PDFTR_PADDLE_TOKEN` | 空 | 共享 PaddleOCR Token；PaddleOCR 入口默认关闭，可由管理员在管理后台「服务设置」中按需向公众开放 |
 | `PDFTR_PADDLE_PROXY` | 空 | PaddleOCR 请求代理 |
 | `PDFTR_MAX_UPLOAD_MB` | `200` | 单个 PDF 的大小上限 |
 | `PDFTR_MAX_PAGES` | `200` | 单个 PDF 的页数上限 |
@@ -267,6 +269,7 @@ docker compose \
 | `PDFTR_RETENTION_HOURS` | `24` | 任务和译文缓存保留时间，`0` 表示不自动删除 |
 | `PDFTR_MIN_FREE_DISK_MB` | `1024` | 剩余空间低于此值时拒绝新上传 |
 | `PDFTR_LLM_CONCURRENCY` | `0` | 每个任务请求翻译服务的并发数，`0` 为自动选择 |
+| `PDFTR_CONFIG_SECRET_KEY` | 空（自动生成） | 可选，后台热配置 AES-256-GCM 主密钥；留空时首次启动自动在数据目录生成 `.config_secret.key` 并持久化，也可显式覆盖；更换后旧密文自动降级需重填 |
 
 小型云服务器可以先使用：
 

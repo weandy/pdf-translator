@@ -7,9 +7,10 @@ from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from pdftr import __version__
-from pdftr.api.deps import pipeline, secrets
-from pdftr.api.schemas import ConfigOut, HealthOut, ModelsOut
-from pdftr.glossary.sources import parse_ids
+from pdftr.api.deps import container, pipeline, secrets
+from pdftr.api.schemas import ConfigOut, FreeChannelPublicOut, HealthOut, ModelsOut
+from pdftr.domain.runtime_config import default_llm_presets
+from pdftr.glossary.sources import SOURCES, parse_ids
 from pdftr.glossary.user_import import ParsedGlossary
 from pdftr.pipeline import usecases
 from pdftr.pipeline.runner import Pipeline
@@ -42,32 +43,80 @@ async def llm_check(p: PipelineDep, sec: SecretsDep) -> usecases.LlmCheck:
 
 @router.get("/health", response_model=HealthOut)
 def health(request: Request) -> HealthOut:
-    data_dir = request.app.state.container.settings.data_dir
+    data_dir = container(request).settings.data_dir
     return HealthOut(status="ok", version=__version__, data_dir_writable=os.access(data_dir, os.W_OK))
 
 
 @router.get("/config", response_model=ConfigOut)
 def config(request: Request) -> ConfigOut:
-    s = request.app.state.container.settings
+    c = container(request)
+    s = c.settings
+    snap = c.runtime_config.snapshot() if c.runtime_config is not None else None
+    if snap is None:
+        return ConfigOut(
+            version=__version__,
+            default_base_url=s.llm_base_url,
+            default_model=s.llm_model,
+            default_protocol=s.llm_protocol,
+            default_mineru_base_url="https://mineru.net",
+            server_has_llm_key=bool(s.llm_api_key),
+            server_has_parser_token=bool(s.mineru_api_token),
+            server_has_paddle_token=bool(s.paddle_token),
+            max_upload_mb=s.max_upload_mb,
+            max_pages=s.max_pages,
+            retention_hours=s.retention_hours,
+            admin_path=s.admin_path,
+            submission_audit_enabled=s.submission_audit_enabled,
+            attributions=[
+                "MinerU (https://github.com/opendatalab/MinerU)",
+                "PyMuPDF (AGPL-3.0)",
+                "思源宋体、思源黑体、Tinos（SIL OFL 1.1）",
+                *(f"术语库：{src.attribution}" for src in parse_ids(s.glossary_sources)),
+            ],
+            llm_presets=default_llm_presets(),
+        )
+
+    use_hot_system = snap.revision > 0
+    sys_cfg = snap.data.system
+    free_ready = snap.free_channel_ready()
+    active_free = snap.active_free_providers()
+    glossary_items = [SOURCES[sid] for sid in snap.data.glossary.sources if sid in SOURCES]
+    same_env_default_llm = (
+        snap.data.default_llm.base_url.rstrip("/") == s.llm_base_url.rstrip("/")
+        and snap.data.default_llm.protocol == s.llm_protocol
+    )
     return ConfigOut(
         version=__version__,
-        default_base_url=s.llm_base_url,
-        default_model=s.llm_model,
-        default_protocol=s.llm_protocol,
-        server_has_llm_key=bool(s.llm_api_key),
-        server_has_parser_token=bool(s.mineru_api_token),
-        server_has_paddle_token=bool(s.paddle_token),
-        max_upload_mb=s.max_upload_mb,
-        max_pages=s.max_pages,
-        retention_hours=s.retention_hours,
+        default_base_url=snap.data.default_llm.base_url,
+        default_model=snap.data.default_llm.model,
+        default_protocol=snap.data.default_llm.protocol,
+        default_mineru_base_url=snap.data.parser.mineru_base_url.rstrip("/"),
+        server_has_llm_key=bool(s.llm_api_key) and same_env_default_llm,
+        server_has_parser_token=bool(snap.mineru_token.value) and not snap.mineru_token.corrupted,
+        server_has_paddle_token=bool(snap.paddle_token.value) and not snap.paddle_token.corrupted,
+        max_upload_mb=sys_cfg.max_upload_mb if use_hot_system else s.max_upload_mb,
+        max_pages=sys_cfg.max_pages if use_hot_system else s.max_pages,
+        retention_hours=sys_cfg.retention_hours if use_hot_system else s.retention_hours,
         admin_path=s.admin_path,
         submission_audit_enabled=s.submission_audit_enabled,
         attributions=[
             "MinerU (https://github.com/opendatalab/MinerU)",
             "PyMuPDF (AGPL-3.0)",
             "思源宋体、思源黑体、Tinos（SIL OFL 1.1）",
-            *(f"术语库：{src.attribution}" for src in parse_ids(s.glossary_sources)),
+            *(f"术语库：{src.attribution}" for src in glossary_items),
         ],
+        free_channel=FreeChannelPublicOut(
+            enabled=free_ready,
+            model_display=(active_free[0].config.name or active_free[0].config.model)
+            if free_ready and active_free
+            else "",
+            max_pages=snap.data.free_translation.max_pages,
+            notice=snap.data.free_translation.notice,
+        ),
+        llm_presets=snap.data.default_llm.presets,
+        paddle_public_enabled=snap.data.parser.paddle_public_enabled,
+        maintenance_mode=sys_cfg.maintenance_mode,
+        site_notice=sys_cfg.site_notice,
     )
 
 
@@ -81,7 +130,7 @@ WebFont = Literal[
 
 @router.get("/fonts/{name}")
 def font(name: WebFont, request: Request) -> FileResponse:
-    path = request.app.state.container.settings.font_dir / name
+    path = container(request).settings.font_dir / name
     if not path.is_file():
         raise usecases.NotFound("字体文件未安装")
     # 文件名不变时内容不变；升级字体时前端带版本号参数刷新
@@ -95,4 +144,8 @@ def estimate(
     quality: Literal["default", "careful"] = "default",
     model: str | None = None,
 ) -> usecases.Estimate:
-    return usecases.estimate(pages, quality, model or request.app.state.container.settings.llm_model)
+    c = container(request)
+    snap = c.runtime_config.snapshot() if c.runtime_config is not None else None
+    default_model = snap.data.default_llm.model if snap is not None else c.settings.llm_model
+    prices = snap.price_overrides if snap is not None else None
+    return usecases.estimate(pages, quality, model or default_model, prices=prices)

@@ -30,10 +30,11 @@ describe("共享 MinerU 设置引导", () => {
     vi.restoreAllMocks();
   });
 
-  async function render(shared: boolean) {
+  async function render(shared: boolean, overrides: Partial<ServerConfig> = {}) {
     const config: ServerConfig = {
       version: "test",
       default_base_url: "https://example.invalid",
+      default_mineru_base_url: "https://mineru.net",
       default_model: "synthetic-model",
       default_protocol: "openai",
       admin_path: "/weandy",
@@ -45,6 +46,10 @@ describe("共享 MinerU 设置引导", () => {
       retention_hours: 24,
       submission_audit_enabled: false,
       attributions: [],
+      paddle_public_enabled: false,
+      maintenance_mode: false,
+      site_notice: "",
+      ...overrides,
     };
     client.setQueryData(["config"], config);
     await act(async () =>
@@ -85,8 +90,8 @@ describe("共享 MinerU 设置引导", () => {
     const list = vi.spyOn(api, "llmModels").mockResolvedValue(["z-model", "a-model", "a-model"]);
     saveSettings({ ...DEFAULTS, parserKey: "synthetic-parser-token", model: "manual-model" });
     await render(true);
-    await change(field("翻译服务 API Key"), "synthetic-key");
     await change(field("接口地址"), "https://custom.example.invalid/v1");
+    await change(field("翻译服务 API Key"), "synthetic-key");
     expect(list).not.toHaveBeenCalled();
     await act(async () => button("获取模型列表").click());
     expect(list).toHaveBeenCalledWith(
@@ -109,10 +114,18 @@ describe("共享 MinerU 设置引导", () => {
     await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true })));
     expect(getSettings().model).toBe("z-model");
     expect(getSettings().baseUrl).toBe("https://custom.example.invalid/v1");
+    expect(getSettings().llmKeyBoundUrl).toBe("https://custom.example.invalid/v1");
+    expect(getSettings().llmKeyBoundProtocol).toBe("openai");
   });
 
   it("失败后同配置可以重试，空列表保留手动模型", async () => {
-    saveSettings({ ...DEFAULTS, llmKey: "synthetic-key", model: "manual-model" });
+    saveSettings({
+      ...DEFAULTS,
+      llmKey: "synthetic-key",
+      llmKeyBoundUrl: "https://example.invalid",
+      llmKeyBoundProtocol: "openai",
+      model: "manual-model",
+    });
     const list = vi
       .spyOn(api, "llmModels")
       .mockRejectedValueOnce(new Error("服务不支持查询"))
@@ -129,8 +142,13 @@ describe("共享 MinerU 设置引导", () => {
     expect(host.textContent).toContain("已获取 1 个模型");
   });
 
-  it("切换接口取消旧请求，晚到的响应不覆盖新列表，协议和 Key 变化也清空列表", async () => {
-    saveSettings({ ...DEFAULTS, llmKey: "synthetic-key" });
+  it("切换接口地址或协议取消旧请求并清空旧 API Key，填入新 Key 后可继续查询", async () => {
+    saveSettings({
+      ...DEFAULTS,
+      llmKey: "synthetic-key",
+      llmKeyBoundUrl: "https://example.invalid",
+      llmKeyBoundProtocol: "openai",
+    });
     let oldResolve!: (models: string[]) => void;
     const list = vi
       .spyOn(api, "llmModels")
@@ -147,12 +165,21 @@ describe("共享 MinerU 设置引导", () => {
     expect(button("获取中…").disabled).toBe(true);
     await change(field("接口地址"), "https://other.example.invalid/v1");
     expect(signal.aborted).toBe(true);
+    // 切换目标地址自动清空旧 Key，防止发错服务商
+    expect(field("翻译服务 API Key").value).toBe("");
+    expect(host.textContent).toContain("已清空旧 API Key");
+    expect(button("获取模型列表").disabled).toBe(true);
+
+    await change(field("翻译服务 API Key"), "other-service-key");
     await act(async () => button("获取模型列表").click());
     await act(async () => oldResolve(["old-model"]));
     expect(host.textContent).not.toContain("old-model");
     expect(host.textContent).toContain("new-model");
+
     await change(field("接口协议"), "anthropic");
     expect(host.textContent).not.toContain("new-model");
+    expect(field("翻译服务 API Key").value).toBe("");
+    await change(field("翻译服务 API Key"), "anthropic-key");
     await act(async () => button("获取模型列表").click());
     expect(list.mock.calls.at(-1)?.[0]["X-LLM-Protocol"]).toBe("anthropic");
     await change(field("翻译服务 API Key"), "changed-key");
@@ -181,7 +208,12 @@ describe("共享 MinerU 设置引导", () => {
   });
 
   it("更换服务或模型后，旧连接测试不能误报新配置已连通", async () => {
-    saveSettings({ ...DEFAULTS, llmKey: "synthetic-key" });
+    saveSettings({
+      ...DEFAULTS,
+      llmKey: "synthetic-key",
+      llmKeyBoundUrl: "https://example.invalid",
+      llmKeyBoundProtocol: "openai",
+    });
     let finish!: (result: Awaited<ReturnType<typeof api.llmCheck>>) => void;
     const check = vi
       .spyOn(api, "llmCheck")
@@ -197,6 +229,8 @@ describe("共享 MinerU 设置引导", () => {
     const signal = check.mock.calls[0]![1]!;
     await change(field("接口地址"), "https://other.example.invalid/v1");
     expect(signal.aborted).toBe(true);
+    expect(field("翻译服务 API Key").value).toBe("");
+    await change(field("翻译服务 API Key"), "other-service-key");
     await act(async () => button("测试连接").click());
     await act(async () => finish({ ok: true, model: "old-model", latency_ms: 1, reply: "OK", detail: "" }));
     expect(host.textContent).toContain("已连通：new-model");
@@ -206,7 +240,14 @@ describe("共享 MinerU 设置引导", () => {
   });
 
   it("已有个人 Token 时明确优先使用，清空并保存可以恢复站点默认", async () => {
-    saveSettings({ ...DEFAULTS, parserKey: "synthetic-parser-token", llmKey: "synthetic-llm-key" });
+    saveSettings({
+      ...DEFAULTS,
+      parserKey: "synthetic-parser-token",
+      parserKeyBoundUrl: "https://mineru.net",
+      llmKey: "synthetic-llm-key",
+      llmKeyBoundUrl: "https://example.invalid",
+      llmKeyBoundProtocol: "openai",
+    });
     await render(true);
     expect(host.textContent).toContain("当前选择：使用你自己的 MinerU Token");
     expect(parserInput().value).toBe("synthetic-parser-token");
@@ -217,6 +258,7 @@ describe("共享 MinerU 设置引导", () => {
     expect(host.textContent).toContain("无需再填写 Token");
     await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true })));
     expect(getSettings().parserKey).toBe("");
+    expect(getSettings().parserKeyBoundUrl).toBe("");
     expect(getSettings().llmKey).toBe("synthetic-llm-key");
     expect(close).toHaveBeenCalledOnce();
   });
@@ -227,5 +269,191 @@ describe("共享 MinerU 设置引导", () => {
     expect(parserInput().closest("details")).toBeNull();
     expect(host.textContent).not.toContain("无需再填写 Token");
     expect(host.querySelectorAll(".step-no")).toHaveLength(2);
+  });
+
+  it("点击不同服务商快捷预设时填入协议/地址/模型、中止在途请求并清空旧 API Key", async () => {
+    saveSettings({
+      ...DEFAULTS,
+      llmKey: "synthetic-key",
+      llmKeyBoundUrl: "https://api.deepseek.com",
+      llmKeyBoundProtocol: "openai",
+    });
+    let finishModels!: (models: string[]) => void;
+    const list = vi.spyOn(api, "llmModels").mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishModels = resolve;
+        }),
+    );
+    let finishCheck!: (result: Awaited<ReturnType<typeof api.llmCheck>>) => void;
+    const check = vi.spyOn(api, "llmCheck").mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishCheck = resolve;
+        }),
+    );
+
+    await render(true, {
+      default_base_url: "https://api.deepseek.com",
+      llm_presets: [
+        {
+          id: "deepseek",
+          name: "DeepSeek",
+          protocol: "openai",
+          base_url: "https://api.deepseek.com",
+          models: ["deepseek-chat", "deepseek-reasoner"],
+        },
+        {
+          id: "anthropic",
+          name: "Anthropic",
+          protocol: "anthropic",
+          base_url: "https://api.anthropic.com",
+          models: ["claude-sonnet-4-20250514"],
+        },
+      ],
+    });
+
+    await act(async () => button("获取模型列表").click());
+    await act(async () => button("测试连接").click());
+    const modelSignal = list.mock.calls[0]![1]!;
+    const checkSignal = check.mock.calls[0]![1]!;
+
+    await act(async () => button("Anthropic").click());
+
+    expect(modelSignal.aborted).toBe(true);
+    expect(checkSignal.aborted).toBe(true);
+    expect(field("接口协议").value).toBe("anthropic");
+    expect(field("接口地址").value).toBe("https://api.anthropic.com");
+    expect(field("模型名称").value).toBe("claude-sonnet-4-20250514");
+    expect(field("翻译服务 API Key").value).toBe("");
+    expect(host.textContent).toContain("已清空旧 API Key");
+
+    // 晚到的旧响应不得覆盖当前状态
+    await act(async () => {
+      finishModels(["stale-model"]);
+      finishCheck({ ok: true, model: "stale-model", latency_ms: 100, reply: "OK", detail: "" });
+    });
+    expect(host.textContent).not.toContain("stale-model");
+    expect(host.textContent).not.toContain("已连通");
+
+    await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true })));
+    expect(getSettings().protocol).toBe("anthropic");
+    expect(getSettings().baseUrl).toBe("https://api.anthropic.com");
+    expect(getSettings().model).toBe("claude-sonnet-4-20250514");
+    expect(getSettings().llmKey).toBe("");
+    expect(getSettings().llmKeyBoundUrl).toBe("");
+  });
+
+  it("个人 Key 未绑定到当前默认服务地址时阻止测试连接与获取模型，确认绑定后恢复", async () => {
+    saveSettings({
+      ...DEFAULTS,
+      llmKey: "legacy-key",
+      baseUrl: "",
+      llmKeyBoundUrl: "https://old-default.example.invalid",
+      llmKeyBoundProtocol: "openai",
+    });
+    const check = vi
+      .spyOn(api, "llmCheck")
+      .mockResolvedValue({ ok: true, model: "synthetic-model", latency_ms: 50, reply: "OK", detail: "" });
+    const list = vi.spyOn(api, "llmModels").mockResolvedValue(["synthetic-model"]);
+
+    await render(true, { default_base_url: "https://new-default.example.invalid" });
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("https://new-default.example.invalid");
+    expect(button("测试连接").disabled).toBe(true);
+    expect(button("获取模型列表").disabled).toBe(true);
+    expect(check).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+
+    await act(async () => button("确认发送到此地址").click());
+    expect(button("测试连接").disabled).toBe(false);
+    expect(button("获取模型列表").disabled).toBe(false);
+    await act(async () => button("测试连接").click());
+    expect(check).toHaveBeenCalledOnce();
+
+    await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true })));
+    expect(getSettings().llmKeyBoundUrl).toBe("https://new-default.example.invalid");
+    expect(getSettings().llmKeyBoundProtocol).toBe("openai");
+  });
+
+  it("已填个人 Key 且未填自定义地址时，明确提示默认发往服务商地址", async () => {
+    saveSettings({
+      ...DEFAULTS,
+      llmKey: "synthetic-key",
+      baseUrl: "",
+      llmKeyBoundUrl: "https://api.deepseek.com",
+      llmKeyBoundProtocol: "openai",
+    });
+    await render(true, { default_base_url: "https://api.deepseek.com" });
+    expect(host.textContent).toContain("https://api.deepseek.com");
+    await change(field("接口地址"), "https://custom.example.invalid/v1");
+    expect(host.querySelector(".preset-target-hint")).toBeNull();
+  });
+
+  it("server_has_llm_key 为真且个人 Key 待重绑时，依然强制禁用测试连接与获取模型列表（堵死 canAsk 旁路）", async () => {
+    saveSettings({
+      ...DEFAULTS,
+      llmKey: "legacy-personal-key",
+      baseUrl: "",
+      protocol: "",
+      llmKeyBoundUrl: "https://old-default.example.invalid",
+      llmKeyBoundProtocol: "openai",
+    });
+    const check = vi
+      .spyOn(api, "llmCheck")
+      .mockResolvedValue({ ok: true, model: "synthetic-model", latency_ms: 20, reply: "OK", detail: "" });
+    const list = vi.spyOn(api, "llmModels").mockResolvedValue(["synthetic-model"]);
+
+    await render(true, {
+      server_has_llm_key: true,
+      default_base_url: "https://new-default.example.invalid",
+    });
+
+    expect(button("测试连接").disabled).toBe(true);
+    expect(button("获取模型列表").disabled).toBe(true);
+    await act(async () => {
+      button("测试连接").click();
+      button("获取模型列表").click();
+    });
+    expect(check).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+
+    await act(async () => button("确认发送到此地址").click());
+    expect(button("测试连接").disabled).toBe(false);
+    expect(button("获取模型列表").disabled).toBe(false);
+  });
+
+  it("个人 MinerU Token 未绑定真实地址或站点切换解析地址时展示告警，支持一键确认或清空旧 Token", async () => {
+    saveSettings({
+      ...DEFAULTS,
+      parserKey: "legacy-mineru-token",
+      parserKeyBoundUrl: "mineru-cloud",
+    });
+    await render(true, { default_mineru_base_url: "https://mineru-alt.example.invalid" });
+
+    // 即使站点有共享解析，未确认绑定时自动展开并告警
+    expect(parserInput().closest("details")?.open).toBe(true);
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("https://mineru-alt.example.invalid");
+
+    // 未确认直接保存不得悄悄放行绑定
+    await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true })));
+    expect(getSettings().parserKeyBoundUrl).toBe("mineru-cloud");
+
+    // 重新打开并确认绑定后保存，写入规范化的真实地址
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await render(true, { default_mineru_base_url: "https://mineru-alt.example.invalid/" });
+    await act(async () => button("确认发送到此地址").click());
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true })));
+    expect(getSettings().parserKeyBoundUrl).toBe("https://mineru-alt.example.invalid");
+
+    // 再次换地址时可一键清空旧 Token
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await render(true, { default_mineru_base_url: "https://mineru-third.example.invalid" });
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("https://mineru-third.example.invalid");
+    await act(async () => button("清空旧 Token").click());
+    expect(parserInput().value).toBe("");
+    expect(host.querySelector('[role="alert"]')).toBeNull();
   });
 });

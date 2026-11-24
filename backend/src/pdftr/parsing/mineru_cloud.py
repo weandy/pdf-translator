@@ -21,7 +21,6 @@ from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable, Itera
 from contextlib import AbstractAsyncContextManager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from functools import partial
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
@@ -30,6 +29,7 @@ from urllib.parse import quote, urlsplit
 import httpx2
 
 from pdftr.domain.layout import LayoutResult
+from pdftr.domain.url_guard import build_safe_async_transport, validate_outbound_request_url
 from pdftr.parsing.mineru_normalize import normalize_checked
 from pdftr.parsing.mineru_plan import ParsePlan, ShardSpec, build_parse_plan, materialize_shards
 from pdftr.parsing.port import ParseError, ParseProgress
@@ -145,6 +145,7 @@ class MinerUCloudParser:
         self,
         token: str,
         *,
+        base_url: str = "https://mineru.net",
         model_version: str = "vlm",
         language: str = "en",
         poll_interval: float | None = None,
@@ -154,6 +155,7 @@ class MinerUCloudParser:
         stall_timeout: float = 60.0,
         proxy: str | None = None,
         transport: httpx2.AsyncBaseTransport | None = None,
+        allow_private: bool = False,
         use_pdf_parent_tmp: bool = False,
         enable_partial_pages: bool = False,
         enable_sharding: bool = False,
@@ -165,6 +167,8 @@ class MinerUCloudParser:
     ) -> None:
         if not token:
             raise ParseError("未配置 MinerU Token")
+        normalized = base_url.rstrip("/")
+        self._api_base = normalized if normalized.endswith("/api/v4") else f"{normalized}/api/v4"
         self._token = token
         self._model_version = model_version
         self._language = language
@@ -184,6 +188,98 @@ class MinerUCloudParser:
         self._max_shards = max_shards
         self._limits = limits if limits is not None else MinerUResourceLimits()
         self._transport = transport  # 测试时注入假传输层
+        self._allow_private = allow_private
+
+    def _build_transport(self) -> httpx2.AsyncBaseTransport:
+        if self._transport is not None:
+            return self._transport
+        return build_safe_async_transport(proxy=self._proxy, allow_private=self._allow_private)
+
+    def _validate_presigned_literal(self, url: str) -> None:
+        if self._allow_private:
+            return
+        try:
+            validate_outbound_request_url(
+                url,
+                allow_private=False,
+                require_https=True,
+                label="文件存储地址",
+                resolve_dns=False,
+            )
+        except ValueError as exc:
+            raise ParseError(f"MinerU 文件存储地址不安全：{exc}", retryable=False) from None
+        _presigned_host(url)
+
+    async def _guard_api_request(self, request: httpx2.Request) -> None:
+        if self._allow_private:
+            return
+        try:
+            validate_outbound_request_url(
+                str(request.url),
+                allow_private=False,
+                require_https=True,
+                label="服务地址",
+                # 直连建连时由 PinnedPublicAsyncBackend 固定公网 IP；此处仅校验协议与字面量，避免代理或单测误查本机 DNS
+                resolve_dns=False,
+            )
+        except ValueError as exc:
+            raise ParseError(f"MinerU 服务地址不安全：{exc}", retryable=False) from None
+
+    async def _guard_plain_request(self, request: httpx2.Request) -> None:
+        if self._allow_private:
+            return
+        self._validate_presigned_literal(str(request.url))
+        if self._transport is None and self._proxy is None:
+            await _validate_presigned_request(request, resolve_dns=True)
+
+    async def check_connection(self) -> tuple[int, int]:
+        """轻量探测 MinerU 连通性与 Token 有效性，返回 (http_status, latency_ms)。"""
+        headers = {"Authorization": f"Bearer {self._token}"}
+        started = time.monotonic()
+        hooks = {"request": [self._guard_api_request]} if not self._allow_private else None
+        try:
+            async with httpx2.AsyncClient(
+                headers=headers,
+                timeout=httpx2.Timeout(10.0, connect=10.0),
+                transport=self._build_transport(),
+                follow_redirects=False,
+                event_hooks=hooks,
+            ) as client:
+                r = await client.get(f"{self._api_base}/extract-results/batch/probe")
+        except httpx2.TimeoutException as e:
+            raise ParseError("连接 MinerU 云端超时，请检查服务器能否访问 mineru.net", retryable=True) from e
+        except httpx2.TransportError as e:
+            raise ParseError("无法连接 MinerU 云端，请检查服务器网络", retryable=True) from e
+        latency_ms = max(0, round((time.monotonic() - started) * 1000))
+        if r.status_code in (401, 403):
+            raise ParseError("MinerU Token 无效或权限不足")
+        if 300 <= r.status_code < 400:
+            raise ParseError(f"MinerU 返回异常重定向（HTTP {r.status_code}），请检查服务地址")
+        if r.status_code == 429:
+            raise ParseError("MinerU 请求过于频繁或额度不足，请稍后再试")
+        if r.status_code >= 500:
+            raise ParseError(f"MinerU 服务暂时不可用（HTTP {r.status_code}）", retryable=True)
+        if r.status_code != 200:
+            raise ParseError(f"MinerU 连接测试失败（HTTP {r.status_code}）")
+        if not r.headers.get("content-type", "").startswith("application/json"):
+            raise ParseError("MinerU 返回格式异常，请检查服务地址")
+        try:
+            body = r.json()
+        except ValueError as e:
+            raise ParseError("MinerU 返回格式异常，请检查服务地址") from e
+        if not isinstance(body, dict):
+            raise ParseError("MinerU 返回格式异常，请检查服务地址")
+        code = str(body.get("code", ""))
+        msg = str(body.get("msg", ""))
+        # 绝不将上游原始鉴权消息 msg 回显给前端；仅允许明确的成功码或“查无此测试批次”码
+        if code in ("A0202", "A0211", "401", "403", "-10001", "-10002") or (
+            code not in ("", "0", "-60012")
+            and any(keyword in msg.lower() for keyword in ("token", "unauthorized", "auth", "过期", "无效", "权限"))
+        ):
+            raise ParseError("MinerU Token 无效或权限不足")
+        if code not in ("0", "-60012"):
+            raise ParseError("MinerU 服务返回异常业务状态，请检查服务地址与 Token")
+        return r.status_code, latency_ms
 
     @property
     def cache_config_sig(self) -> str:
@@ -253,15 +349,23 @@ class MinerUCloudParser:
         plan_s = time.perf_counter() - started
         timings: dict[str, float] = dict.fromkeys(("req", "upload", "wait", "download", "norm"), 0.0)
         headers = {"Authorization": f"Bearer {self._token}"}
-        hooks = None
-        if self._transport is None:
-            hooks = {"request": [partial(_validate_presigned_request, resolve_dns=self._proxy is None)]}
+        api_hooks = {"request": [self._guard_api_request]} if not self._allow_private else None
+        plain_hooks = {"request": [self._guard_plain_request]} if not self._allow_private else None
         async with (
-            httpx2.AsyncClient(headers=headers, timeout=httpx2.Timeout(120, connect=15),
-                               transport=self._transport, proxy=self._proxy) as api,
-            httpx2.AsyncClient(timeout=httpx2.Timeout(300, connect=15), transport=self._transport,
-                               proxy=self._proxy, follow_redirects=True, event_hooks=hooks) as plain,
-        ):  # fmt: skip
+            httpx2.AsyncClient(
+                headers=headers,
+                timeout=httpx2.Timeout(120, connect=15),
+                transport=self._build_transport(),
+                follow_redirects=False,
+                event_hooks=api_hooks,
+            ) as api,
+            httpx2.AsyncClient(
+                timeout=httpx2.Timeout(300, connect=15),
+                transport=self._build_transport(),
+                follow_redirects=False,
+                event_hooks=plain_hooks,
+            ) as plain,
+        ):
             try:
                 async with asyncio.timeout(self._remaining(deadline_at)):
                     result, resubmits = await self._execute_plan(
@@ -504,7 +608,7 @@ class MinerUCloudParser:
         r = await self._send(
             api,
             "POST",
-            f"{API}/file-urls/batch",
+            f"{self._api_base}/file-urls/batch",
             deadline=self._remaining(deadline_at),
             json={
                 "files": [item.file_item() for item in batch],
@@ -528,9 +632,8 @@ class MinerUCloudParser:
             or len(set(urls)) != len(urls)
         ):
             raise ParseError("MinerU 申请上传链接返回格式异常")
-        if self._transport is None:
-            for url in urls:
-                _presigned_host(url)
+        for url in urls:
+            self._validate_presigned_literal(url)
         return batch_id, urls
 
     async def _wait(
@@ -582,7 +685,7 @@ class MinerUCloudParser:
             r = await self._send(
                 api,
                 "GET",
-                f"{API}/extract-results/batch/{quote(batch_id, safe='')}",
+                f"{self._api_base}/extract-results/batch/{quote(batch_id, safe='')}",
                 deadline=min(180.0, remaining),
             )
             if r.status_code == 429:
@@ -621,15 +724,16 @@ class MinerUCloudParser:
                     url = item.get("full_zip_url")
                     if not isinstance(url, str) or not url.strip():
                         raise ParseError("MinerU 解析结果缺少下载链接")
-                    if self._transport is None:
-                        _presigned_host(url)
+                    self._validate_presigned_literal(url)
                     done[index] = url
                     active = True
                     continue
                 if state == "failed":
-                    reason = _safe_error(item.get("err_msg"), self._token)
-                    if not multi or reason in _PERMANENT_ERRORS:
-                        raise ParseError(f"MinerU 解析失败：{reason}")
+                    err_code = str(item.get("err_code", ""))
+                    err_msg = str(item.get("err_msg") or "")
+                    reason = _classify_mineru_error(err_code, err_msg, action="解析")
+                    if not multi or _is_permanent_mineru_error(err_code, err_msg):
+                        raise ParseError(reason)
                     failed[index] = reason
                     continue
                 progress = item.get("extract_progress")
@@ -950,19 +1054,17 @@ def _batch_status(
     return _describe("pending" if "pending" in states else "waiting-file" if "waiting-file" in states else None, {})
 
 
-def _safe_error(value: object, token: str) -> str:
-    if not isinstance(value, str):
-        return "未知原因"
-    value = re.sub(r"[\x00-\x1f\x7f]+", " ", value)
-    if token:
-        value = value.replace(token, "[已隐去]")
-    value = re.sub(r"(?:https?://|www\.)\S+", "[已隐去链接]", value, flags=re.IGNORECASE)
-    # 只保留已知错误分类，避免供应商正文、文件名或签名参数扩散。
+def _is_permanent_mineru_error(code: str, msg: str) -> bool:
+    """判断错误是否属于文件本身/权限/额度类不可重试错误，避免对注定失败的分片做无意义重提。"""
+    c = code.strip()
+    if c in ("A0202", "A0211", "401", "403", "-10001", "-10002", "429", "-60005", "-60006"):
+        return True
+    cleaned = re.sub(r"[\x00-\x1f\x7f]+", " ", msg)
     for phrase in _PERMANENT_ERRORS:
         pattern = rf"\b{re.escape(phrase)}\b" if phrase.isascii() else re.escape(phrase)
-        if re.search(pattern, value, re.IGNORECASE):
-            return phrase
-    return "云端未返回可公开的错误原因"
+        if re.search(pattern, cleaned, re.IGNORECASE):
+            return True
+    return False
 
 
 def _retry_after_seconds(value: str | None) -> float | None:
@@ -990,11 +1092,36 @@ def _rate_limit_backoff(consecutive: int, retry_after: str | None) -> float:
     return min(base + random.uniform(0.0, RATE_LIMIT_JITTER_MAX), RATE_LIMIT_MAX_BACKOFF)
 
 
+def _classify_mineru_error(code: str, msg: str, *, action: str) -> str:
+    """将上游错误码与消息归类为固定安全中文文案，严禁透传上游响应原文、URL 或代理凭据。"""
+    c = code.strip()
+    lower = msg.lower()
+    if c in ("A0202", "A0211", "401", "403", "-10001", "-10002") or any(
+        k in lower for k in ("token", "unauthorized", "auth", "过期", "无效", "权限")
+    ):
+        return "MinerU Token 无效或权限不足"
+    if c in ("429", "-60005", "-60006") or any(k in lower for k in ("quota", "limit", "额度", "配额", "频繁")):
+        return "MinerU 额度不足或请求过于频繁，请稍后再试"
+    if c in ("-60012", "404") or any(k in lower for k in ("not found", "不存在", "找不到")):
+        return f"MinerU {action}失败：任务不存在或已过期"
+    if any(k in lower for k in ("encrypt", "加密")):
+        return f"MinerU {action}失败：PDF 文件已加密或受保护，无法解析"
+    if any(
+        k in lower for k in ("size", "page", "页数", "format", "corrupt", "invalid", "坏文件", "损坏", "过大", "不支持")
+    ):
+        return f"MinerU {action}失败：PDF 文件损坏、过大或格式不受支持"
+    if any(k in lower for k in ("busy", "timeout", "overload", "繁忙", "超时")):
+        return f"MinerU {action}失败：解析服务繁忙，请稍后重试"
+    return f"MinerU {action}失败：解析服务返回异常"
+
+
 def _check(r: httpx2.Response, action: str, *, read_json: bool = True, presigned: bool = False) -> dict:
     if r.status_code in (401, 403):
         if presigned:
             raise ParseError("MinerU 临时传输链接已过期或无权限，请重试", retryable=True)
         raise ParseError("MinerU Token 无效或已过期")
+    if 300 <= r.status_code < 400:
+        raise ParseError(f"MinerU {action}失败：收到不安全的重定向（HTTP {r.status_code}）")
     if r.status_code == 429:
         raise ParseError("MinerU 请求过于频繁或额度不足，请稍后再试")
     if r.status_code >= 400:
@@ -1003,12 +1130,12 @@ def _check(r: httpx2.Response, action: str, *, read_json: bool = True, presigned
         return {}
     try:
         body = r.json()
-    except ValueError:
-        raise ParseError(f"MinerU {action}返回格式异常") from None
+    except ValueError as e:
+        raise ParseError(f"MinerU {action}失败：解析服务返回格式异常") from e
     if not isinstance(body, dict):
-        raise ParseError(f"MinerU {action}返回格式异常")
+        raise ParseError(f"MinerU {action}失败：解析服务返回格式异常")
     if body.get("code", 0) != 0:
-        raise ParseError(f"MinerU {action}失败，请检查云端服务与额度")
+        raise ParseError(_classify_mineru_error(str(body.get("code", "")), str(body.get("msg", "")), action=action))
     return body
 
 

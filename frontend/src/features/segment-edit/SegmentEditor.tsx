@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { findTerm, termMap, upsertTerms, useTerms } from "@/entities/glossary/model";
-import { api, formulaUrl, type Quality, type SegmentData } from "@/shared/api/client";
+import { api, formulaUrl, type Quality, type SegmentData, type TranslationMode } from "@/shared/api/client";
 import { InlineMathText, renderLatex } from "@/shared/math/inline";
 import { checkPlaceholders, placeholdersOk } from "@/shared/text/placeholders";
 import { spaceCjkLatin } from "@/shared/text/typeset";
 
 interface Props {
   segment: SegmentData;
+  channelMode?: TranslationMode;
   onChange: (seg: SegmentData) => void;
   onClose: () => void;
   /** 这一段的修改记录（由页面组合） */
@@ -24,7 +25,7 @@ const STATUS: Record<SegmentData["status"], string> = {
 };
 
 /** 切换段落或译文更新时由调用方用 key 重新挂载，草稿从 props 初始化。 */
-export function SegmentEditor({ segment, onChange, onClose, history, navigation }: Props) {
+export function SegmentEditor({ segment, channelMode, onChange, onClose, history, navigation }: Props) {
   const [draft, setDraft] = useState(segment.target ?? "");
   const [busy, setBusy] = useState<"save" | Quality | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -101,7 +102,9 @@ export function SegmentEditor({ segment, onChange, onClose, history, navigation 
     setRetryFailed(false);
     try {
       const seg =
-        kind === "save" ? await api.editSegment(segment.id, draft) : await api.retranslate(segment.id, kind, termMap());
+        kind === "save"
+          ? await api.editSegment(segment.id, draft)
+          : await api.retranslate(segment.id, kind, termMap(), { channelMode });
       onChange(seg);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

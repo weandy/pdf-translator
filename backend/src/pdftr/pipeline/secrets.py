@@ -1,6 +1,7 @@
 """任务级密钥：只在内存里，任务结束即清除（docs/01-tech-stack.md §4.4.2）。"""
 
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -11,12 +12,27 @@ class Secrets:
     parser_token: str  # MinerU Token
     paddle_token: str = ""  # PaddleOCR（星河社区）Token
     llm_protocol: str = "openai"  # openai（OpenAI 兼容）或 anthropic（Anthropic Messages）
+    channel_mode: Literal["byok", "free"] = "byok"
+    channel_provider_id: str = ""
+    fallback_models: tuple[str, ...] = ()
+    # 跨上游备选端点：(protocol, base_url, api_key, model, timeout_s)
+    fallback_endpoints: tuple[tuple[str, str, str, str, int], ...] = ()
+    llm_timeout_s: int | None = None
+    mineru_base_url: str = "https://mineru.net"
+    mineru_proxy: str = ""
+    paddle_proxy: str = ""
+    disable_redirects: bool = True
+    free_sdk_no_retry: bool = False
+    allow_private_urls: bool = False
 
     def token_for(self, parser: str) -> str:
         return self.paddle_token if parser == "paddleocr-vl" else self.parser_token
 
-    def __repr__(self) -> str:  # 防止密钥被打进日志
-        return f"Secrets(llm_base_url={self.llm_base_url!r}, llm_model={self.llm_model!r}, keys=***)"
+    def __repr__(self) -> str:  # 防止密钥、Token 或代理账密被打进日志
+        return (
+            f"Secrets(channel_mode={self.channel_mode!r}, llm_base_url={self.llm_base_url!r}, "
+            f"llm_model={self.llm_model!r}, keys=***)"
+        )
 
 
 class SecretStore:

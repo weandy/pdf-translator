@@ -3,7 +3,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from pydantic import BaseModel
 
 from pdftr.api.deps import pipeline
@@ -30,6 +30,10 @@ def stats(
 
 
 @router.post("/visits", status_code=204)
-def visit(body: StatsVisitIn, p: PipelineDep) -> Response:
-    p.deps.store.record_visit(str(body.event_id), str(body.visitor_id))
+def visit(body: StatsVisitIn, request: Request, p: PipelineDep) -> Response:
+    p.deps.store.record_visit(
+        str(body.event_id),
+        str(body.visitor_id),
+        user_agent=request.headers.get("user-agent"),
+    )
     return Response(status_code=204, headers={"Cache-Control": "no-store"})

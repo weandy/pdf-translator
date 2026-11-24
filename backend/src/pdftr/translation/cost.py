@@ -1,5 +1,6 @@
 """按 token 计价（S7：DeepSeek 按 token 计费，单价与思考强度无关，只与时段有关）。"""
 
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 
 from pydantic import BaseModel
@@ -33,17 +34,30 @@ def is_deepseek_peak(now: datetime | None = None) -> bool:
     return 9 <= t.hour < 12 or 14 <= t.hour < 18
 
 
-def add_cost(total: float | None, model: str, usage: ChatUsage) -> float | None:
+def add_cost(
+    total: float | None,
+    model: str,
+    usage: ChatUsage,
+    *,
+    prices: Mapping[str, Price] | None = None,
+) -> float | None:
     """累加一次请求的费用：按请求发出时是否高峰计价（跨越高峰时段边界的任务也不会算错）。未知模型保持 None。"""
-    cost = cost_cny(model, usage, peak=is_deepseek_peak())
+    cost = cost_cny(model, usage, peak=is_deepseek_peak(), prices=prices)
     if cost is None:
         return total
     return (total or 0.0) + cost
 
 
-def cost_cny(model: str, usage: ChatUsage, *, peak: bool) -> float | None:
-    """未知模型返回 None（界面显示“按服务商计费”）。"""
-    price = PRICES.get(model)
+def cost_cny(
+    model: str,
+    usage: ChatUsage,
+    *,
+    peak: bool,
+    prices: Mapping[str, Price] | None = None,
+) -> float | None:
+    """未知模型返回 None（界面显示“按服务商计费”）。支持传入热配置单价表覆盖默认 PRICES。"""
+    table = PRICES if prices is None else prices
+    price = table.get(model)
     if price is None:
         return None
     total = (

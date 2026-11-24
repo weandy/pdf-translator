@@ -19,6 +19,8 @@ const job: Job = {
   page_count: 1,
   model: "synthetic",
   cost_cny: null,
+  channel_mode: "byok",
+  fallback_used: false,
   created_at: "2026-01-01T00:00:00Z",
   stage_started_at: null,
   expires_at: null,

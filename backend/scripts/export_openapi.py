@@ -18,10 +18,7 @@ with tempfile.TemporaryDirectory() as tmp:
     try:
         schema = create_app(container).openapi()
     finally:
-        container.pipeline.deps.store.close()
-        container.pipeline.deps.cache.close()
-        if container.admin:
-            container.admin.store.close()
+        container.close()
 out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("openapi.json")
 out.write_text(json.dumps(schema, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
 print(f"已写入 {out}")

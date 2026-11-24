@@ -113,6 +113,22 @@
        ],
        "title": "X-Llm-Protocol"
       }
+     },
+     {
+      "name": "x-translation-mode",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Translation-Mode"
+      }
      }
     ],
     "responses": {
@@ -246,6 +262,22 @@
         }
        ],
        "title": "X-Llm-Protocol"
+      }
+     },
+     {
+      "name": "x-translation-mode",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Translation-Mode"
       }
      }
     ],
@@ -390,6 +422,22 @@
         }
        ],
        "title": "X-Llm-Protocol"
+      }
+     },
+     {
+      "name": "x-translation-mode",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Translation-Mode"
       }
      }
     ],
@@ -592,7 +640,7 @@
     "operationId": "create_job_api_jobs_post",
     "parameters": [
      {
-      "name": "x-llm-base-url",
+      "name": "x-translation-mode",
       "in": "header",
       "required": false,
       "schema": {
@@ -604,91 +652,7 @@
          "type": "null"
         }
        ],
-       "title": "X-Llm-Base-Url"
-      }
-     },
-     {
-      "name": "x-llm-key",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Llm-Key"
-      }
-     },
-     {
-      "name": "x-llm-model",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Llm-Model"
-      }
-     },
-     {
-      "name": "x-parser-key",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Parser-Key"
-      }
-     },
-     {
-      "name": "x-paddle-key",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Paddle-Key"
-      }
-     },
-     {
-      "name": "x-llm-protocol",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "enum": [
-          "openai",
-          "anthropic"
-         ],
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Llm-Protocol"
+       "title": "X-Translation-Mode"
       }
      }
     ],
@@ -1156,106 +1120,6 @@
        "type": "string",
        "title": "Job Id"
       }
-     },
-     {
-      "name": "x-llm-base-url",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Llm-Base-Url"
-      }
-     },
-     {
-      "name": "x-llm-key",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Llm-Key"
-      }
-     },
-     {
-      "name": "x-llm-model",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Llm-Model"
-      }
-     },
-     {
-      "name": "x-parser-key",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Parser-Key"
-      }
-     },
-     {
-      "name": "x-paddle-key",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Paddle-Key"
-      }
-     },
-     {
-      "name": "x-llm-protocol",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "enum": [
-          "openai",
-          "anthropic"
-         ],
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Llm-Protocol"
-      }
      }
     ],
     "requestBody": {
@@ -1402,106 +1266,6 @@
        "type": "string",
        "title": "Job Id"
       }
-     },
-     {
-      "name": "x-llm-base-url",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Llm-Base-Url"
-      }
-     },
-     {
-      "name": "x-llm-key",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Llm-Key"
-      }
-     },
-     {
-      "name": "x-llm-model",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Llm-Model"
-      }
-     },
-     {
-      "name": "x-parser-key",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Parser-Key"
-      }
-     },
-     {
-      "name": "x-paddle-key",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Paddle-Key"
-      }
-     },
-     {
-      "name": "x-llm-protocol",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "enum": [
-          "openai",
-          "anthropic"
-         ],
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Llm-Protocol"
-      }
      }
     ],
     "responses": {
@@ -1595,106 +1359,6 @@
       "schema": {
        "type": "string",
        "title": "Segment Id"
-      }
-     },
-     {
-      "name": "x-llm-base-url",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Llm-Base-Url"
-      }
-     },
-     {
-      "name": "x-llm-key",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Llm-Key"
-      }
-     },
-     {
-      "name": "x-llm-model",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Llm-Model"
-      }
-     },
-     {
-      "name": "x-parser-key",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Parser-Key"
-      }
-     },
-     {
-      "name": "x-paddle-key",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Paddle-Key"
-      }
-     },
-     {
-      "name": "x-llm-protocol",
-      "in": "header",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "enum": [
-          "openai",
-          "anthropic"
-         ],
-         "type": "string"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "X-Llm-Protocol"
       }
      }
     ],
@@ -1975,6 +1639,453 @@
     }
    }
   },
+  "/api/admin/overview": {
+   "get": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Admin Overview",
+    "operationId": "admin_overview_api_admin_overview_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AdminOverviewOut"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/admin/config": {
+   "get": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Get Admin Config",
+    "operationId": "get_admin_config_api_admin_config_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AdminConfigView"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/admin/config/free_translation": {
+   "put": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Update Admin Config Free Translation",
+    "operationId": "update_admin_config_free_translation_api_admin_config_free_translation_put",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/FreeTranslationPatch"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AdminConfigView"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/admin/config/parser": {
+   "put": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Update Admin Config Parser",
+    "operationId": "update_admin_config_parser_api_admin_config_parser_put",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ParserPatch"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AdminConfigView"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/admin/config/default_llm": {
+   "put": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Update Admin Config Default Llm",
+    "operationId": "update_admin_config_default_llm_api_admin_config_default_llm_put",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/DefaultLlmPatch"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AdminConfigView"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/admin/config/pricing": {
+   "put": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Update Admin Config Pricing",
+    "operationId": "update_admin_config_pricing_api_admin_config_pricing_put",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PricingPatch"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AdminConfigView"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/admin/config/glossary": {
+   "put": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Update Admin Config Glossary",
+    "operationId": "update_admin_config_glossary_api_admin_config_glossary_put",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/GlossaryPatch"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AdminConfigView"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/admin/config/system": {
+   "put": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Update Admin Config System",
+    "operationId": "update_admin_config_system_api_admin_config_system_put",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SystemPatch"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AdminConfigView"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/admin/config/test": {
+   "post": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Test Admin Config",
+    "operationId": "test_admin_config_api_admin_config_test_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ConnectionTestIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ConnectionTestOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/admin/config/revisions": {
+   "get": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "List Config Revisions",
+    "operationId": "list_config_revisions_api_admin_config_revisions_get",
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 100,
+       "minimum": 1,
+       "default": 20,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "minimum": 0,
+       "default": 0,
+       "title": "Offset"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ConfigRevisionsOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/admin/config/rollback": {
+   "post": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Rollback Config",
+    "operationId": "rollback_config_api_admin_config_rollback_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RollbackIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AdminConfigView"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/admin/glossary/reload": {
+   "post": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Reload Glossary",
+    "operationId": "reload_glossary_api_admin_glossary_reload_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/GlossaryAdminView"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/admin/submissions/client": {
    "get": {
     "tags": [
@@ -1989,7 +2100,7 @@
       "content": {
        "application/json": {
         "schema": {
-         "$ref": "#/components/schemas/SubmissionContext"
+         "$ref": "#/components/schemas/AdminClientOut"
         }
        }
       }
@@ -2041,6 +2152,162 @@
  },
  "components": {
   "schemas": {
+   "ActiveJobSummaryOut": {
+    "properties": {
+     "job_id": {
+      "type": "string",
+      "title": "Job Id"
+     },
+     "page_count": {
+      "type": "integer",
+      "title": "Page Count"
+     },
+     "stage": {
+      "type": "string",
+      "title": "Stage"
+     },
+     "progress": {
+      "type": "number",
+      "title": "Progress"
+     },
+     "channel_mode": {
+      "type": "string",
+      "enum": [
+       "byok",
+       "free"
+      ],
+      "title": "Channel Mode"
+     },
+     "model": {
+      "type": "string",
+      "title": "Model"
+     },
+     "status": {
+      "type": "string",
+      "title": "Status"
+     }
+    },
+    "type": "object",
+    "required": [
+     "job_id",
+     "page_count",
+     "stage",
+     "progress",
+     "channel_mode",
+     "model",
+     "status"
+    ],
+    "title": "ActiveJobSummaryOut"
+   },
+   "AdminClientOut": {
+    "properties": {
+     "submitter_ip": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Submitter Ip"
+     },
+     "ip_source": {
+      "type": "string",
+      "enum": [
+       "trusted_proxy",
+       "direct",
+       "unknown"
+      ],
+      "title": "Ip Source",
+      "default": "unknown"
+     },
+     "notice_version": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Notice Version"
+     }
+    },
+    "type": "object",
+    "title": "AdminClientOut"
+   },
+   "AdminConfigView": {
+    "properties": {
+     "revision": {
+      "type": "integer",
+      "title": "Revision"
+     },
+     "updated_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Updated At"
+     },
+     "secret_key_ready": {
+      "type": "boolean",
+      "title": "Secret Key Ready"
+     },
+     "warnings": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Warnings"
+     },
+     "free_translation": {
+      "$ref": "#/components/schemas/FreeTranslationView"
+     },
+     "parser": {
+      "$ref": "#/components/schemas/ParserServiceView"
+     },
+     "default_llm": {
+      "$ref": "#/components/schemas/DefaultLlmConfig"
+     },
+     "pricing": {
+      "$ref": "#/components/schemas/PricingConfig"
+     },
+     "glossary": {
+      "$ref": "#/components/schemas/GlossaryAdminView"
+     },
+     "system": {
+      "$ref": "#/components/schemas/SystemConfig"
+     },
+     "env_locks": {
+      "items": {
+       "$ref": "#/components/schemas/EnvLockItem"
+      },
+      "type": "array",
+      "title": "Env Locks"
+     }
+    },
+    "type": "object",
+    "required": [
+     "revision",
+     "updated_at",
+     "secret_key_ready",
+     "warnings",
+     "free_translation",
+     "parser",
+     "default_llm",
+     "pricing",
+     "glossary",
+     "system",
+     "env_locks"
+    ],
+    "title": "AdminConfigView"
+   },
    "AdminLoginIn": {
     "properties": {
      "password": {
@@ -2056,6 +2323,125 @@
      "password"
     ],
     "title": "AdminLoginIn"
+   },
+   "AdminOverviewOut": {
+    "properties": {
+     "queues": {
+      "$ref": "#/components/schemas/AdminQueuesOut"
+     },
+     "services": {
+      "$ref": "#/components/schemas/AdminServiceSummaryOut"
+     },
+     "warnings": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Warnings"
+     },
+     "stats": {
+      "$ref": "#/components/schemas/AdminStatsSnapshot"
+     },
+     "active_jobs": {
+      "items": {
+       "$ref": "#/components/schemas/ActiveJobSummaryOut"
+      },
+      "type": "array",
+      "title": "Active Jobs"
+     },
+     "maintenance_mode": {
+      "type": "boolean",
+      "title": "Maintenance Mode"
+     },
+     "revision": {
+      "type": "integer",
+      "title": "Revision"
+     },
+     "secret_key_ready": {
+      "type": "boolean",
+      "title": "Secret Key Ready"
+     }
+    },
+    "type": "object",
+    "required": [
+     "queues",
+     "services",
+     "warnings",
+     "stats",
+     "active_jobs",
+     "maintenance_mode",
+     "revision",
+     "secret_key_ready"
+    ],
+    "title": "AdminOverviewOut"
+   },
+   "AdminQueuesOut": {
+    "properties": {
+     "parse": {
+      "$ref": "#/components/schemas/QueueSlotStats"
+     },
+     "free": {
+      "$ref": "#/components/schemas/QueueSlotStats"
+     },
+     "byok": {
+      "$ref": "#/components/schemas/QueueSlotStats"
+     },
+     "parse_reserved_for_byok": {
+      "type": "boolean",
+      "title": "Parse Reserved For Byok",
+      "default": false
+     }
+    },
+    "type": "object",
+    "required": [
+     "parse",
+     "free",
+     "byok"
+    ],
+    "title": "AdminQueuesOut"
+   },
+   "AdminServiceSummaryOut": {
+    "properties": {
+     "free_enabled": {
+      "type": "boolean",
+      "title": "Free Enabled"
+     },
+     "free_ready": {
+      "type": "boolean",
+      "title": "Free Ready"
+     },
+     "usable_providers": {
+      "type": "integer",
+      "title": "Usable Providers"
+     },
+     "mineru_configured": {
+      "type": "boolean",
+      "title": "Mineru Configured"
+     },
+     "paddle_configured": {
+      "type": "boolean",
+      "title": "Paddle Configured"
+     },
+     "glossary_terms": {
+      "type": "integer",
+      "title": "Glossary Terms"
+     },
+     "glossary_reloading": {
+      "type": "boolean",
+      "title": "Glossary Reloading"
+     }
+    },
+    "type": "object",
+    "required": [
+     "free_enabled",
+     "free_ready",
+     "usable_providers",
+     "mineru_configured",
+     "paddle_configured",
+     "glossary_terms",
+     "glossary_reloading"
+    ],
+    "title": "AdminServiceSummaryOut"
    },
    "AdminSessionOut": {
     "properties": {
@@ -2075,6 +2461,61 @@
      "expires_at"
     ],
     "title": "AdminSessionOut"
+   },
+   "AdminStatsSnapshot": {
+    "properties": {
+     "today_submitted": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Today Submitted",
+      "default": 0
+     },
+     "today_completed": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Today Completed",
+      "default": 0
+     },
+     "period_submitted": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Period Submitted",
+      "default": 0
+     },
+     "period_completed": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Period Completed",
+      "default": 0
+     },
+     "failed_24h": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Failed 24H",
+      "default": 0
+     },
+     "recent_failures": {
+      "items": {
+       "$ref": "#/components/schemas/OverviewFailureSummary"
+      },
+      "type": "array",
+      "title": "Recent Failures"
+     },
+     "client_breakdown": {
+      "$ref": "#/components/schemas/ClientBreakdown"
+     },
+     "client_breakdown_source": {
+      "type": "string",
+      "enum": [
+       "job",
+       "visit"
+      ],
+      "title": "Client Breakdown Source",
+      "default": "job"
+     }
+    },
+    "type": "object",
+    "title": "AdminStatsSnapshot"
    },
    "BlockOut": {
     "properties": {
@@ -2213,6 +2654,58 @@
     "type": "object",
     "title": "ChatUsage"
    },
+   "ClientBreakdown": {
+    "properties": {
+     "total": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Total",
+      "default": 0
+     },
+     "devices": {
+      "items": {
+       "$ref": "#/components/schemas/ClientBucket"
+      },
+      "type": "array",
+      "title": "Devices"
+     },
+     "platforms": {
+      "items": {
+       "$ref": "#/components/schemas/ClientBucket"
+      },
+      "type": "array",
+      "title": "Platforms"
+     }
+    },
+    "type": "object",
+    "title": "ClientBreakdown"
+   },
+   "ClientBucket": {
+    "properties": {
+     "label": {
+      "type": "string",
+      "title": "Label"
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Count"
+     },
+     "share": {
+      "type": "number",
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Share"
+     }
+    },
+    "type": "object",
+    "required": [
+     "label",
+     "count",
+     "share"
+    ],
+    "title": "ClientBucket"
+   },
    "ConfigOut": {
     "properties": {
      "version": {
@@ -2238,6 +2731,11 @@
        "anthropic"
       ],
       "title": "Default Protocol"
+     },
+     "default_mineru_base_url": {
+      "type": "string",
+      "title": "Default Mineru Base Url",
+      "default": "https://mineru.net"
      },
      "server_has_parser_token": {
       "type": "boolean",
@@ -2274,6 +2772,31 @@
       },
       "type": "array",
       "title": "Attributions"
+     },
+     "free_channel": {
+      "$ref": "#/components/schemas/FreeChannelPublicOut"
+     },
+     "llm_presets": {
+      "items": {
+       "$ref": "#/components/schemas/LlmPreset"
+      },
+      "type": "array",
+      "title": "Llm Presets"
+     },
+     "paddle_public_enabled": {
+      "type": "boolean",
+      "title": "Paddle Public Enabled",
+      "default": false
+     },
+     "maintenance_mode": {
+      "type": "boolean",
+      "title": "Maintenance Mode",
+      "default": false
+     },
+     "site_notice": {
+      "type": "string",
+      "title": "Site Notice",
+      "default": ""
      }
     },
     "type": "object",
@@ -2293,6 +2816,292 @@
     ],
     "title": "ConfigOut",
     "description": "前端需要的公开配置（不含任何 Key）。"
+   },
+   "ConfigRevisionSummary": {
+    "properties": {
+     "revision": {
+      "type": "integer",
+      "title": "Revision"
+     },
+     "section": {
+      "type": "string",
+      "title": "Section"
+     },
+     "changed_fields": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Changed Fields"
+     },
+     "summary": {
+      "type": "string",
+      "title": "Summary"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Created At"
+     }
+    },
+    "type": "object",
+    "required": [
+     "revision",
+     "section",
+     "changed_fields",
+     "summary",
+     "created_at"
+    ],
+    "title": "ConfigRevisionSummary"
+   },
+   "ConfigRevisionsOut": {
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/ConfigRevisionSummary"
+      },
+      "type": "array",
+      "title": "Items"
+     },
+     "limit": {
+      "type": "integer",
+      "title": "Limit"
+     },
+     "offset": {
+      "type": "integer",
+      "title": "Offset"
+     }
+    },
+    "type": "object",
+    "required": [
+     "items",
+     "limit",
+     "offset"
+    ],
+    "title": "ConfigRevisionsOut"
+   },
+   "ConnectionTestIn": {
+    "properties": {
+     "target": {
+      "type": "string",
+      "enum": [
+       "free_provider",
+       "mineru",
+       "paddle"
+      ],
+      "title": "Target"
+     },
+     "provider_id": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 40
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Provider Id"
+     },
+     "protocol": {
+      "anyOf": [
+       {
+        "type": "string",
+        "enum": [
+         "openai",
+         "anthropic"
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Protocol"
+     },
+     "base_url": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 500
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Base Url"
+     },
+     "model": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 200
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Model"
+     },
+     "timeout_s": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "maximum": 300.0,
+        "minimum": 5.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Timeout S"
+     },
+     "api_key": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/SecretUpdate"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "token": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/SecretUpdate"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "proxy": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/SecretUpdate"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "target"
+    ],
+    "title": "ConnectionTestIn"
+   },
+   "ConnectionTestOut": {
+    "properties": {
+     "ok": {
+      "type": "boolean",
+      "title": "Ok"
+     },
+     "status_code": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Status Code"
+     },
+     "latency_ms": {
+      "type": "integer",
+      "title": "Latency Ms",
+      "default": 0
+     },
+     "detail": {
+      "type": "string",
+      "title": "Detail",
+      "default": ""
+     }
+    },
+    "type": "object",
+    "required": [
+     "ok"
+    ],
+    "title": "ConnectionTestOut"
+   },
+   "DefaultLlmConfig": {
+    "properties": {
+     "base_url": {
+      "type": "string",
+      "title": "Base Url",
+      "default": "https://api.deepseek.com"
+     },
+     "protocol": {
+      "type": "string",
+      "enum": [
+       "openai",
+       "anthropic"
+      ],
+      "title": "Protocol",
+      "default": "openai"
+     },
+     "model": {
+      "type": "string",
+      "title": "Model",
+      "default": "deepseek-flash"
+     },
+     "presets": {
+      "items": {
+       "$ref": "#/components/schemas/LlmPreset"
+      },
+      "type": "array",
+      "title": "Presets"
+     }
+    },
+    "type": "object",
+    "title": "DefaultLlmConfig"
+   },
+   "DefaultLlmPatch": {
+    "properties": {
+     "expected_revision": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Expected Revision"
+     },
+     "base_url": {
+      "type": "string",
+      "title": "Base Url"
+     },
+     "protocol": {
+      "type": "string",
+      "enum": [
+       "openai",
+       "anthropic"
+      ],
+      "title": "Protocol",
+      "default": "openai"
+     },
+     "model": {
+      "type": "string",
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Model"
+     },
+     "presets": {
+      "items": {
+       "$ref": "#/components/schemas/LlmPreset"
+      },
+      "type": "array",
+      "maxItems": 20,
+      "title": "Presets"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "expected_revision",
+     "base_url",
+     "model"
+    ],
+    "title": "DefaultLlmPatch"
    },
    "DocumentOut": {
     "properties": {
@@ -2357,6 +3166,29 @@
      "target"
     ],
     "title": "EditIn"
+   },
+   "EnvLockItem": {
+    "properties": {
+     "name": {
+      "type": "string",
+      "title": "Name"
+     },
+     "status": {
+      "type": "string",
+      "title": "Status"
+     },
+     "detail": {
+      "type": "string",
+      "title": "Detail"
+     }
+    },
+    "type": "object",
+    "required": [
+     "name",
+     "status",
+     "detail"
+    ],
+    "title": "EnvLockItem"
    },
    "Estimate": {
     "properties": {
@@ -2472,6 +3304,360 @@
     ],
     "title": "FormulaOut",
     "description": "page、bbox 为空：没有精确位置（扫描页），KaTeX 渲染失败时显示 LaTeX 原文而不是裁剪图。"
+   },
+   "FreeChannelPublicOut": {
+    "properties": {
+     "enabled": {
+      "type": "boolean",
+      "title": "Enabled",
+      "default": false
+     },
+     "model_display": {
+      "type": "string",
+      "title": "Model Display",
+      "default": ""
+     },
+     "max_pages": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Max Pages"
+     },
+     "notice": {
+      "type": "string",
+      "title": "Notice",
+      "default": ""
+     }
+    },
+    "type": "object",
+    "title": "FreeChannelPublicOut"
+   },
+   "FreeProviderPatch": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,39}$",
+      "title": "Id"
+     },
+     "name": {
+      "type": "string",
+      "maxLength": 60,
+      "minLength": 1,
+      "title": "Name"
+     },
+     "enabled": {
+      "type": "boolean",
+      "title": "Enabled",
+      "default": true
+     },
+     "protocol": {
+      "type": "string",
+      "enum": [
+       "openai",
+       "anthropic"
+      ],
+      "title": "Protocol",
+      "default": "openai"
+     },
+     "base_url": {
+      "type": "string",
+      "title": "Base Url"
+     },
+     "model": {
+      "type": "string",
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Model"
+     },
+     "fallback_model": {
+      "type": "string",
+      "maxLength": 200,
+      "title": "Fallback Model",
+      "default": ""
+     },
+     "timeout_s": {
+      "type": "integer",
+      "maximum": 300.0,
+      "minimum": 15.0,
+      "title": "Timeout S",
+      "default": 65
+     },
+     "api_key": {
+      "$ref": "#/components/schemas/SecretUpdate"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "id",
+     "name",
+     "base_url",
+     "model"
+    ],
+    "title": "FreeProviderPatch"
+   },
+   "FreeProviderView": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "name": {
+      "type": "string",
+      "title": "Name"
+     },
+     "enabled": {
+      "type": "boolean",
+      "title": "Enabled"
+     },
+     "protocol": {
+      "type": "string",
+      "enum": [
+       "openai",
+       "anthropic"
+      ],
+      "title": "Protocol"
+     },
+     "base_url": {
+      "type": "string",
+      "title": "Base Url"
+     },
+     "model": {
+      "type": "string",
+      "title": "Model"
+     },
+     "fallback_model": {
+      "type": "string",
+      "title": "Fallback Model"
+     },
+     "timeout_s": {
+      "type": "integer",
+      "title": "Timeout S"
+     },
+     "api_key": {
+      "$ref": "#/components/schemas/SecretView"
+     },
+     "usable": {
+      "type": "boolean",
+      "title": "Usable"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "name",
+     "enabled",
+     "protocol",
+     "base_url",
+     "model",
+     "fallback_model",
+     "timeout_s",
+     "api_key",
+     "usable"
+    ],
+    "title": "FreeProviderView"
+   },
+   "FreeTranslationPatch": {
+    "properties": {
+     "expected_revision": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Expected Revision"
+     },
+     "enabled": {
+      "type": "boolean",
+      "title": "Enabled",
+      "default": false
+     },
+     "max_pages": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "maximum": 2000.0,
+        "minimum": 1.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Max Pages"
+     },
+     "notice": {
+      "type": "string",
+      "maxLength": 500,
+      "title": "Notice",
+      "default": ""
+     },
+     "providers": {
+      "items": {
+       "$ref": "#/components/schemas/FreeProviderPatch"
+      },
+      "type": "array",
+      "maxItems": 10,
+      "title": "Providers"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "expected_revision"
+    ],
+    "title": "FreeTranslationPatch"
+   },
+   "FreeTranslationView": {
+    "properties": {
+     "enabled": {
+      "type": "boolean",
+      "title": "Enabled"
+     },
+     "max_pages": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Max Pages"
+     },
+     "notice": {
+      "type": "string",
+      "title": "Notice"
+     },
+     "ready": {
+      "type": "boolean",
+      "title": "Ready"
+     },
+     "providers": {
+      "items": {
+       "$ref": "#/components/schemas/FreeProviderView"
+      },
+      "type": "array",
+      "title": "Providers"
+     }
+    },
+    "type": "object",
+    "required": [
+     "enabled",
+     "max_pages",
+     "notice",
+     "ready",
+     "providers"
+    ],
+    "title": "FreeTranslationView"
+   },
+   "GlossaryAdminView": {
+    "properties": {
+     "sources": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Sources"
+     },
+     "available": {
+      "items": {
+       "$ref": "#/components/schemas/GlossarySourceView"
+      },
+      "type": "array",
+      "title": "Available"
+     },
+     "loaded_terms": {
+      "type": "integer",
+      "title": "Loaded Terms"
+     },
+     "reloading": {
+      "type": "boolean",
+      "title": "Reloading"
+     }
+    },
+    "type": "object",
+    "required": [
+     "sources",
+     "available",
+     "loaded_terms",
+     "reloading"
+    ],
+    "title": "GlossaryAdminView"
+   },
+   "GlossaryPatch": {
+    "properties": {
+     "expected_revision": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Expected Revision"
+     },
+     "sources": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "maxItems": 20,
+      "title": "Sources"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "expected_revision"
+    ],
+    "title": "GlossaryPatch"
+   },
+   "GlossarySourceView": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "name": {
+      "type": "string",
+      "title": "Name"
+     },
+     "license": {
+      "type": "string",
+      "title": "License"
+     },
+     "commercial_ok": {
+      "type": "boolean",
+      "title": "Commercial Ok"
+     },
+     "enabled": {
+      "type": "boolean",
+      "title": "Enabled"
+     },
+     "priority": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Priority"
+     },
+     "cached": {
+      "type": "boolean",
+      "title": "Cached"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "name",
+     "license",
+     "commercial_ok",
+     "enabled",
+     "priority",
+     "cached"
+    ],
+    "title": "GlossarySourceView"
    },
    "HTTPValidationError": {
     "properties": {
@@ -2629,6 +3815,20 @@
       ],
       "title": "Cost Cny"
      },
+     "channel_mode": {
+      "type": "string",
+      "enum": [
+       "byok",
+       "free"
+      ],
+      "title": "Channel Mode",
+      "default": "byok"
+     },
+     "fallback_used": {
+      "type": "boolean",
+      "title": "Fallback Used",
+      "default": false
+     },
      "created_at": {
       "type": "string",
       "format": "date-time",
@@ -2784,6 +3984,85 @@
     ],
     "title": "LlmCheck"
    },
+   "LlmPreset": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "name": {
+      "type": "string",
+      "title": "Name"
+     },
+     "protocol": {
+      "type": "string",
+      "enum": [
+       "openai",
+       "anthropic"
+      ],
+      "title": "Protocol",
+      "default": "openai"
+     },
+     "base_url": {
+      "type": "string",
+      "title": "Base Url"
+     },
+     "models": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Models"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "name",
+     "base_url"
+    ],
+    "title": "LlmPreset"
+   },
+   "ModelPriceEntry": {
+    "properties": {
+     "model": {
+      "type": "string",
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Model"
+     },
+     "cache_hit": {
+      "type": "number",
+      "minimum": 0.0,
+      "title": "Cache Hit"
+     },
+     "cache_miss": {
+      "type": "number",
+      "minimum": 0.0,
+      "title": "Cache Miss"
+     },
+     "output": {
+      "type": "number",
+      "minimum": 0.0,
+      "title": "Output"
+     },
+     "peak_factor": {
+      "type": "number",
+      "maximum": 10.0,
+      "minimum": 1.0,
+      "title": "Peak Factor",
+      "default": 1.0
+     }
+    },
+    "type": "object",
+    "required": [
+     "model",
+     "cache_hit",
+     "cache_miss",
+     "output"
+    ],
+    "title": "ModelPriceEntry"
+   },
    "ModelsOut": {
     "properties": {
      "models": {
@@ -2844,6 +4123,62 @@
      "segment_id"
     ],
     "title": "OutlineOut"
+   },
+   "OverviewFailureSummary": {
+    "properties": {
+     "job_id": {
+      "type": "string",
+      "title": "Job Id"
+     },
+     "title": {
+      "type": "string",
+      "title": "Title"
+     },
+     "submitted_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Submitted At"
+     },
+     "channel_mode": {
+      "anyOf": [
+       {
+        "type": "string",
+        "enum": [
+         "byok",
+         "free"
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Channel Mode"
+     },
+     "failure_reason": {
+      "type": "string",
+      "title": "Failure Reason"
+     },
+     "retryable": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Retryable"
+     }
+    },
+    "type": "object",
+    "required": [
+     "job_id",
+     "title",
+     "submitted_at",
+     "failure_reason"
+    ],
+    "title": "OverviewFailureSummary",
+    "description": "总览页近 24 小时失败任务脱敏摘要（不含完整 IP 与原始 User-Agent）。"
    },
    "PageOut": {
     "properties": {
@@ -2921,6 +4256,77 @@
     ],
     "title": "ParsedGlossary"
    },
+   "ParserPatch": {
+    "properties": {
+     "expected_revision": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Expected Revision"
+     },
+     "mineru_base_url": {
+      "type": "string",
+      "title": "Mineru Base Url",
+      "default": "https://mineru.net"
+     },
+     "mineru_token": {
+      "$ref": "#/components/schemas/SecretUpdate"
+     },
+     "mineru_proxy": {
+      "$ref": "#/components/schemas/SecretUpdate"
+     },
+     "paddle_public_enabled": {
+      "type": "boolean",
+      "title": "Paddle Public Enabled",
+      "default": false
+     },
+     "paddle_token": {
+      "$ref": "#/components/schemas/SecretUpdate"
+     },
+     "paddle_proxy": {
+      "$ref": "#/components/schemas/SecretUpdate"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "expected_revision"
+    ],
+    "title": "ParserPatch"
+   },
+   "ParserServiceView": {
+    "properties": {
+     "mineru_base_url": {
+      "type": "string",
+      "title": "Mineru Base Url"
+     },
+     "mineru_token": {
+      "$ref": "#/components/schemas/SecretView"
+     },
+     "mineru_proxy": {
+      "$ref": "#/components/schemas/SecretView"
+     },
+     "paddle_public_enabled": {
+      "type": "boolean",
+      "title": "Paddle Public Enabled"
+     },
+     "paddle_token": {
+      "$ref": "#/components/schemas/SecretView"
+     },
+     "paddle_proxy": {
+      "$ref": "#/components/schemas/SecretView"
+     }
+    },
+    "type": "object",
+    "required": [
+     "mineru_base_url",
+     "mineru_token",
+     "mineru_proxy",
+     "paddle_public_enabled",
+     "paddle_token",
+     "paddle_proxy"
+    ],
+    "title": "ParserServiceView"
+   },
    "PartOut": {
     "properties": {
      "block_id": {
@@ -2938,6 +4344,69 @@
      "chars"
     ],
     "title": "PartOut"
+   },
+   "PricingConfig": {
+    "properties": {
+     "models": {
+      "items": {
+       "$ref": "#/components/schemas/ModelPriceEntry"
+      },
+      "type": "array",
+      "maxItems": 50,
+      "title": "Models"
+     },
+     "custom_configured": {
+      "type": "boolean",
+      "title": "Custom Configured",
+      "default": false
+     }
+    },
+    "type": "object",
+    "title": "PricingConfig"
+   },
+   "PricingPatch": {
+    "properties": {
+     "expected_revision": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Expected Revision"
+     },
+     "models": {
+      "items": {
+       "$ref": "#/components/schemas/ModelPriceEntry"
+      },
+      "type": "array",
+      "maxItems": 50,
+      "title": "Models"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "expected_revision"
+    ],
+    "title": "PricingPatch"
+   },
+   "QueueSlotStats": {
+    "properties": {
+     "in_use": {
+      "type": "integer",
+      "title": "In Use",
+      "default": 0
+     },
+     "limit": {
+      "type": "integer",
+      "title": "Limit",
+      "default": 0
+     },
+     "waiting": {
+      "type": "integer",
+      "title": "Waiting",
+      "default": 0
+     }
+    },
+    "type": "object",
+    "title": "QueueSlotStats"
    },
    "RectOut": {
     "properties": {
@@ -3143,6 +4612,90 @@
      "created_at"
     ],
     "title": "RevisionOut"
+   },
+   "RollbackIn": {
+    "properties": {
+     "target_revision": {
+      "type": "integer",
+      "minimum": 1.0,
+      "title": "Target Revision"
+     },
+     "expected_revision": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Expected Revision"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "target_revision",
+     "expected_revision"
+    ],
+    "title": "RollbackIn"
+   },
+   "SecretUpdate": {
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "keep",
+       "replace",
+       "disable",
+       "inherit_env"
+      ],
+      "title": "Action",
+      "default": "keep"
+     },
+     "value": {
+      "type": "string",
+      "title": "Value",
+      "default": ""
+     }
+    },
+    "type": "object",
+    "title": "SecretUpdate"
+   },
+   "SecretView": {
+    "properties": {
+     "mode": {
+      "type": "string",
+      "enum": [
+       "custom",
+       "disabled",
+       "inherit_env"
+      ],
+      "title": "Mode",
+      "default": "inherit_env"
+     },
+     "configured": {
+      "type": "boolean",
+      "title": "Configured",
+      "default": false
+     },
+     "mask": {
+      "type": "string",
+      "title": "Mask",
+      "default": ""
+     },
+     "bound_url": {
+      "type": "string",
+      "title": "Bound Url",
+      "default": ""
+     },
+     "bound_protocol": {
+      "type": "string",
+      "title": "Bound Protocol",
+      "default": ""
+     },
+     "corrupted": {
+      "type": "boolean",
+      "title": "Corrupted",
+      "default": false
+     }
+    },
+    "type": "object",
+    "title": "SecretView"
    },
    "SegmentOut": {
     "properties": {
@@ -3398,45 +4951,6 @@
     ],
     "title": "StatsVisitIn"
    },
-   "SubmissionContext": {
-    "properties": {
-     "submitter_ip": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Submitter Ip"
-     },
-     "ip_source": {
-      "type": "string",
-      "enum": [
-       "trusted_proxy",
-       "direct",
-       "unknown"
-      ],
-      "title": "Ip Source",
-      "default": "unknown"
-     },
-     "notice_version": {
-      "anyOf": [
-       {
-        "type": "string",
-        "maxLength": 100
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Notice Version"
-     }
-    },
-    "type": "object",
-    "title": "SubmissionContext"
-   },
    "SubmissionPage": {
     "properties": {
      "generated_at": {
@@ -3622,6 +5136,94 @@
        }
       ],
       "title": "Failure Updated At"
+     },
+     "channel_mode": {
+      "anyOf": [
+       {
+        "type": "string",
+        "enum": [
+         "byok",
+         "free"
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Channel Mode"
+     },
+     "model_name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Model Name"
+     },
+     "fallback_used": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Fallback Used"
+     },
+     "user_agent": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "User Agent"
+     },
+     "client_device": {
+      "anyOf": [
+       {
+        "type": "string",
+        "enum": [
+         "desktop",
+         "mobile",
+         "tablet",
+         "bot",
+         "unknown"
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Client Device"
+     },
+     "client_os": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Client Os"
+     },
+     "client_browser": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Client Browser"
      }
     },
     "type": "object",
@@ -3685,6 +5287,49 @@
       ],
       "title": "Date To"
      },
+     "channel_mode": {
+      "anyOf": [
+       {
+        "type": "string",
+        "enum": [
+         "byok",
+         "free"
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Channel Mode"
+     },
+     "status": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/JobStatus"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "client_device": {
+      "anyOf": [
+       {
+        "type": "string",
+        "enum": [
+         "desktop",
+         "mobile",
+         "tablet",
+         "bot",
+         "unknown"
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Client Device"
+     },
      "page": {
       "type": "integer",
       "maximum": 1000000.0,
@@ -3705,6 +5350,173 @@
     },
     "type": "object",
     "title": "SubmissionSearch"
+   },
+   "SystemConfig": {
+    "properties": {
+     "max_upload_mb": {
+      "type": "integer",
+      "maximum": 2048.0,
+      "minimum": 1.0,
+      "title": "Max Upload Mb",
+      "default": 200
+     },
+     "max_pages": {
+      "type": "integer",
+      "maximum": 10000.0,
+      "minimum": 1.0,
+      "title": "Max Pages",
+      "default": 200
+     },
+     "max_concurrent_jobs": {
+      "type": "integer",
+      "maximum": 64.0,
+      "minimum": 1.0,
+      "title": "Max Concurrent Jobs",
+      "default": 4
+     },
+     "max_concurrent_translations": {
+      "type": "integer",
+      "maximum": 64.0,
+      "minimum": 1.0,
+      "title": "Max Concurrent Translations",
+      "default": 1
+     },
+     "free_max_concurrent_translations": {
+      "type": "integer",
+      "maximum": 32.0,
+      "minimum": 1.0,
+      "title": "Free Max Concurrent Translations",
+      "default": 1
+     },
+     "max_queued_jobs": {
+      "type": "integer",
+      "maximum": 10000.0,
+      "minimum": 1.0,
+      "title": "Max Queued Jobs",
+      "default": 10
+     },
+     "free_max_queued_jobs": {
+      "type": "integer",
+      "maximum": 10000.0,
+      "minimum": 1.0,
+      "title": "Free Max Queued Jobs",
+      "default": 6
+     },
+     "retention_hours": {
+      "type": "integer",
+      "maximum": 8760.0,
+      "minimum": 0.0,
+      "title": "Retention Hours",
+      "default": 24
+     },
+     "min_free_disk_mb": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Min Free Disk Mb",
+      "default": 1024
+     },
+     "maintenance_mode": {
+      "type": "boolean",
+      "title": "Maintenance Mode",
+      "default": false
+     },
+     "site_notice": {
+      "type": "string",
+      "maxLength": 500,
+      "title": "Site Notice",
+      "default": ""
+     }
+    },
+    "type": "object",
+    "title": "SystemConfig"
+   },
+   "SystemPatch": {
+    "properties": {
+     "max_upload_mb": {
+      "type": "integer",
+      "maximum": 2048.0,
+      "minimum": 1.0,
+      "title": "Max Upload Mb",
+      "default": 200
+     },
+     "max_pages": {
+      "type": "integer",
+      "maximum": 10000.0,
+      "minimum": 1.0,
+      "title": "Max Pages",
+      "default": 200
+     },
+     "max_concurrent_jobs": {
+      "type": "integer",
+      "maximum": 64.0,
+      "minimum": 1.0,
+      "title": "Max Concurrent Jobs",
+      "default": 4
+     },
+     "max_concurrent_translations": {
+      "type": "integer",
+      "maximum": 64.0,
+      "minimum": 1.0,
+      "title": "Max Concurrent Translations",
+      "default": 1
+     },
+     "free_max_concurrent_translations": {
+      "type": "integer",
+      "maximum": 32.0,
+      "minimum": 1.0,
+      "title": "Free Max Concurrent Translations",
+      "default": 1
+     },
+     "max_queued_jobs": {
+      "type": "integer",
+      "maximum": 10000.0,
+      "minimum": 1.0,
+      "title": "Max Queued Jobs",
+      "default": 10
+     },
+     "free_max_queued_jobs": {
+      "type": "integer",
+      "maximum": 10000.0,
+      "minimum": 1.0,
+      "title": "Free Max Queued Jobs",
+      "default": 6
+     },
+     "retention_hours": {
+      "type": "integer",
+      "maximum": 8760.0,
+      "minimum": 0.0,
+      "title": "Retention Hours",
+      "default": 24
+     },
+     "min_free_disk_mb": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Min Free Disk Mb",
+      "default": 1024
+     },
+     "maintenance_mode": {
+      "type": "boolean",
+      "title": "Maintenance Mode",
+      "default": false
+     },
+     "site_notice": {
+      "type": "string",
+      "maxLength": 500,
+      "title": "Site Notice",
+      "default": ""
+     },
+     "expected_revision": {
+      "type": "integer",
+      "minimum": 0.0,
+      "title": "Expected Revision"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "expected_revision"
+    ],
+    "title": "SystemPatch"
    },
    "TermEntry": {
     "properties": {

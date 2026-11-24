@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import threading
 import time
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -33,7 +34,7 @@ from pdftr.domain.ir import (
     SegmentStatus,
 )
 from pdftr.domain.job import STAGES, Job, JobOptions, JobStatus
-from pdftr.domain.llm import ChatError, ChatOptions
+from pdftr.domain.llm import ChatError, ChatOptions, ChatUsage
 from pdftr.domain.submissions import SubmissionContext
 from pdftr.domain.text import LETTER_HEADING, NUMBERED_HEADING, RICH_TAG, ROMAN_HEADING, normalize_term_key
 from pdftr.extraction.chars import page_count
@@ -48,11 +49,13 @@ from pdftr.rendering.export import ExportMode, Side, export_pdf_to_path, page_li
 from pdftr.rendering.links import VERSION as LINKS_VERSION
 from pdftr.rendering.links import PdfLink
 from pdftr.translation.batching import placeholder_problems, rich_text_problems
-from pdftr.translation.cost import PRICES, is_deepseek_peak
+from pdftr.translation.cost import Price, cost_cny, is_deepseek_peak
 from pdftr.translation.segmenter import BAD_SOURCE_MESSAGE, bad_source
 from pdftr.translation.service import TranslateOptions, translate
 
 log = logging.getLogger(__name__)
+
+_DEFAULT_MAINTENANCE_MSG = "系统维护中，暂不接收新任务，已完成任务仍可阅读与下载"
 
 
 class UserError(ValueError):
@@ -64,18 +67,41 @@ class NotFound(LookupError):
 
 
 class ServiceBusy(RuntimeError):
-    """服务器暂时无法接收新任务（排队已满、磁盘空间不足），对应 503。"""
+    """服务器暂时无法接收新任务（维护模式、排队已满、磁盘空间不足），对应 503。"""
 
 
 class Limits(BaseModel):
     max_upload_mb: int
     max_pages: int
     max_active_jobs: int = 1_000_000
+    free_max_pages: int | None = None
+    free_max_active_jobs: int = 7
     min_free_disk_mb: int = 0
     retention_hours: int = 0  # 0 = 不自动删除
+    maintenance_mode: bool = False
+    site_notice: str = ""
+    paddle_public_enabled: bool = False
+    using_site_paddle_token: bool = False
 
 
 PARSER_NAMES = {"mineru-cloud": "MinerU", "paddleocr-vl": "PaddleOCR"}
+
+
+def _check_maintenance(maintenance_mode: bool, site_notice: str = "") -> None:
+    if maintenance_mode:
+        raise ServiceBusy(site_notice.strip() or _DEFAULT_MAINTENANCE_MSG)
+
+
+def _check_paddle_access(parser: str, secrets: Secrets, limits: Limits | None) -> None:
+    if (
+        parser == "paddleocr-vl"
+        and limits is not None
+        and limits.using_site_paddle_token
+        and not limits.paddle_public_enabled
+    ):
+        if secrets.channel_mode == "free":
+            raise UserError("本站暂未向公众开放 PaddleOCR 解析服务")
+        raise UserError("本站暂未向公众开放 PaddleOCR 解析服务，请先在设置中填写 PaddleOCR Token")
 
 
 def _require_secrets(secrets: Secrets, *, parser: str | None) -> None:
@@ -86,14 +112,26 @@ def _require_secrets(secrets: Secrets, *, parser: str | None) -> None:
         raise UserError(f"请先在设置中填写 {PARSER_NAMES.get(parser, parser)} Token")
 
 
-def _validate_upload_options(options: JobOptions, secrets: Secrets) -> None:
+def _validate_upload_options(options: JobOptions, secrets: Secrets, limits: Limits | None = None) -> None:
     if not options.cloud_consent:  # 两个解析服务都在云端
         raise UserError(f"使用云端解析前需要确认文件会上传到 {PARSER_NAMES.get(options.parser, options.parser)}")
+    _check_paddle_access(options.parser, secrets, limits)
     _require_secrets(secrets, parser=options.parser)
 
 
-def _check_admission(pipeline: Pipeline, limits: Limits) -> None:
-    if pipeline.active_count() + pipeline.receiving >= limits.max_active_jobs:
+def _check_admission(
+    pipeline: Pipeline,
+    limits: Limits,
+    channel_mode: Literal["byok", "free"] = "byok",
+    *,
+    already_reserved: bool = False,
+) -> None:
+    _check_maintenance(limits.maintenance_mode, limits.site_notice)
+    offset = 1 if already_reserved else 0
+    if channel_mode == "free":
+        if pipeline.active_count("free") + pipeline.receiving_for("free") - offset >= limits.free_max_active_jobs:
+            raise ServiceBusy("免费体验通道正忙，排队的任务较多，请稍后再试或切换自备 API Key")
+    elif pipeline.active_count("byok") + pipeline.receiving_for("byok") - offset >= limits.max_active_jobs:
         raise ServiceBusy("服务器正忙，排队的任务太多，请稍后再试")
 
 
@@ -107,12 +145,13 @@ def create_job(
     submission_context: SubmissionContext | None = None,
 ) -> Job:
     """兼容直接提交字节的调用方，调度仍由调用线程完成。"""
+    _check_maintenance(limits.maintenance_mode, limits.site_notice)
     if len(data) > limits.max_upload_mb * 1024 * 1024:
         raise UserError(f"文件超过 {limits.max_upload_mb} MB")
     if not data.startswith(b"%PDF"):
         raise UserError("只支持 PDF 文件")
-    _validate_upload_options(options, secrets)
-    _check_admission(pipeline, limits)
+    _validate_upload_options(options, secrets, limits)
+    _check_admission(pipeline, limits, secrets.channel_mode)
     _check_upload_space(pipeline, limits)
     job = _persist_job(pipeline, data, filename, options, secrets, limits, submission_context)
     _submit_received_job(pipeline, job, secrets)
@@ -127,9 +166,12 @@ async def receive_upload(
     secrets: Secrets,
     limits: Limits,
     submission_context: SubmissionContext | None = None,
+    *,
+    already_reserved: bool = False,
 ) -> Job:
-    _validate_upload_options(options, secrets)
-    _check_admission(pipeline, limits)
+    _check_maintenance(limits.maintenance_mode, limits.site_notice)
+    _validate_upload_options(options, secrets, limits)
+    _check_admission(pipeline, limits, secrets.channel_mode, already_reserved=already_reserved)
     cancelled = threading.Event()
 
     def stage_and_persist() -> Job:
@@ -177,11 +219,19 @@ async def receive_upload(
         _submit_received_job(pipeline, job, secrets)
         return job
 
-    pipeline.receiving += 1
+    if already_reserved:
+        return await finish_on_cancel(asyncio.create_task(accept()), cancelled.set)
+    if secrets.channel_mode == "free":
+        pipeline.receiving_free += 1
+    else:
+        pipeline.receiving_byok += 1
     try:
         return await finish_on_cancel(asyncio.create_task(accept()), cancelled.set)
     finally:
-        pipeline.receiving -= 1
+        if secrets.channel_mode == "free":
+            pipeline.receiving_free -= 1
+        else:
+            pipeline.receiving_byok -= 1
 
 
 def _check_upload_space(pipeline: Pipeline, limits: Limits) -> Path:
@@ -205,8 +255,14 @@ def _persist_job(
         pages = page_count(data)
     except ValueError as e:
         raise UserError(str(e)) from e
-    if pages > limits.max_pages:
-        raise UserError(f"PDF 共 {pages} 页，超过上限 {limits.max_pages} 页")
+    max_pages = (
+        min(limits.max_pages, limits.free_max_pages)
+        if secrets.channel_mode == "free" and limits.free_max_pages is not None
+        else limits.max_pages
+    )
+    if pages > max_pages:
+        label = "免费体验上限" if secrets.channel_mode == "free" and limits.free_max_pages is not None else "上限"
+        raise UserError(f"PDF 共 {pages} 页，超过{label} {max_pages} 页")
     if options.pages is not None:  # 只翻部分页（0 起页码）：版面仍解析全文，翻译阶段按页筛选
         if not options.pages or any(not 0 <= p < pages for p in options.pages):
             raise UserError(f"页码范围不对：这份 PDF 共 {pages} 页")
@@ -214,8 +270,16 @@ def _persist_job(
 
     deps = pipeline.deps
     expires = datetime.now(UTC) + timedelta(hours=limits.retention_hours) if limits.retention_hours > 0 else None
-    job = Job(id=new_job_id(), filename=Path(filename).name[:200] or "document.pdf", page_count=pages,
-              options=options, model=secrets.llm_model, expires_at=expires)  # fmt: skip
+    job = Job(
+        id=new_job_id(),
+        filename=Path(filename).name[:200] or "document.pdf",
+        page_count=pages,
+        options=options,
+        model=secrets.llm_model,
+        channel_mode=secrets.channel_mode,
+        channel_provider_id=secrets.channel_provider_id,
+        expires_at=expires,
+    )
     try:
         original = deps.artifacts.path(job.id, "original.pdf")
         if isinstance(data, Path):
@@ -518,20 +582,43 @@ def cancel_job(pipeline: Pipeline, job_id: str) -> Job:
     return job
 
 
-def retry_job(pipeline: Pipeline, job_id: str, secrets: Secrets) -> Job:
+def retry_job(
+    pipeline: Pipeline,
+    job_id: str,
+    secrets: Secrets,
+    *,
+    limits: Limits | None = None,
+    maintenance_mode: bool = False,
+    site_notice: str = "",
+) -> Job:
+    _check_maintenance(
+        limits.maintenance_mode if limits is not None else maintenance_mode,
+        limits.site_notice if limits is not None else site_notice,
+    )
     job = get_job(pipeline, job_id)
     if pipeline.is_running(job_id):
         raise UserError("任务正在进行中")
     if job.status is JobStatus.DONE and not pipeline.deps.store.count_segments(job_id, SegmentStatus.FAILED):
         raise UserError("任务已完成")
-    _require_secrets(secrets, parser=job.options.parser if job.stage == "parse" else None)
+    needs_parser = job.stage == "parse" and not pipeline.deps.artifacts.path(job_id, "layout.json").exists()
+    if needs_parser:
+        _check_paddle_access(job.options.parser, secrets, limits)
+    _require_secrets(secrets, parser=job.options.parser if needs_parser else None)
+    if limits is not None:
+        # 队列已满时必须在改写任务状态或落盘之前拒绝
+        _check_admission(pipeline, limits, job.channel_mode)
     if not pipeline.begin_mutation(job_id):
         raise UserError("任务正在修改，请稍后再试")
     try:
+        if limits is not None:
+            _check_admission(pipeline, limits, job.channel_mode)
         if bad_source(pipeline.deps.store.segments(job_id)):
             raise UserError(BAD_SOURCE_MESSAGE)
         if job.stage == "done":
             job.stage = "translate"  # 已完成但有失败段落：只重跑翻译和背景页
+        if secrets.channel_mode == "free":
+            job.channel_provider_id = secrets.channel_provider_id
+            job.model = secrets.llm_model
         job.status, job.error = JobStatus.QUEUED, ""
         pipeline.deps.store.save_job(job)
         pipeline.submit(job, secrets)
@@ -804,11 +891,28 @@ def revert_revision(pipeline: Pipeline, revision_id: int) -> Segment:
 
 
 async def retranslate_segment(
-    pipeline: Pipeline, segment_id: str, quality: Quality, secrets: Secrets, user_terms: dict[str, str] | None = None
+    pipeline: Pipeline,
+    segment_id: str,
+    quality: Quality,
+    secrets: Secrets,
+    user_terms: dict[str, str] | None = None,
+    *,
+    maintenance_mode: bool = False,
+    site_notice: str = "",
 ) -> Segment:
     """user_terms：浏览器里最新的用户术语库（用户纠正术语后重翻这一段时用）；不传则用建任务时的。"""
+    _check_maintenance(maintenance_mode, site_notice)
     seg = _segment(pipeline, segment_id)
-    (out,) = await retranslate_segments(pipeline, seg.job_id, [segment_id], quality, secrets, user_terms)
+    (out,) = await retranslate_segments(
+        pipeline,
+        seg.job_id,
+        [segment_id],
+        quality,
+        secrets,
+        user_terms,
+        maintenance_mode=maintenance_mode,
+        site_notice=site_notice,
+    )
     return out
 
 
@@ -822,9 +926,13 @@ async def retranslate_segments(
     quality: Quality,
     secrets: Secrets,
     user_terms: dict[str, str] | None = None,
+    *,
+    maintenance_mode: bool = False,
+    site_notice: str = "",
 ) -> list[Segment]:
     """一次重翻同一任务的多段（改了术语译法后重翻用到它的段落），与整篇翻译一样分批发给模型。
     每段照常记入修改记录、可以撤回，费用计入任务。"""
+    _check_maintenance(maintenance_mode, site_notice)
     _require_secrets(secrets, parser=None)
     if not 1 <= len(segment_ids) <= MAX_RETRANSLATE:
         raise UserError(f"一次最多重翻 {MAX_RETRANSLATE} 段")
@@ -849,14 +957,33 @@ async def retranslate_segments(
         if bad_source(segs):
             raise UserError(BAD_SOURCE_MESSAGE)
         ctx, selection = await asyncio.to_thread(load_context, deps, job_id, terms)
-        async with chat_session(deps.chat_factory(secrets)) as chat:
-            outs, report = await translate(
-                [s.model_copy(update={"status": SegmentStatus.PENDING}) for s in segs],
-                chat=chat, cache=deps.cache, ctx=ctx,
-                lookup_term_hits=selection.match_segment, context_segments=all_segs,
-                opts=TranslateOptions(quality=quality, concurrency=pipeline.llm_concurrency(secrets),
-                                      use_cache=False, total_timeout_s=45),
-            )  # fmt: skip
+        prices = deps.price_overrides_loader() if deps.price_overrides_loader else None
+        total_budget_s = 45.0
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + total_budget_s
+        try:
+            async with pipeline.translation_slot(job.channel_mode, timeout=total_budget_s):
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise ServiceBusy("翻译通道正忙，等待重翻超时，请稍后再试")
+                async with chat_session(deps.chat_factory(secrets)) as chat:
+                    outs, report = await translate(
+                        [s.model_copy(update={"status": SegmentStatus.PENDING}) for s in segs],
+                        chat=chat,
+                        cache=deps.cache,
+                        ctx=ctx,
+                        lookup_term_hits=selection.match_segment,
+                        context_segments=all_segs,
+                        opts=TranslateOptions(
+                            quality=quality,
+                            concurrency=pipeline.llm_concurrency(secrets),
+                            use_cache=False,
+                            total_timeout_s=remaining,
+                            price_overrides=prices,
+                        ),
+                    )
+        except TimeoutError as exc:
+            raise ServiceBusy("翻译通道正忙，等待重翻超时，请稍后再试") from exc
         for out in outs:
             before = befores[out.id]
             if (
@@ -869,9 +996,12 @@ async def retranslate_segments(
         deps.store.save_segments(outs)
         for out in outs:
             _record(pipeline, befores[out.id], out, "careful" if quality == "careful" else "retranslate")
-        if report.cost_cny is not None:  # 重翻、精修的费用也计入任务花费
+        if report.cost_cny is not None or report.used_fallback:  # 重翻、精修的费用与备选状态也计入任务
             job = get_job(pipeline, job_id)
-            job.cost_cny = (job.cost_cny or 0) + report.cost_cny
+            if report.cost_cny is not None:
+                job.cost_cny = (job.cost_cny or 0) + report.cost_cny
+            if report.used_fallback:
+                job.fallback_used = True
             deps.store.save_job(job)
         return outs
     finally:
@@ -933,12 +1063,19 @@ class Estimate(BaseModel):
 _PER_PAGE = {"default": (0.0023, 0.0040), "careful": (0.009, 0.016)}
 
 
-def estimate(pages: int, quality: Quality, model: str) -> Estimate:
+def estimate(
+    pages: int,
+    quality: Quality,
+    model: str,
+    *,
+    prices: Mapping[str, Price] | None = None,
+) -> Estimate:
     peak = is_deepseek_peak()
-    if model in PRICES:
-        factor = PRICES[model].peak_factor if peak else 1.0
-        if model != "deepseek-flash":  # 其他已知模型按输出单价折算
-            factor *= PRICES[model].output / PRICES["deepseek-flash"].output
+    unit_usage = ChatUsage(completion_tokens=1_000_000)
+    unit_cost = cost_cny(model, unit_usage, peak=peak, prices=prices)
+    base_unit = cost_cny("deepseek-flash", unit_usage, peak=False)
+    if unit_cost is not None and base_unit:
+        factor = unit_cost / base_unit
         low, high = (round(pages * v * factor, 3) for v in _PER_PAGE[quality])
     else:
         low = high = None

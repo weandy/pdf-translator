@@ -233,6 +233,7 @@ export function JobPage() {
           <TermsPanel
             jobId={id}
             doc={doc}
+            channelMode={job.channel_mode}
             onChange={onChange}
             onSpot={(segmentId, term) => setSpot((s) => ({ id: segmentId, n: (s?.n ?? 0) + 1, term }))}
             onMark={(ids) => setMarked(new Set(ids))}
@@ -247,6 +248,7 @@ export function JobPage() {
           <SegmentEditor
             key={`${segment.id}:${segment.target ?? ""}`}
             segment={segment}
+            channelMode={job.channel_mode}
             onChange={onChange}
             onClose={closeEditor}
             navigation={

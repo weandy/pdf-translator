@@ -14,8 +14,11 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+import httpx2
+
 from pdftr.domain.llm import ChatError, ChatOptions, ChatResult, ChatUsage
-from pdftr.translation.openai_compat import _incompatible_fields, _semantic_fallback
+from pdftr.domain.url_guard import build_safe_async_transport
+from pdftr.translation.openai_compat import _incompatible_fields, _make_llm_request_hook, _semantic_fallback
 
 if TYPE_CHECKING:
     from anthropic import AsyncAnthropic
@@ -29,7 +32,18 @@ log = logging.getLogger(__name__)
 
 class AnthropicChat:
     def __init__(
-        self, *, base_url: str, api_key: str, model: str, timeout: float = 600, client: "AsyncAnthropic | None" = None
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout: float = 600,
+        call_timeout_s: float | None = None,
+        client: "AsyncAnthropic | None" = None,
+        disable_redirects: bool = True,
+        default_max_retries: int = 3,
+        allow_private: bool = False,
+        transport: httpx2.AsyncBaseTransport | None = None,
     ) -> None:
         if not api_key:
             raise ChatError("未配置翻译服务的 API Key")
@@ -38,13 +52,44 @@ class AnthropicChat:
         self.model = model
         self.provider_id = f"anthropic:{base_url.rstrip('/')}"
         self._disabled: set[str] = set()
-        # SDK 2.x 用 Authorization: Bearer 传 Key；兼容接口（如 DeepSeek /anthropic）多数只认 x-api-key，两个都带上
-        self._client = client or AsyncAnthropic(
-            base_url=base_url, api_key=api_key, timeout=timeout, max_retries=3, default_headers={"x-api-key": api_key}
-        )
+        self._default_max_retries = max(0, default_max_retries)
+        self._timeout = float(timeout)
+        self.call_timeout_s: float | None = float(call_timeout_s) if call_timeout_s is not None else None
+        self.total_timeout_s: float | None = self.call_timeout_s
+        self._http_client: httpx2.AsyncClient | None = None
+        if client is not None:
+            self._client = client
+        else:
+            hooks = (
+                {"request": [_make_llm_request_hook(allow_private=allow_private, resolve_dns=transport is None)]}
+                if not allow_private
+                else None
+            )
+            effective_transport = (
+                transport if transport is not None else build_safe_async_transport(allow_private=allow_private)
+            )
+            self._http_client = httpx2.AsyncClient(
+                follow_redirects=not disable_redirects,
+                timeout=timeout,
+                transport=effective_transport,
+                event_hooks=hooks,
+            )
+            # SDK 2.x 用 Authorization: Bearer 传 Key；兼容接口（如 DeepSeek /anthropic）多数只认 x-api-key，两个都带上
+            self._client = AsyncAnthropic(
+                base_url=base_url,
+                api_key=api_key,
+                timeout=timeout,
+                max_retries=self._default_max_retries,
+                default_headers={"x-api-key": api_key},
+                http_client=self._http_client,
+            )
 
     async def aclose(self) -> None:
-        await self._client.close()
+        try:
+            await self._client.close()
+        finally:
+            if self._http_client is not None and not self._http_client.is_closed:
+                await self._http_client.aclose()
 
     def _base_request_kwargs(self, opts: ChatOptions) -> dict[str, Any]:
         kw: dict[str, Any] = {"model": self.model, "max_tokens": opts.max_tokens}
@@ -69,9 +114,10 @@ class AnthropicChat:
         messages: list[MessageParam] = [{"role": "user", "content": user}]
         original_fields = set(self._base_request_kwargs(opts))
         sent = self.request_kwargs(opts)
+        effective_retries = min(opts.transport_retries, self._default_max_retries)
         try:
             try:
-                r = await self._client.with_options(max_retries=opts.transport_retries).messages.create(
+                r = await self._client.with_options(max_retries=effective_retries).messages.create(
                     system=system, messages=messages, **sent
                 )
             except anthropic.APIStatusError as e:

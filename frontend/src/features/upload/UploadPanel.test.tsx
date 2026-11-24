@@ -4,8 +4,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DEFAULTS, saveSettings } from "@/entities/settings/model";
+import { DEFAULTS, getSettings, saveSettings } from "@/entities/settings/model";
 import { api, type Job, type ServerConfig } from "@/shared/api/client";
+import { fingerprint } from "@/shared/file/fingerprint";
+import { countPages } from "@/shared/pdf/pdf";
 
 import { UploadPanel } from "./UploadPanel";
 
@@ -27,7 +29,15 @@ describe("共享 MinerU 上传流程", () => {
     Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
   });
   beforeEach(() => {
-    saveSettings({ ...DEFAULTS, llmKey: "synthetic-llm-key", cloudConsent: true });
+    vi.mocked(countPages).mockReset().mockResolvedValue(3);
+    vi.mocked(fingerprint).mockReset().mockResolvedValue(null);
+    saveSettings({
+      ...DEFAULTS,
+      llmKey: "synthetic-llm-key",
+      llmKeyBoundUrl: "https://example.invalid",
+      llmKeyBoundProtocol: "openai",
+      cloudConsent: true,
+    });
     host = document.createElement("div");
     root = createRoot(host);
     client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
@@ -41,22 +51,31 @@ describe("共享 MinerU 上传流程", () => {
     vi.restoreAllMocks();
   });
 
-  async function render(shared: boolean, audit = false) {
-    const config: ServerConfig = {
+  function makeConfig(shared: boolean, audit = false, overrides: Partial<ServerConfig> = {}): ServerConfig {
+    return {
       version: "test",
       default_base_url: "https://example.invalid",
+      default_mineru_base_url: "https://mineru.net",
       default_model: "synthetic-model",
       default_protocol: "openai",
       admin_path: "/weandy",
       server_has_llm_key: false,
       server_has_parser_token: shared,
       server_has_paddle_token: false,
+      paddle_public_enabled: false,
+      maintenance_mode: false,
+      site_notice: "",
       max_upload_mb: 50,
       max_pages: 200,
       retention_hours: 24,
       submission_audit_enabled: audit,
       attributions: [],
+      ...overrides,
     };
+  }
+
+  async function render(shared: boolean, audit = false, overrides: Partial<ServerConfig> = {}) {
+    const config = makeConfig(shared, audit, overrides);
     client.setQueryData(["config"], config);
     await act(async () =>
       root.render(
@@ -76,14 +95,17 @@ describe("共享 MinerU 上传流程", () => {
     });
   }
   const startButton = () => [...host.querySelectorAll("button")].find((button) => button.textContent === "开始翻译")!;
+  const findButton = (text: string) =>
+    [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === text);
 
-  it("只有明确开启提交账本时展示有限性告知", async () => {
+  it("只有明确开启提交账本时展示有限性告知（含 IP 与 User-Agent 说明）", async () => {
     await render(true);
     expect(host.textContent).not.toContain("本站长期保存论文标题");
     await act(async () => root.unmount());
     root = createRoot(host);
     await render(true, true);
     expect(host.querySelector('[role="note"]')?.textContent).toContain("必要信息");
+    expect(host.querySelector('[role="note"]')?.textContent).toContain("User-Agent");
     expect(host.querySelector('[role="note"]')?.textContent).toContain("公开统计仅展示聚合数量");
     expect(host.querySelector('a[href="/guide#privacy"]')).not.toBeNull();
   });
@@ -144,12 +166,16 @@ describe("共享 MinerU 上传流程", () => {
     const config: ServerConfig = {
       version: "test",
       default_base_url: "https://example.invalid",
+      default_mineru_base_url: "https://mineru.net",
       default_model: "synthetic-model",
       default_protocol: "openai",
       admin_path: "/weandy",
       server_has_llm_key: false,
       server_has_parser_token: true,
       server_has_paddle_token: false,
+      paddle_public_enabled: false,
+      maintenance_mode: false,
+      site_notice: "",
       max_upload_mb: 50,
       max_pages: 200,
       retention_hours: 24,
@@ -205,12 +231,16 @@ describe("共享 MinerU 上传流程", () => {
     const config: ServerConfig = {
       version: "test",
       default_base_url: "https://example.invalid",
+      default_mineru_base_url: "https://mineru.net",
       default_model: "synthetic-model",
       default_protocol: "openai",
       admin_path: "/weandy",
       server_has_llm_key: false,
       server_has_parser_token: true,
       server_has_paddle_token: false,
+      paddle_public_enabled: false,
+      maintenance_mode: false,
+      site_notice: "",
       max_upload_mb: 50,
       max_pages: 200,
       retention_hours: 24,
@@ -275,12 +305,16 @@ describe("共享 MinerU 上传流程", () => {
     const config: ServerConfig = {
       version: "test",
       default_base_url: "https://example.invalid",
+      default_mineru_base_url: "https://mineru.net",
       default_model: "synthetic-model",
       default_protocol: "openai",
       admin_path: "/weandy",
       server_has_llm_key: false,
       server_has_parser_token: true,
       server_has_paddle_token: false,
+      paddle_public_enabled: false,
+      maintenance_mode: false,
+      site_notice: "",
       max_upload_mb: 50,
       max_pages: 200,
       retention_hours: 24,
@@ -320,5 +354,222 @@ describe("共享 MinerU 上传流程", () => {
       });
     }
     expect(vi.mocked(pdfMod.countPages)).toHaveBeenCalledTimes(2);
+  });
+
+  it("老用户未绑定或管理员修改默认地址时拦截 BYOK 提交，确认绑定后恢复提交", async () => {
+    saveSettings({
+      ...DEFAULTS,
+      llmKey: "synthetic-llm-key",
+      baseUrl: "",
+      llmKeyBoundUrl: "https://old-default.example.invalid",
+      llmKeyBoundProtocol: "openai",
+      cloudConsent: true,
+    });
+    const job = { id: "bound-job" } as Job;
+    const create = vi.spyOn(api, "createJob").mockResolvedValue(job);
+    await render(true, false, { default_base_url: "https://new-default.example.invalid" });
+
+    expect(host.querySelector(".key-rebind-notice")?.textContent).toContain("https://new-default.example.invalid");
+    expect(startButton().disabled).toBe(true);
+    expect(create).not.toHaveBeenCalled();
+
+    await act(async () => findButton("确认发送到此地址")!.click());
+    expect(getSettings().llmKeyBoundUrl).toBe("https://new-default.example.invalid");
+    expect(host.querySelector(".key-rebind-notice")).toBeNull();
+    expect(startButton().disabled).toBe(false);
+
+    await act(async () => startButton().click());
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("/api/config 加载中或加载失败时禁用提交避免误用 BYOK，点击重试加载后恢复", async () => {
+    const create = vi.spyOn(api, "createJob");
+    let resolveConfig!: (cfg: ServerConfig) => void;
+    const configSpy = vi
+      .spyOn(api, "config")
+      .mockImplementationOnce(
+        () =>
+          new Promise<ServerConfig>((resolve) => {
+            resolveConfig = resolve;
+          }),
+      )
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce(makeConfig(true));
+
+    await act(async () =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <MemoryRouter>
+            <UploadPanel onCreated={onCreated} onBatchCreated={vi.fn()} onNeedSettings={vi.fn()} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      ),
+    );
+    await act(async () => {
+      const input = host.querySelector('input[type="file"]')!;
+      Object.defineProperty(input, "files", {
+        configurable: true,
+        value: [new File(["synthetic"], "wait.pdf", { type: "application/pdf" })],
+      });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(host.textContent).toContain("正在加载站点配置");
+    expect(startButton().disabled).toBe(true);
+    expect(create).not.toHaveBeenCalled();
+
+    // 卸载并模拟首次加载直接失败
+    await act(async () => {
+      resolveConfig(makeConfig(true));
+      root.unmount();
+    });
+    client.clear();
+    root = createRoot(host);
+    await act(async () =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <MemoryRouter>
+            <UploadPanel onCreated={onCreated} onBatchCreated={vi.fn()} onNeedSettings={vi.fn()} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      ),
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      const input = host.querySelector('input[type="file"]')!;
+      Object.defineProperty(input, "files", {
+        configurable: true,
+        value: [new File(["synthetic"], "err.pdf", { type: "application/pdf" })],
+      });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(host.textContent).toContain("无法获取站点配置，为避免误用计费通道已暂停提交");
+    expect(startButton().disabled).toBe(true);
+    expect(create).not.toHaveBeenCalled();
+
+    await act(async () => findButton("重试加载配置")!.click());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(configSpy).toHaveBeenCalledTimes(3);
+    expect(startButton().disabled).toBe(false);
+  });
+
+  it("免费通道关闭且用户此前选过免费模式时明确提示将使用自备 Key", async () => {
+    saveSettings({
+      ...DEFAULTS,
+      llmKey: "synthetic-llm-key",
+      llmKeyBoundUrl: "https://example.invalid",
+      llmKeyBoundProtocol: "openai",
+      translationMode: "free",
+      cloudConsent: true,
+    });
+    await render(true, false, {
+      free_channel: { enabled: false, model_display: "", max_pages: null, notice: "" },
+    });
+    expect(host.textContent).toContain("免费体验通道当前未开放");
+    expect(host.textContent).toContain("自备 API Key");
+  });
+
+  it("paddle_public_enabled 开启且有服务 Token 时支持 PaddleOCR-VL；仅 Paddle 可用时默认自动选中并可切换", async () => {
+    await render(true, false, { paddle_public_enabled: false, server_has_paddle_token: false });
+    expect(host.querySelector('[aria-label="版面解析服务"]')).toBeNull();
+
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    const job = { id: "paddle-job" } as Job;
+    const create = vi.spyOn(api, "createJob").mockResolvedValue(job);
+    // 关闭 MinerU 共享 Token 且无个人 Token 时，默认自动选用 PaddleOCR-VL 且不误报缺少 MinerU Token
+    await render(false, false, { paddle_public_enabled: true, server_has_paddle_token: true });
+    expect(host.querySelector('[aria-label="版面解析服务"]')).not.toBeNull();
+    expect(host.querySelector(".consent")?.textContent).toContain("我知道文件会上传到 PaddleOCR 云端解析");
+    expect(host.querySelector(".setup-hint")).toBeNull();
+    expect(startButton().disabled).toBe(false);
+
+    // 手动切回 MinerU 时才提示缺少 MinerU Token 并禁用提交
+    await act(async () => findButton("MinerU")!.click());
+    expect(host.querySelector(".consent")?.textContent).toContain("MinerU");
+    expect(startButton().disabled).toBe(true);
+
+    // 切回 PaddleOCR-VL 恢复并提交
+    await act(async () => findButton("PaddleOCR-VL")!.click());
+    expect(host.querySelector(".consent")?.textContent).toContain("我知道文件会上传到 PaddleOCR 云端解析");
+    expect(host.querySelector(".setup-hint")).toBeNull();
+    expect(startButton().disabled).toBe(false);
+
+    await act(async () => startButton().click());
+    expect(create).toHaveBeenCalledWith(
+      expect.any(File),
+      expect.objectContaining({ parser: "paddleocr-vl", cloud_consent: true }),
+      expect.objectContaining({ mode: "byok" }),
+    );
+  });
+
+  it("仅公开 PaddleOCR-VL（无服务端 MinerU Token）时免费模式默认自动选 paddleocr-vl 且可直接提交", async () => {
+    saveSettings({
+      ...DEFAULTS,
+      translationMode: "free",
+      cloudConsent: true,
+    });
+    const job = { id: "free-paddle-job" } as Job;
+    const create = vi.spyOn(api, "createJob").mockResolvedValue(job);
+
+    await render(false, false, {
+      free_channel: { enabled: true, model_display: "demo-free", max_pages: 40, notice: "" },
+      paddle_public_enabled: true,
+      server_has_paddle_token: true,
+    });
+
+    expect(host.querySelector(".setup-hint")).toBeNull();
+    expect(host.querySelector(".consent")?.textContent).toContain("我知道文件会上传到 PaddleOCR 云端解析");
+    expect(startButton().disabled).toBe(false);
+
+    await act(async () => startButton().click());
+    expect(create).toHaveBeenCalledWith(
+      expect.any(File),
+      expect.objectContaining({ parser: "paddleocr-vl", cloud_consent: true }),
+      expect.objectContaining({
+        mode: "free",
+        headers: { "X-Translation-Mode": "free" },
+      }),
+    );
+  });
+
+  it("BYOK 使用个人 MinerU Token 且未绑定当前解析地址时拦截提交，确认后恢复并附带 X-Parser-Base-URL", async () => {
+    saveSettings({
+      ...DEFAULTS,
+      llmKey: "synthetic-llm-key",
+      llmKeyBoundUrl: "https://example.invalid",
+      llmKeyBoundProtocol: "openai",
+      parserKey: "personal-mineru-token",
+      parserKeyBoundUrl: "mineru-cloud",
+      cloudConsent: true,
+    });
+    const job = { id: "parser-bound-job" } as Job;
+    const create = vi.spyOn(api, "createJob").mockResolvedValue(job);
+
+    await render(true, false, { default_mineru_base_url: "https://mineru-alt.example.invalid" });
+    expect(host.querySelector(".key-rebind-notice")?.textContent).toContain("https://mineru-alt.example.invalid");
+    expect(startButton().disabled).toBe(true);
+    expect(create).not.toHaveBeenCalled();
+
+    await act(async () => findButton("确认发送到此解析地址")!.click());
+    expect(getSettings().parserKeyBoundUrl).toBe("https://mineru-alt.example.invalid");
+    expect(host.querySelector(".key-rebind-notice")).toBeNull();
+    expect(startButton().disabled).toBe(false);
+
+    await act(async () => startButton().click());
+    expect(create).toHaveBeenCalledWith(
+      expect.any(File),
+      expect.objectContaining({ cloud_consent: true }),
+      expect.objectContaining({
+        mode: "byok",
+        headers: expect.objectContaining({
+          "X-Parser-Key": "personal-mineru-token",
+          "X-Parser-Base-URL": "https://mineru-alt.example.invalid",
+        }),
+      }),
+    );
   });
 });

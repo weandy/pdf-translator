@@ -11,12 +11,12 @@ import logging
 import sqlite3
 import threading
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import NamedTuple, Protocol, runtime_checkable
+from typing import Literal, NamedTuple, Protocol, runtime_checkable
 
 from pdftr.domain.document_name import paper_title
 from pdftr.domain.ir import BlockType, Document, PageKind, Segment, SegmentStatus
@@ -36,7 +36,7 @@ from pdftr.pipeline.secrets import Secrets, SecretStore
 from pdftr.pipeline.workers import finish_on_cancel, run_thread
 from pdftr.rendering.background import make_background
 from pdftr.storage.port import ArtifactStore, JobStore
-from pdftr.translation.cost import add_cost
+from pdftr.translation.cost import Price, add_cost
 from pdftr.translation.port import TranslationCache
 from pdftr.translation.prompt import DocContext
 from pdftr.translation.segmenter import BAD_SOURCE_MESSAGE, bad_source, segment
@@ -78,6 +78,7 @@ def _layout_cache_key(scope: str, pdf_hash: str, config: str, pages: Sequence[in
 ParserFactory = Callable[[Secrets, str], LayoutParser]  # （密钥, 解析服务名）→ 解析器
 ChatFactory = Callable[[Secrets], ChatModel]
 MatcherLoader = Callable[[], TermMatcher | None]
+PriceOverridesLoader = Callable[[], Mapping[str, Price] | None]
 
 
 @dataclass(frozen=True)
@@ -92,12 +93,14 @@ class PipelineDeps:
     term_matcher: MatcherLoader
     max_concurrent_jobs: int = 4  # 同时上传、解析的任务数（主要在等云端，不占本机资源）
     max_concurrent_translations: int = 1  # 同时翻译的任务数：一篇接一篇，每篇内部并发请求翻译服务
+    free_max_concurrent_translations: int = 1  # 免费通道同时翻译的任务数
     mineru_partial_pages_enabled: bool = True
     layout_cache: LayoutCache | None = None
     layout_cache_ttl_hours: int = 0
     parse_retry_delays: tuple[float, ...] = (15, 45)  # 解析遇到网络类错误时自动重试的等待秒数
     font_dir: Path | None = None  # 导出 PDF 用的字体目录
     llm_concurrency: int = 0  # 0 = 按服务商自动选择（translation.service.default_concurrency）
+    price_overrides_loader: PriceOverridesLoader | None = None
 
 
 # 阶段的中文名（错误说明里用，与前端 STAGE_LABELS 一致）
@@ -176,46 +179,87 @@ def load_context(deps: PipelineDeps, job_id: str, user_terms: dict[str, str]) ->
                       terms=selection.paper), selection  # fmt: skip
 
 
-class Slots:
-    """有名额限制的一类阶段：先到先得；排队的任务显示自己排在第几位，队伍前进时更新。"""
+class DynamicSlots:
+    """支持运行时动态调限的排队名额管理器：FIFO 唤醒、取消安全、绝不泄漏名额。"""
 
     def __init__(self, size: int, waiting: Callable[[int], str]) -> None:
-        self._sem = asyncio.Semaphore(size)
-        self._queue: dict[object, tuple[Job, Callable[[Job, str], None]] | None] = {}
+        self._limit = max(1, size)
+        self._in_use = 0
+        self._waiters: dict[object, tuple[asyncio.Future[None], Job | None, Callable[[Job, str], None] | None]] = {}
         self._waiting = waiting  # 排在第 n 位时显示的说明
+
+    def set_limit(self, new_limit: int) -> None:
+        self._limit = max(1, new_limit)
+        self._dispatch_waiters()
+
+    def stats(self) -> tuple[int, int, int]:
+        return self._in_use, self._limit, len(self._waiters)
 
     @asynccontextmanager
     async def hold(
-        self, job: Job | None = None, notify: Callable[[Job, str], None] | None = None
+        self,
+        job: Job | None = None,
+        notify: Callable[[Job, str], None] | None = None,
+        *,
+        timeout: float | None = None,
     ) -> AsyncIterator[None]:
         acquired = False
-        try:
-            if self._sem.locked():
-                ticket = object()
-                self._queue[ticket] = (job, notify) if job is not None and notify is not None else None
-                try:
-                    self._refresh()
-                    await self._sem.acquire()
-                    acquired = True
-                finally:
-                    del self._queue[ticket]
-                    self._refresh()
-            else:
-                await self._sem.acquire()
+        if self._in_use < self._limit and not self._waiters:
+            self._in_use += 1
+            acquired = True
+        else:
+            fut = asyncio.get_running_loop().create_future()
+            ticket = object()
+            self._waiters[ticket] = (fut, job, notify)
+            self._refresh()
+            try:
+                if timeout is None:
+                    await fut
+                else:
+                    await asyncio.wait_for(fut, timeout)
                 acquired = True
+            except BaseException:
+                self._waiters.pop(ticket, None)
+                if fut.done() and not fut.cancelled():
+                    # 名额已在取消或超时前转交给当前协程，立即归还防止泄漏。
+                    self._release_one()
+                else:
+                    self._refresh()
+                raise
+        try:
             yield
         finally:
             if acquired:
-                self._sem.release()
+                self._release_one()
+
+    def _release_one(self) -> None:
+        self._in_use = max(0, self._in_use - 1)
+        self._dispatch_waiters()
+
+    def _dispatch_waiters(self) -> None:
+        changed = False
+        while self._in_use < self._limit and self._waiters:
+            ticket, (fut, _, _) = next(iter(self._waiters.items()))
+            del self._waiters[ticket]
+            changed = True
+            if fut.done():
+                continue
+            self._in_use += 1
+            fut.set_result(None)
+        if changed:
+            self._refresh()
 
     def _refresh(self) -> None:
-        for n, entry in enumerate(self._queue.values(), start=1):
-            if entry is not None:
-                job, notify = entry
+        for n, (_, job, notify) in enumerate(self._waiters.values(), start=1):
+            if job is not None and notify is not None:
                 try:
                     notify(job, self._waiting(n))
                 except Exception:
                     log.exception("任务 %s 的排队进度通知失败", job.id)
+
+
+# 保持旧名称别名兼容历史测试与调用方
+Slots = DynamicSlots
 
 
 class ExportResult(NamedTuple):
@@ -229,49 +273,147 @@ class ExportResult(NamedTuple):
 class Pipeline:
     def __init__(self, deps: PipelineDeps) -> None:
         self.deps = deps
-        # 解析可以几篇同时进行；对齐与生成背景页用 PyMuPDF，耗内存，一次一篇（每篇只要一两秒）；
-        # 术语抽取与翻译一篇接一篇，每篇内部并发请求翻译服务（DeepSeek 默认 4 路）
-        parse = Slots(deps.max_concurrent_jobs, lambda n: f"排队等待解析，排在第 {n} 位")
-        local = Slots(1, lambda n: f"排队等待处理，前面还有 {n} 篇")
-        llm = Slots(deps.max_concurrent_translations, lambda n: f"等待翻译，前面还有 {n} 篇")
+        # 解析可以几篇同时进行；免费任务在解析阶段额外受软上限约束，至少给自备 Key 留 1 席；
+        # 对齐与生成背景页用 PyMuPDF，耗内存，一次一篇；
+        # 术语抽取与翻译按通道独立排队（byok_llm / free_llm），避免免费队列卡死自备 Key
+        parse = DynamicSlots(deps.max_concurrent_jobs, lambda n: f"排队等待解析，排在第 {n} 位")
+        free_parse_limit = max(1, deps.max_concurrent_jobs - 1) if deps.max_concurrent_jobs >= 2 else 1
+        free_parse = DynamicSlots(free_parse_limit, lambda n: f"免费通道排队等待解析，排在第 {n} 位")
+        local = DynamicSlots(1, lambda n: f"排队等待处理，前面还有 {n} 篇")
+        byok_llm = DynamicSlots(deps.max_concurrent_translations, lambda n: f"等待翻译，前面还有 {n} 篇")
+        free_llm = DynamicSlots(deps.free_max_concurrent_translations, lambda n: f"免费通道排队翻译，前面还有 {n} 篇")
         self._local = local
-        self._slots = {"parse": parse, "fuse": local, "segment": local, "glossary": llm, "translate": llm,
+        self._free_parse = free_parse
+        self._byok_llm = byok_llm
+        self._free_llm = free_llm
+        self._slots = {"parse": parse, "fuse": local, "segment": local, "glossary": byok_llm, "translate": byok_llm,
                        "render": local}  # fmt: skip
-        self.receiving = 0  # 正在接收且尚未调度的上传，只在事件循环读写
+        self.receiving_byok = 0  # 正在接收且尚未调度的自备 Key 上传，只在事件循环读写
+        self.receiving_free = 0  # 正在接收且尚未调度的免费通道上传，只在事件循环读写
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._task_channels: dict[str, Literal["byok", "free"]] = {}
         self._cancelling: set[str] = set()  # 用户要求取消的任务（与服务停止时的取消区分开）
         self._mutations: set[str] = set()  # 已完成任务的编辑/重翻/撤回互斥标记
         self._mutation_guard = threading.Lock()
         self._artifact_guard = threading.RLock()
+        self._admission_guard = threading.RLock()
         self._exporting: dict[str, int] = {}
         self._deleting: set[str] = set()
         self._exports: dict[Path, asyncio.Task[ExportResult]] = {}
+        self._applied_limits_revision: int = -1
+
+    @property
+    def receiving(self) -> int:
+        return self.receiving_byok + self.receiving_free
+
+    @receiving.setter
+    def receiving(self, value: int) -> None:
+        self.receiving_byok = max(0, value)
+        self.receiving_free = 0
+
+    def receiving_for(self, channel_mode: Literal["byok", "free"]) -> int:
+        return self.receiving_free if channel_mode == "free" else self.receiving_byok
+
+    def try_reserve_upload(self, channel_mode: Literal["byok", "free"], limit: int) -> bool:
+        """在读取 multipart 请求体前原子预留 1 个通道名额，避免并发请求同时穿透预检。"""
+        with self._admission_guard:
+            if self.active_count(channel_mode) + self.receiving_for(channel_mode) >= limit:
+                return False
+            if channel_mode == "free":
+                self.receiving_free += 1
+            else:
+                self.receiving_byok += 1
+            return True
+
+    def release_upload(self, channel_mode: Literal["byok", "free"]) -> None:
+        """归还在上传中间件中预留的通道名额。"""
+        with self._admission_guard:
+            if channel_mode == "free":
+                self.receiving_free = max(0, self.receiving_free - 1)
+            else:
+                self.receiving_byok = max(0, self.receiving_byok - 1)
+
+    def apply_runtime_limits(
+        self,
+        parse_limit: int,
+        byok_limit: int,
+        free_limit: int,
+        *,
+        revision: int | None = None,
+    ) -> bool:
+        """在事件循环内热更新解析与双通道翻译并发上限；忽略落后于已应用版本的迟到回调。"""
+        if revision is not None:
+            if revision < self._applied_limits_revision:
+                return False
+            self._applied_limits_revision = revision
+        self._slots["parse"].set_limit(parse_limit)
+        self._free_parse.set_limit(max(1, parse_limit - 1) if parse_limit >= 2 else 1)
+        self._byok_llm.set_limit(byok_limit)
+        self._free_llm.set_limit(free_limit)
+        return True
+
+    def queue_snapshot(self) -> dict[str, tuple[int, int, int]]:
+        parse_in_use, parse_limit, parse_waiting = self._slots["parse"].stats()
+        _, _, free_parse_waiting = self._free_parse.stats()
+        return {
+            "parse": (parse_in_use, parse_limit, parse_waiting + free_parse_waiting),
+            "free": self._free_llm.stats(),
+            "byok": self._byok_llm.stats(),
+        }
+
+    def parse_reserved_for_byok(self) -> bool:
+        _, parse_limit, _ = self._slots["parse"].stats()
+        return parse_limit >= 2
+
+    def active_jobs_summary(self) -> list[dict[str, object]]:
+        """返回在途任务的脱敏运行摘要，绝不含文件名或论文正文。"""
+        items: list[dict[str, object]] = []
+        with self._admission_guard:
+            job_ids = list(self._tasks)
+        for job_id in job_ids:
+            job = self.deps.store.get_job(job_id)
+            if job is None:
+                continue
+            items.append(
+                {
+                    "job_id": job.id,
+                    "page_count": job.page_count,
+                    "stage": job.stage,
+                    "progress": job.progress,
+                    "channel_mode": job.channel_mode,
+                    "model": job.model,
+                    "status": job.status.value,
+                }
+            )
+        return items
 
     # ---- 调度 ----
     def submit(self, job: Job, secrets: Secrets) -> None:
         self.deps.secrets.put(job.id, secrets)
         task = asyncio.create_task(self._run(job.id))
-        with self._artifact_guard:
+        with self._admission_guard:
             self._tasks[job.id] = task
+            self._task_channels[job.id] = job.channel_mode
 
-        def finished(done: asyncio.Task[None]) -> None:
-            with self._artifact_guard:
+        def _cleanup(done: asyncio.Task[None]) -> None:
+            with self._admission_guard:
                 if self._tasks.get(job.id) is done:
-                    self._tasks.pop(job.id)
+                    self._tasks.pop(job.id, None)
+                    self._task_channels.pop(job.id, None)
 
-        task.add_done_callback(finished)
+        task.add_done_callback(_cleanup)
 
     def active_job_ids(self) -> set[str]:
-        with self._artifact_guard:
+        with self._admission_guard:
             return set(self._tasks)
 
     def is_running(self, job_id: str) -> bool:
-        with self._artifact_guard:
+        with self._admission_guard:
             return job_id in self._tasks
 
     def cancel(self, job_id: str) -> bool:
         """取消排队中或进行中的任务；返回是否有任务可取消。已完成的阶段与译文缓存保留，重试时从中断处继续。"""
-        with self._artifact_guard:
+        with self._admission_guard:
             task = self._tasks.get(job_id)
         if task is None or task.done():
             return False
@@ -283,6 +425,18 @@ class Pipeline:
     async def local_slot(self) -> AsyncIterator[None]:
         """导出与本机处理阶段共享同一个重任务名额。"""
         async with self._local.hold():
+            yield
+
+    @asynccontextmanager
+    async def translation_slot(
+        self,
+        channel_mode: Literal["byok", "free"],
+        *,
+        timeout: float | None = None,
+    ) -> AsyncIterator[None]:
+        """复用对应通道的翻译并发槽，使单段与批量重翻也受通道并发上限约束并在概况可见。"""
+        slot = self._free_llm if channel_mode == "free" else self._byok_llm
+        async with slot.hold(timeout=timeout):
             yield
 
     async def export_once(self, path: Path, render: Callable[[], Coroutine[None, None, ExportResult]]) -> ExportResult:
@@ -334,10 +488,12 @@ class Pipeline:
                 with self._artifact_guard:
                     self._deleting.remove(job_id)
 
-    def active_count(self) -> int:
-        """排队中与执行中的任务数。"""
-        with self._artifact_guard:
-            return len(self._tasks)
+    def active_count(self, channel_mode: Literal["byok", "free"] | None = None) -> int:
+        """排队中与执行中的任务数，可按通道独立统计。"""
+        with self._admission_guard:
+            if channel_mode is None:
+                return len(self._tasks)
+            return sum(1 for mode in self._task_channels.values() if mode == channel_mode)
 
     def pending_work_count(self) -> int:
         """停机时还需等待的流水线任务与导出。"""
@@ -365,7 +521,7 @@ class Pipeline:
 
     async def wait_all(self, timeout: float | None = None) -> bool:
         """等待在途的翻译和导出，超时返回 False。"""
-        with self._artifact_guard:
+        with self._admission_guard:
             tasks = [*self._tasks.values(), *self._exports.values()]
         if not tasks:
             return True
@@ -379,6 +535,23 @@ class Pipeline:
         self.deps.store.save_job(job)
         self.deps.events.publish(job)
 
+    def _slot_for(self, stage: str, channel_mode: Literal["byok", "free"]) -> DynamicSlots:
+        if stage in ("glossary", "translate"):
+            return self._free_llm if channel_mode == "free" else self._byok_llm
+        return self._slots[stage]
+
+    @asynccontextmanager
+    async def _hold_group(
+        self, group: Sequence[str], job: Job, notify: Callable[[Job, str], None]
+    ) -> AsyncIterator[None]:
+        slots = self._slot_for(group[0], job.channel_mode)
+        if group[0] == "parse" and job.channel_mode == "free":
+            async with self._free_parse.hold(job, notify), slots.hold(job, notify):
+                yield
+            return
+        async with slots.hold(job, notify):
+            yield
+
     async def _run(self, job_id: str) -> None:
         job = self.deps.store.get_job(job_id)
         secrets = self.deps.secrets.get(job_id)
@@ -389,12 +562,12 @@ class Pipeline:
             todo = list(STAGES[start:])
             while todo:
                 # 连续几个阶段属于同一类名额时一次拿下（术语抽取与翻译之间不让别的任务插队）
-                slots = self._slots[todo[0]]
-                n = next((i for i, s in enumerate(todo) if self._slots[s] is not slots), len(todo))
+                slots = self._slot_for(todo[0], job.channel_mode)
+                n = next((i for i, s in enumerate(todo) if self._slot_for(s, job.channel_mode) is not slots), len(todo))
                 group, todo = todo[:n], todo[n:]
                 summary = job.message  # 排队说明会覆盖消息，先记下翻译阶段的总结
                 self._update(job, stage=group[0], progress=0.0)
-                async with slots.hold(job, lambda j, msg: self._update(j, message=msg)):
+                async with self._hold_group(group, job, lambda j, msg: self._update(j, message=msg)):
                     if job.status is not JobStatus.RUNNING:
                         self._update(job, status=JobStatus.RUNNING, error="")
                     for stage in group:
@@ -573,6 +746,7 @@ class Pipeline:
         candidates = frequent_candidates(body_sources)
         definitions = extract_acronym_definitions(body_sources, candidates)
         intro = next((s.source for s in segs if len(s.source.split()) >= 30 and s.source != doc.meta.abstract), "")
+        prices = self.deps.price_overrides_loader() if self.deps.price_overrides_loader else None
         async with chat_session(self.deps.chat_factory(secrets)) as chat:
             found = await extract_terms(
                 chat,
@@ -584,12 +758,18 @@ class Pipeline:
                 definitions=definitions,
                 user_terms=job.options.user_terms,
             )
-            cost = add_cost(None, chat.model, found.usage)
+            billing_model = found.actual_model or chat.model
+            cost = add_cost(None, billing_model, found.usage, prices=prices)
         terms = normalize_terms(found.terms, body_sources, headings)
+        updates: dict[str, object] = {}
         if cost is not None:
-            self._update(job, cost_cny=(job.cost_cny or 0) + cost)  # 术语抽取也计入任务花费
+            updates["cost_cny"] = (job.cost_cny or 0) + cost  # 术语抽取也计入任务花费
+        if found.used_fallback:
+            updates["fallback_used"] = True
+        if updates:
+            self._update(job, **updates)
         found.terms = terms
-        _write_json(out, found.model_dump_json(exclude={"usage"}))
+        _write_json(out, found.model_dump_json(exclude={"usage", "actual_model", "used_fallback"}))
 
     async def _translate(self, job: Job, secrets: Secrets) -> None:
         segs = self.deps.store.segments(job.id)
@@ -601,18 +781,26 @@ class Pipeline:
             message = f"翻译中 {done}/{total}" + (f"，{note}" if note else "")
             self._update(job, progress=done / total if total else 1.0, message=message)
 
+        prices = self.deps.price_overrides_loader() if self.deps.price_overrides_loader else None
         async with chat_session(self.deps.chat_factory(secrets)) as chat:
             out, report = await translate(
                 segs, chat=chat, cache=self.deps.cache, ctx=ctx,
                 lookup_term_hits=selection.match_segment, context_segments=segs,
-                opts=TranslateOptions(quality=job.options.quality, concurrency=self.llm_concurrency(secrets)),
+                opts=TranslateOptions(
+                    quality=job.options.quality,
+                    concurrency=self.llm_concurrency(secrets),
+                    price_overrides=prices,
+                ),
                 on_progress=progress,
             )  # fmt: skip
             model = chat.model
         self.deps.store.save_segments(out)
         cost = report.cost_cny
         total = None if cost is None and job.cost_cny is None else (job.cost_cny or 0) + (cost or 0)
-        self._update(job, model=model, cost_cny=total, message=_translation_summary(out))
+        updates: dict[str, object] = {"model": model, "cost_cny": total, "message": _translation_summary(out)}
+        if report.used_fallback:
+            updates["fallback_used"] = True
+        self._update(job, **updates)
         if report.failed:
             reasons = "；".join(list(dict.fromkeys(report.failures.values()))[:3])
             raise StageError(

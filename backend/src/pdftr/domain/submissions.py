@@ -9,10 +9,13 @@ from typing import Literal, Self
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from pdftr.domain.job import Job, JobStatus
+from pdftr.domain.user_agent import ClientDevice
 
-NOTICE_VERSION = "submission-audit-v1"
+# 自 v2 起同步留存客户端 UA 摘要与原始 UA
+NOTICE_VERSION = "submission-audit-v2"
 IPSource = Literal["trusted_proxy", "direct", "unknown"]
 TitleSource = Literal["parsed", "filename", "unknown"]
+ChannelMode = Literal["byok", "free"]
 BEIJING = timezone(timedelta(hours=8))
 
 
@@ -47,6 +50,9 @@ class SubmissionContext(BaseModel):
     submitter_ip: str | None = None
     ip_source: IPSource = "unknown"
     notice_version: str | None = Field(default=None, max_length=100)
+    user_agent: str | None = None
+    channel_mode: ChannelMode = "byok"
+    model_name: str = ""
 
     @field_validator("submitter_ip")
     @classmethod
@@ -78,6 +84,13 @@ class SubmissionRecord(BaseModel):
     failure_reason: str | None = None
     retryable: bool | None = None
     failure_updated_at: datetime | None = None
+    channel_mode: ChannelMode | None = None
+    model_name: str | None = None
+    fallback_used: bool | None = None
+    user_agent: str | None = None
+    client_device: ClientDevice | None = None
+    client_os: str | None = None
+    client_browser: str | None = None
 
 
 def failure_details(job: Job, now: datetime) -> tuple[str | None, str | None, bool | None, str | None]:
@@ -123,6 +136,9 @@ class SubmissionSearch(BaseModel):
     ip: str | None = Field(default=None, max_length=64)
     date_from: date | None = None
     date_to: date | None = None
+    channel_mode: ChannelMode | None = None
+    status: JobStatus | None = None
+    client_device: ClientDevice | None = None
     page: int = Field(default=1, ge=1, le=1_000_000)
     page_size: Literal[25, 50, 100] = 25
 

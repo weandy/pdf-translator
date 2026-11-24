@@ -14,6 +14,9 @@ export type SegmentData = components["schemas"]["SegmentOut"];
 export type LinkData = components["schemas"]["LinkOut"];
 export type OutlineData = components["schemas"]["OutlineOut"];
 export type ServerConfig = components["schemas"]["ConfigOut"];
+export type FreeChannelPublic = components["schemas"]["FreeChannelPublicOut"];
+export type LlmPreset = components["schemas"]["LlmPreset"];
+export type TranslationMode = "byok" | "free";
 export type Estimate = components["schemas"]["Estimate"];
 export type Revision = components["schemas"]["RevisionOut"];
 export type LlmCheck = components["schemas"]["LlmCheck"];
@@ -38,7 +41,7 @@ export function setAuthHeaders(provider: () => Record<string, string>): void {
   authHeaders = provider;
 }
 
-async function request<T>(path: string, init: RequestInit = {}, includeAuth = true): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}, includeAuth = false): Promise<T> {
   const res = await fetch(path, {
     ...init,
     headers: { Accept: "application/json", ...(includeAuth ? authHeaders() : {}), ...init.headers },
@@ -66,6 +69,30 @@ export interface Health {
   status: string;
   version: string;
   data_dir_writable: boolean;
+}
+
+export interface JobRequestOptions {
+  mode?: TranslationMode;
+  headers?: Record<string, string>;
+}
+
+function stripPersonalCredentialHeaders(headers: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers).filter(([k]) => {
+      const lower = k.toLowerCase();
+      return !lower.startsWith("x-llm-") && !lower.startsWith("x-parser-") && !lower.startsWith("x-paddle-");
+    }),
+  );
+}
+
+function isJobRequestOptions(
+  extra: JobRequestOptions | Record<string, string> | undefined,
+): extra is JobRequestOptions {
+  if (!extra) return false;
+  return (
+    ("mode" in extra && (extra.mode === undefined || extra.mode === "byok" || extra.mode === "free")) ||
+    ("headers" in extra && (extra.headers === undefined || typeof extra.headers === "object"))
+  );
 }
 
 async function documentRequest(id: string, signal?: AbortSignal): Promise<DocumentData> {
@@ -104,29 +131,101 @@ export const api = {
     ),
   job: (id: string, signal?: AbortSignal) => request<Job>(`/api/jobs/${id}`, { signal }),
   deleteJob: (id: string) => request<void>(`/api/jobs/${id}`, { method: "DELETE" }),
-  createJob: (file: File, options: Partial<JobOptions>) => {
+  createJob: (
+    file: File,
+    options: Partial<JobOptions>,
+    extra?: JobRequestOptions | Record<string, string>,
+  ) => {
     const form = new FormData();
     form.append("file", file);
     form.append("options", JSON.stringify(options));
-    return request<Job>("/api/jobs", { method: "POST", body: form });
+    const parsed = isJobRequestOptions(extra) ? extra : { headers: extra };
+    const explicitHeaders = parsed.headers;
+    const headerMode = explicitHeaders?.["X-Translation-Mode"]?.toLowerCase();
+    const effectiveMode: TranslationMode | undefined =
+      parsed.mode ?? (headerMode === "free" ? "free" : headerMode === "byok" ? "byok" : undefined);
+    if (effectiveMode === "free") {
+      // 免费体验模式绝不携带任何个人翻译或解析凭据头，避免泄露浏览器里的个人 Key/Token。
+      const base = explicitHeaders
+        ? stripPersonalCredentialHeaders(explicitHeaders)
+        : stripPersonalCredentialHeaders(authHeaders());
+      return request<Job>(
+        "/api/jobs",
+        { method: "POST", body: form, headers: { ...base, "X-Translation-Mode": "free" } },
+        false,
+      );
+    }
+    if (explicitHeaders) {
+      return request<Job>(
+        "/api/jobs",
+        {
+          method: "POST",
+          body: form,
+          headers: effectiveMode ? { ...explicitHeaders, "X-Translation-Mode": effectiveMode } : explicitHeaders,
+        },
+        false,
+      );
+    }
+    return request<Job>(
+      "/api/jobs",
+      {
+        method: "POST",
+        body: form,
+        ...(effectiveMode ? { headers: { "X-Translation-Mode": effectiveMode } } : {}),
+      },
+      true,
+    );
   },
-  retryJob: (id: string) => request<Job>(`/api/jobs/${id}/retry`, { method: "POST" }),
+  retryJob: (id: string, options?: { channelMode?: TranslationMode; mode?: TranslationMode }) => {
+    const mode = options?.channelMode ?? options?.mode;
+    if (mode === "free") {
+      // 免费任务重试由后端按已落库的 channel_mode 走免费通道快照，不携带任何个人翻译或解析凭据头。
+      return request<Job>(
+        `/api/jobs/${id}/retry`,
+        { method: "POST", headers: stripPersonalCredentialHeaders(authHeaders()) },
+        false,
+      );
+    }
+    return request<Job>(`/api/jobs/${id}/retry`, { method: "POST" }, true);
+  },
   cancelJob: (id: string) => request<Job>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   document: documentRequest,
   editSegment: (id: string, target: string) =>
     request<SegmentData>(`/api/segments/${id}`, { method: "PATCH", ...json({ target }) }),
   /** userTerms：浏览器里最新的用户术语库 */
-  retranslate: (id: string, quality: Quality, userTerms?: Record<string, string>) =>
-    request<SegmentData>(`/api/segments/${id}/retranslate`, {
-      method: "POST",
-      ...json({ quality, user_terms: userTerms }),
-    }),
+  retranslate: (
+    id: string,
+    quality: Quality,
+    userTerms?: Record<string, string>,
+    options?: { channelMode?: TranslationMode; mode?: TranslationMode },
+  ) => {
+    const mode = options?.channelMode ?? options?.mode;
+    return request<SegmentData>(
+      `/api/segments/${id}/retranslate`,
+      {
+        method: "POST",
+        ...json({ quality, user_terms: userTerms }),
+      },
+      mode !== "free",
+    );
+  },
   /** 一次重翻同一任务的多段（最多 20 段） */
-  retranslateMany: (jobId: string, ids: string[], userTerms?: Record<string, string>) =>
-    request<SegmentData[]>(`/api/jobs/${jobId}/retranslate`, {
-      method: "POST",
-      ...json({ segment_ids: ids, quality: "default", user_terms: userTerms }),
-    }),
+  retranslateMany: (
+    jobId: string,
+    ids: string[],
+    userTerms?: Record<string, string>,
+    options?: { channelMode?: TranslationMode; mode?: TranslationMode },
+  ) => {
+    const mode = options?.channelMode ?? options?.mode;
+    return request<SegmentData[]>(
+      `/api/jobs/${jobId}/retranslate`,
+      {
+        method: "POST",
+        ...json({ segment_ids: ids, quality: "default", user_terms: userTerms }),
+      },
+      mode !== "free",
+    );
+  },
   jobTerms: (jobId: string) => request<TermUse[]>(`/api/jobs/${jobId}/terms`),
   prepareExport: async (jobId: string, mode: ExportMode, side: "left" | "right" = "right") => {
     const controller = new AbortController();
@@ -147,7 +246,7 @@ export const api = {
     const form = new FormData();
     form.append("file", file);
     form.append("ai", String(ai));
-    return request<ParsedGlossary>("/api/glossary/parse", { method: "POST", body: form });
+    return request<ParsedGlossary>("/api/glossary/parse", { method: "POST", body: form }, ai);
   },
   /** 翻译服务的模型列表与连通测试；headers 用设置面板里尚未保存的值 */
   llmModels: async (headers: Record<string, string>, signal?: AbortSignal) => {

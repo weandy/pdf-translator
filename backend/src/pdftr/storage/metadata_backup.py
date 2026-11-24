@@ -9,6 +9,7 @@ TABLE_COLUMNS = {
     "analytics_daily": ("day", "page_views", "visitors", "jobs_submitted", "jobs_completed", "pages_submitted"),
     "analytics_jobs": ("job_id", "completed"),
     "analytics_visitors": ("visitor_hash",),
+    "analytics_client_daily": ("day", "metric_type", "device", "os", "browser", "count"),
     "submission_audit": (
         "job_id",
         "title",
@@ -27,6 +28,13 @@ TABLE_COLUMNS = {
         "failure_reason",
         "retryable",
         "failure_updated_at",
+        "channel_mode",
+        "model_name",
+        "fallback_used",
+        "user_agent",
+        "client_device",
+        "client_os",
+        "client_browser",
     ),
 }
 INTEGER_COLUMNS = {
@@ -36,8 +44,10 @@ INTEGER_COLUMNS = {
     "jobs_completed",
     "pages_submitted",
     "completed",
+    "count",
     "page_count",
     "retryable",
+    "fallback_used",
 }
 
 

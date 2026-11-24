@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import ValidationError
 
 from pdftr.api.client_ip import resolve_client_ip
-from pdftr.api.deps import pipeline, secrets
+from pdftr.api.deps import container, pipeline, resolve_existing_job_secrets, resolve_upload_secrets
 from pdftr.api.schemas import DocumentOut, ExportPrepareOut, JobOut, RetranslateManyIn, RevisionOut, SegmentOut
 from pdftr.domain.job import JobOptions, JobStatus
 from pdftr.domain.submissions import NOTICE_VERSION, SubmissionContext
@@ -26,36 +26,107 @@ from pdftr.pipeline.workers import run_thread
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
 PipelineDep = Annotated[Pipeline, Depends(pipeline)]
-SecretsDep = Annotated[Secrets, Depends(secrets)]
+UploadSecretsDep = Annotated[Secrets, Depends(resolve_upload_secrets)]
+
+
+def _maintenance_state(request: Request) -> tuple[bool, str]:
+    c = container(request)
+    if c.runtime_config is None:
+        return False, ""
+    sys_cfg = c.runtime_config.snapshot().data.system
+    return sys_cfg.maintenance_mode, sys_cfg.site_notice
+
+
+def _build_limits(request: Request, sec: Secrets) -> usecases.Limits:
+    c = container(request)
+    settings = c.settings
+    snap = c.runtime_config.snapshot() if c.runtime_config is not None else None
+    paddle_public_enabled = snap.data.parser.paddle_public_enabled if snap is not None else False
+    # 免费模式或自备模式下未传入个人 X-Paddle-Key 时，均视为使用站点 PaddleOCR 能力，须受公开开关约束
+    user_has_paddle_key = sec.channel_mode == "byok" and bool((request.headers.get("x-paddle-key") or "").strip())
+    using_site_paddle_token = not user_has_paddle_key
+    if snap is not None and snap.revision > 0:
+        sys_cfg = snap.data.system
+        return usecases.Limits(
+            max_upload_mb=sys_cfg.max_upload_mb,
+            max_pages=sys_cfg.max_pages,
+            max_active_jobs=sys_cfg.max_concurrent_jobs + sys_cfg.max_queued_jobs,
+            free_max_pages=snap.data.free_translation.max_pages,
+            free_max_active_jobs=sys_cfg.free_max_concurrent_translations + sys_cfg.free_max_queued_jobs,
+            min_free_disk_mb=sys_cfg.min_free_disk_mb,
+            retention_hours=sys_cfg.retention_hours,
+            maintenance_mode=sys_cfg.maintenance_mode,
+            site_notice=sys_cfg.site_notice,
+            paddle_public_enabled=paddle_public_enabled,
+            using_site_paddle_token=using_site_paddle_token,
+        )
+    sys_cfg = snap.data.system if snap is not None else None
+    return usecases.Limits(
+        max_upload_mb=settings.max_upload_mb,
+        max_pages=settings.max_pages,
+        max_active_jobs=settings.max_concurrent_jobs + settings.max_queued_jobs,
+        free_max_pages=snap.data.free_translation.max_pages if snap is not None else None,
+        free_max_active_jobs=(
+            sys_cfg.free_max_concurrent_translations + sys_cfg.free_max_queued_jobs if sys_cfg is not None else 7
+        ),
+        min_free_disk_mb=settings.min_free_disk_mb,
+        retention_hours=settings.retention_hours,
+        maintenance_mode=sys_cfg.maintenance_mode if sys_cfg is not None else False,
+        site_notice=sys_cfg.site_notice if sys_cfg is not None else "",
+        paddle_public_enabled=paddle_public_enabled,
+        using_site_paddle_token=using_site_paddle_token,
+    )
 
 
 @router.post("", response_model=JobOut, status_code=202)
 async def create_job(
     request: Request,
     p: PipelineDep,
-    sec: SecretsDep,
+    sec: UploadSecretsDep,
     file: Annotated[UploadFile, File()],
     options: Annotated[str, Form()] = "{}",
 ) -> JobOut:
-    settings = request.app.state.container.settings
+    c = container(request)
+    settings = c.settings
     try:
         opts = JobOptions.model_validate_json(options)
     except ValidationError as e:
         raise usecases.UserError("任务选项格式错误") from e
-    limits = usecases.Limits(
-        max_upload_mb=settings.max_upload_mb,
-        max_pages=settings.max_pages,
-        max_active_jobs=settings.max_concurrent_jobs + settings.max_queued_jobs,
-        min_free_disk_mb=settings.min_free_disk_mb,
-        retention_hours=settings.retention_hours,
-    )
-    context = None
+
+    if sec.channel_mode == "free":
+        # 按本次实际选择的解析器（mineru-cloud / paddleocr-vl）精确校验站点解析凭据
+        sec = c.free_secrets(require_parser=True, parser=opts.parser)
+
+    limits = _build_limits(request, sec)
+
+    user_agent = request.headers.get("user-agent")
     if settings.submission_audit_enabled:
         client_ip = resolve_client_ip(request, settings)
         context = SubmissionContext(
-            submitter_ip=client_ip.address, ip_source=client_ip.source, notice_version=NOTICE_VERSION
+            submitter_ip=client_ip.address,
+            ip_source=client_ip.source,
+            notice_version=NOTICE_VERSION,
+            user_agent=user_agent,
+            channel_mode=sec.channel_mode,
+            model_name=sec.llm_model,
         )
-    job = await usecases.receive_upload(p, file.file, file.filename or "document.pdf", opts, sec, limits, context)
+    else:
+        context = SubmissionContext(
+            user_agent=user_agent,
+            channel_mode=sec.channel_mode,
+            model_name=sec.llm_model,
+        )
+    already_reserved = getattr(request.state, "upload_reserved_mode", None) == sec.channel_mode
+    job = await usecases.receive_upload(
+        p,
+        file.file,
+        file.filename or "document.pdf",
+        opts,
+        sec,
+        limits,
+        context,
+        already_reserved=already_reserved,
+    )
     return JobOut.of(job)
 
 
@@ -181,10 +252,25 @@ def job_terms(job_id: str, p: PipelineDep) -> list[usecases.TermUse]:
 
 @router.post("/{job_id}/retranslate", response_model=list[SegmentOut])
 async def retranslate_many(
-    job_id: str, body: RetranslateManyIn, p: PipelineDep, sec: Annotated[Secrets, Depends(secrets)]
+    job_id: str,
+    body: RetranslateManyIn,
+    request: Request,
+    p: PipelineDep,
 ) -> list[SegmentOut]:
     """一次重翻多段（最多 20 段），如改了术语译法后重翻用到它的段落。"""
-    segs = await usecases.retranslate_segments(p, job_id, body.segment_ids, body.quality, sec, body.user_terms)
+    maintenance_mode, site_notice = _maintenance_state(request)
+    job = usecases.get_job(p, job_id)
+    sec = resolve_existing_job_secrets(request, job, for_retranslate=True)
+    segs = await usecases.retranslate_segments(
+        p,
+        job_id,
+        body.segment_ids,
+        body.quality,
+        sec,
+        body.user_terms,
+        maintenance_mode=maintenance_mode,
+        site_notice=site_notice,
+    )
     return [SegmentOut.of(s) for s in segs]
 
 
@@ -201,6 +287,18 @@ async def cancel_job(job_id: str, p: PipelineDep) -> JobOut:
 
 
 @router.post("/{job_id}/retry", response_model=JobOut, status_code=202)
-async def retry_job(job_id: str, p: PipelineDep, sec: SecretsDep) -> JobOut:
+async def retry_job(job_id: str, request: Request, p: PipelineDep) -> JobOut:
     # 必须是 async：同步路由在线程池里执行，那里没有事件循环，无法创建后台任务
-    return JobOut.of(usecases.retry_job(p, job_id, sec))
+    job = usecases.get_job(p, job_id)
+    sec = resolve_existing_job_secrets(request, job)
+    limits = _build_limits(request, sec)
+    return JobOut.of(
+        usecases.retry_job(
+            p,
+            job_id,
+            sec,
+            limits=limits,
+            maintenance_mode=limits.maintenance_mode,
+            site_notice=limits.site_notice,
+        )
+    )

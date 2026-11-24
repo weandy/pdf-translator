@@ -39,7 +39,8 @@ from pdftr.translation.batching import (
     script_problems,
     script_value_problems,
 )
-from pdftr.translation.cost import add_cost
+from pdftr.translation.cost import Price, add_cost
+from pdftr.translation.openai_compat import FallbackChat
 from pdftr.translation.port import TranslationCache
 from pdftr.translation.prompt import (
     PROMPT_VERSION,
@@ -78,6 +79,7 @@ class TranslateOptions(BaseModel):
     retry_timeout_s: float = Field(default=120, gt=0)  # 首批返回后的全部补救轮次共用，不逐段重新计时
     total_timeout_s: float | None = Field(default=None, gt=0)  # 同步重翻还要覆盖首批和排队，早于网关超时返回
     use_cache: bool = True  # 单段“重翻”时为 False：用户要的是另一个译文
+    price_overrides: Mapping[str, Price] | None = None
 
 
 class TranslateReport(BaseModel):
@@ -90,10 +92,17 @@ class TranslateReport(BaseModel):
     cost_cny: float | None = None
     failures: dict[str, str] = Field(default_factory=dict)
     attempts: dict[str, int] = Field(default_factory=dict)
+    used_fallback: bool = False
+    fallback_models: list[str] = Field(default_factory=list)
 
 
 _PROTOCOL_TAG = re.compile(r"</?translations\b[^>]*>", re.I)
-_MALFORMED_FORMULA_TAG = re.compile(r"</m\d+\s*>|<m\d+(?:\s[^<>]*?)?(?<!/)>|<m\d+\s+[^<>/\s][^<>]*/>", re.I)
+# 先匹配完整 XML/HTML 风格标签并提取完整标签名（允许 : 与 .），仅当完整标签名严格匹配 ^m\d+$ 时再做公式占位符检查
+_GENERIC_TAG = re.compile(r"<(?P<close>/)?\s*(?P<name>[A-Za-z0-9_.:-]+)(?P<rest>[^<>\r\n]*)>")
+_FORMULA_NAME = re.compile(r"^m\d+$", re.I)
+_VALID_FORMULA_TAG = re.compile(r"^<m\d+/>$")
+_OPEN_TAG_ATTRS = re.compile(r'^(?:\s+[A-Za-z_:][\w:.-]*(?:\s*=\s*(?:"[^"\r\n]*"|\'[^\'\r\n]*\'|[^<>\s"\']+))?)*\s*$')
+_MATH_LOGIC_OP = re.compile(r"^\s+(?:and|or)\b", re.I)
 _FORMULA_FOLLOWED_BY_EQ = re.compile(r"<(m\d+)/>\s*[=＝]")
 _PAREN_NUM_BEFORE_FORMULA = re.compile(r"\(\s*(\d+(?:\.\d+)?)\s*[+\-−×*/]?\s*<(m\d+)/>\s*\)")
 _PAREN_NUM_AFTER_FORMULA = re.compile(r"\(\s*<(m\d+)/>\s*[+\-−×*/]?\s*(\d+(?:\.\d+)?)\s*\)")
@@ -257,11 +266,33 @@ def _leaked_latex_command_problems(source: str, target: str) -> list[str]:
     return [f"译文意外泄漏了 LaTeX 命令（{sample}），公式请仅保留 <mN/> 占位符"]
 
 
+def _is_malformed_formula_tag(match: re.Match[str]) -> bool:
+    raw = match.group(0)
+    if _VALID_FORMULA_TAG.match(raw):
+        return False
+    name = match.group("name")
+    if not _FORMULA_NAME.match(name):
+        return False
+    if match.group("close"):
+        return True
+    rest = match.group("rest")
+    if rest.rstrip().endswith("/"):
+        return True
+    if not _OPEN_TAG_ATTRS.match(rest):
+        return False
+    if not rest.strip():
+        return True
+    # 避开 a<m1 and b>0、x < m1 or b > 0 等数学/逻辑比较，但拦截 A<m1 disabled>B 等带属性畸形标签
+    return _MATH_LOGIC_OP.match(rest) is None
+
+
 def _protocol_tag_problems(source: str, target: str) -> list[str]:
     problems: list[str] = []
     if any(m[0] not in source for m in _PROTOCOL_TAG.finditer(target)):
         problems.append("译文包含协议标签（如 </translations>），请移除后重新输出")
-    bad_formulas = [m[0] for m in _MALFORMED_FORMULA_TAG.finditer(target) if m[0] not in source]
+    bad_formulas = [
+        m.group(0) for m in _GENERIC_TAG.finditer(target) if _is_malformed_formula_tag(m) and m.group(0) not in source
+    ]
     if bad_formulas:
         sample = "、".join(dict.fromkeys(bad_formulas))
         problems.append(f"公式标签格式错误（{sample}），请使用自闭合占位符如 <m1/>")
@@ -605,18 +636,50 @@ async def translate(
                 else opts_
             )
             req_timeout = _request_timeout(o.request_timeout_s, call_opts.thinking)
-            remaining = deadline - loop.time() if deadline is not None else req_timeout
+            fallback_chat = chat if isinstance(chat, FallbackChat) and chat.has_fallbacks else None
+            if fallback_chat is not None:
+                if fallback_chat.total_timeout_s is not None:
+                    outer_budget = fallback_chat.total_timeout_s
+                else:
+                    primary_base = (
+                        fallback_chat.primary_timeout_s if fallback_chat.primary_timeout_s is not None else req_timeout
+                    )
+                    outer_budget = max(req_timeout * 2, primary_base * 1.5)
+            else:
+                chat_call_timeout = getattr(chat, "call_timeout_s", None)
+                if isinstance(chat_call_timeout, (int, float)) and chat_call_timeout > 0:
+                    outer_budget = max(req_timeout, float(chat_call_timeout))
+                else:
+                    outer_budget = req_timeout
+            remaining = deadline - loop.time() if deadline is not None else outer_budget
             if remaining <= 0 or deadline in expired_deadlines:
                 return fail(batch, exhausted)
+            call_budget = min(outer_budget, remaining)
             for u in batch:
                 for i in u.seg_indexes:
                     report.attempts[out[i].id] += 1
             report.requests += 1
             log.debug("翻译请求段数=%d，估算输入 token=%d", len(batch), system_tokens + estimate_tokens(user))
             try:
-                result = await asyncio.wait_for(chat.complete(system, user, call_opts), min(req_timeout, remaining))
+                if fallback_chat is not None:
+                    primary_cap = (
+                        fallback_chat.primary_timeout_s if fallback_chat.primary_timeout_s is not None else req_timeout
+                    )
+                    primary_slice = min(primary_cap, call_budget * 0.6)
+                    result = await asyncio.wait_for(
+                        fallback_chat.complete(
+                            system,
+                            user,
+                            call_opts,
+                            primary_timeout_s=primary_slice,
+                            total_timeout_s=call_budget,
+                        ),
+                        call_budget,
+                    )
+                else:
+                    result = await asyncio.wait_for(chat.complete(system, user, call_opts), call_budget)
             except TimeoutError:
-                if deadline is not None and remaining <= req_timeout:
+                if deadline is not None and remaining <= outer_budget:
                     # 事件循环的计时器可能略早于单调时钟触发，不再用几毫秒余量另起一轮。
                     expired_deadlines.add(deadline)
                     return fail(batch, exhausted)
@@ -628,7 +691,12 @@ async def translate(
         finally:
             sem.release()
         report.usage = report.usage + result.usage
-        report.cost_cny = add_cost(report.cost_cny, chat.model, result.usage)
+        billing_model = result.actual_model or chat.model
+        report.cost_cny = add_cost(report.cost_cny, billing_model, result.usage, prices=o.price_overrides)
+        if result.used_fallback:
+            report.used_fallback = True
+            if result.actual_model and result.actual_model not in report.fallback_models:
+                report.fallback_models.append(result.actual_model)
         if result.finish_reason in ("refusal", "content_filter"):
             failed_batch = fail(batch, f"模型拒绝翻译（{result.finish_reason}）")
             if len(batch) > 1:
@@ -653,7 +721,7 @@ async def translate(
             )
             if target and not errors:
                 target = normalize_cjk_spacing(target)
-                if o.use_cache and not result.compatibility_fallback:
+                if o.use_cache and not result.compatibility_fallback and not result.used_fallback:
                     cache.put(u.key, target)
                 for i in u.seg_indexes:
                     out[i].target, out[i].status = target, SegmentStatus.DONE
