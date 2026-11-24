@@ -8,9 +8,12 @@ from pdftr.domain.ir import BlockType
 from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutSpan
 from pdftr.fusion.formula_align import (
     _content_parts,
+    _rich_slice,
     clean_formula_lines,
+    exclude_formula_chars,
     locate_formulas,
     merge_torn_formulas,
+    promote_native_math_spans,
     refine_block,
 )
 
@@ -394,3 +397,314 @@ def test_clean_formula_lines_locates_characters_just_outside_mineru_line_box():
         ("text", "If"), ("inline_formula", "x"), ("text", "changes"),
     ]  # fmt: skip
     assert line.spans[1].located
+
+
+def _row_block(spans: list[LayoutSpan]) -> LayoutBlock:
+    box = Rect(
+        x0=min(s.bbox.x0 for s in spans),
+        y0=min(s.bbox.y0 for s in spans),
+        x1=max(s.bbox.x1 for s in spans),
+        y1=max(s.bbox.y1 for s in spans),
+    )
+    return LayoutBlock(type=BlockType.TEXT, bbox=box, order=0, lines=[LayoutLine(bbox=box, spans=spans)])
+
+
+@pytest.mark.parametrize("cut", [4, 6])
+def test_math_word_recovers_prefix_without_clipping_descenders(cut: int) -> None:
+    chars = _chars(["A macℎinejn", "next row example"])
+    for c in chars:
+        if c.line == 1:
+            c.bbox = Rect.of([c.bbox.x0, 12.5, c.bbox.x1, 18.0])
+            c.origin_y = 18.5
+        else:
+            c.origin_y = 8
+    for c in chars[2:9]:
+        c.font = "Times" if c.c == "ℎ" else "STIXMath-Italic"
+    for c in chars[9:11]:
+        c.size, c.origin_y = 7.0, 10.0
+        c.bbox = Rect.of([c.bbox.x0, 6.0, c.bbox.x1, 12.0])
+    word = "machine"
+    start = chars[2 + cut].bbox.x0
+    block = _row_block(
+        [
+            LayoutSpan(kind="text", content="A " + word[:cut], bbox=Rect.of([10, 0, start, 10])),
+            LayoutSpan(kind="inline_formula", content=word[cut:] + "_{jn}", bbox=Rect.of([start, 0, 65, 8])),
+        ]
+    )
+    text, formula = clean_formula_lines(block, chars).lines[0].spans
+    assert text.content.strip() == "A"
+    assert text.bbox.x1 == formula.bbox.x0 == chars[2].bbox.x0
+    assert formula.content == "machine_{jn}"
+    assert chars[9].bbox.y1 == formula.bbox.y1 < chars[11].bbox.y0
+
+
+def test_adjacent_formulas_reclaim_only_their_math_fragments() -> None:
+    chars = _chars(["pq, macℎine"])
+    for c in chars:
+        c.font = "CMMI10" if c.c.isalpha() and c.c != "ℎ" else "Times"
+    block = _row_block(
+        [
+            LayoutSpan(kind="inline_formula", content="pq", bbox=chars[0].bbox),
+            LayoutSpan(kind="text", content="q, <i>machin</i>", bbox=Rect.of([15, 0, 60, 10])),
+            LayoutSpan(kind="inline_formula", content="e_i", bbox=chars[10].bbox),
+        ]
+    )
+    left, text, right = clean_formula_lines(block, chars).lines[0].spans
+    assert (left.content, text.content.strip(), right.content) == ("pq", ",", "machine_i")
+    assert (left.bbox.x1, text.bbox.x0) == (chars[1].bbox.x1,) * 2
+    assert (text.bbox.x1, right.bbox.x0) == (chars[4].bbox.x0,) * 2
+
+
+@pytest.mark.parametrize(
+    ("word", "cut", "script"),
+    [("machine", 4, "j,m"), ("RPT", 0, "j,m"), *(("x", 0, f"i{mark}1") for mark in "+-−*/")],
+)
+def test_formula_recovers_internal_script_separator_only(word: str, cut: int, script: str) -> None:
+    chars = _chars([word + script + ", next"])
+    for c in chars[: len(word)]:
+        c.font = "CMMI10"
+    for c in chars[len(word) : len(word) + len(script)]:
+        c.size, c.origin_y = 7, 11
+        c.bbox = Rect.of([c.bbox.x0, 6, c.bbox.x1, 13])
+    # 中间标点可能只有字框符合下标，字体报告的字号和基线仍与正文相同。
+    mark = chars[len(word) + 1]
+    mark.size, mark.origin_y = 10, 8
+    for c in chars:
+        if c.origin_y is None:
+            c.origin_y = 8
+    start = chars[cut].bbox.x0
+    edge = chars[len(word)].bbox.x1
+    spans = [LayoutSpan(kind="text", content=word[:cut], bbox=Rect.of([10, 0, start, 10]))] if cut else []
+    spans += [
+        LayoutSpan(kind="inline_formula", content=word[cut:] + "_{" + script + "}", bbox=Rect.of([start, 0, edge, 13])),
+        LayoutSpan(kind="text", content=script[1:] + ", next", bbox=Rect.of([edge, 0, chars[-1].bbox.x1, 13])),
+    ]
+    formula, text = clean_formula_lines(_row_block(spans), chars).lines[0].spans
+    assert (formula.content, text.content) == (word + "_{" + script + "}", ", next")
+    assert formula.bbox == Rect.of([10, 0, chars[len(word) + 2].bbox.x1, 13])
+    assert text.bbox.x0 >= formula.bbox.x1
+
+
+def test_script_separator_recovers_left_prescript_and_requires_adjacent_glyphs() -> None:
+    chars = _chars(["j,mQ next"])
+    for c in chars[:3]:
+        c.size = 7
+        c.bbox = Rect.of([c.bbox.x0, 6, c.bbox.x1, 13])
+    left = LayoutSpan(kind="text", content="j,", bbox=Rect.of([10, 6, 20, 13]))
+    formula = LayoutSpan(kind="inline_formula", content="{}_{j,m}Q", bbox=Rect.of([20, 0, 30, 13]))
+    block = _row_block([left, formula])
+    (whole,) = clean_formula_lines(block, chars).lines[0].spans
+    assert whole.bbox == Rect.of([10, 0, 30, 13])
+    chars[0].bbox = Rect.of([4, 6, 9, 13])
+    assert clean_formula_lines(block, chars).lines[0].spans == [left, formula]
+
+
+@pytest.mark.parametrize("content", ["<i>jm </i>next", "<b><i>jm </i></b>next"])
+def test_rich_slice_preserves_space_without_empty_emphasis(content: str) -> None:
+    assert _rich_slice(content, 2, 7) == " next"
+
+
+@pytest.mark.parametrize("overlap", [False, True])
+@pytest.mark.parametrize("native_prefix", ["", "uv"])
+def test_internal_script_copy_requires_native_right_context(overlap: bool, native_prefix: str) -> None:
+    chars = _chars(["Kuv=(A+B)" + native_prefix + "; next"])
+    for c in chars:
+        c.origin_y = 8
+    for c in chars[1:3]:
+        c.size, c.origin_y = 7, 11
+    left = chars[1 if overlap else 9].bbox.x0
+    block = _row_block(
+        [
+            LayoutSpan(kind="inline_formula", content="K_{uv}=(A+B)", bbox=Rect.of([10, 0, chars[8].bbox.x1, 12])),
+            LayoutSpan(
+                kind="text", content=" <i><sub>uv</sub></i>; next", bbox=Rect.of([left, 0, chars[-1].bbox.x1, 12])
+            ),
+        ]
+    )
+    formula, text = clean_formula_lines(block, chars).lines[0].spans
+    assert formula.content == "K_{uv}=(A+B)"
+    assert text.content.strip() == ("<i><sub>uv</sub></i>" if native_prefix else "") + "; next"
+
+
+@pytest.mark.parametrize("mark", [",", "."])
+@pytest.mark.parametrize(("mark_size", "mark_y", "keep"), [(7.97, 8, False), (7.97, 11, True), (5.5, 8, True)])
+def test_mixed_row_tail_uses_prose_size_and_baseline(mark: str, mark_size: float, mark_y: float, keep: bool) -> None:
+    chars = _chars(["see (x,y)" + mark])
+    for c in chars:
+        c.size, c.origin_y = 7.97, 8
+    for c in chars[4:9]:
+        c.size, c.font = 9.96, "CMSY10"
+    chars[-1].size, chars[-1].origin_y = mark_size, mark_y
+    block = _row_block(
+        [
+            LayoutSpan(kind="text", content="see ", bbox=Rect.of([10, 0, 30, 10])),
+            LayoutSpan(kind="inline_formula", content="(x,y)", bbox=Rect.of([30, 0, chars[-1].bbox.x1, 12])),
+        ]
+    )
+    spans = clean_formula_lines(block, chars).lines[0].spans
+    assert spans[1].bbox.contains_point(*chars[6].bbox.center)
+    assert spans[1].bbox.contains_point(*chars[-1].bbox.center) == keep
+    assert [s.content for s in spans[2:]] == ([] if keep else [mark])
+
+
+def test_tall_main_symbol_still_clamps_to_both_midpoints() -> None:
+    chars = _chars(["aaaa", "a∈aa", "aaaa"])
+    for c in chars:
+        y = 100 + 12 * c.line
+        c.bbox = Rect.of([c.bbox.x0, y, c.bbox.x1, y + 10])
+        c.origin_y = y + 8
+    symbol = chars[5]
+    symbol.font = "CMSY10"
+    symbol.bbox = Rect.of([15, 107, 20, 124.29])
+    block = _row_block([LayoutSpan(kind="inline_formula", content=r"\in", bbox=symbol.bbox)])
+    (formula,) = clean_formula_lines(block, chars).lines[0].spans
+    assert (formula.bbox.y0, formula.bbox.y1) == (111, 123)
+
+
+def test_formula_owns_attached_scripts_once_and_keeps_neighbor_text() -> None:
+    chars = _chars(["RPTjm end"])
+    for i, c in enumerate(chars[3:5]):
+        c.size, c.origin_y = 7, 11
+        c.bbox = Rect.of([24 + 2 * i, 7, 26 + 2 * i, 13])
+    raw_box = Rect.of([10, 0, 26, 8])
+    block = _row_block(
+        [
+            LayoutSpan(kind="inline_formula", content="RPT_{jm}", bbox=raw_box),
+            LayoutSpan(kind="text", content="<i>jm</i> end", bbox=Rect.of([24, 6, 55, 13])),
+        ]
+    )
+    formula, right = clean_formula_lines(block, chars).lines[0].spans
+    assert (formula.bbox.x1, formula.bbox.y1) == (28, 13)
+    assert right.content.strip() == "end"
+    assert exclude_formula_chars(chars, [raw_box], 10, 8) == chars[5:]
+    assert exclude_formula_chars(chars, [formula.bbox], 10) == chars[5:]
+    shallow = raw_box.model_copy(update={"y1": 4})
+    assert exclude_formula_chars(chars[3:5], [shallow], 10, 8) == []
+    assert exclude_formula_chars(chars[3:5], [shallow], 10) == chars[3:5]
+    neighbor = chars[3].model_copy(update={"bbox": Rect.of([25, 17, 27, 23]), "origin_y": 22})
+    regular = chars[3].model_copy(update={"size": 10, "origin_y": 8})
+    assert exclude_formula_chars([neighbor, regular], [raw_box], 10, 8) == [neighbor, regular]
+
+
+@pytest.mark.parametrize("punct", [",", ";", "."])
+@pytest.mark.parametrize("already_in_text", [False, True])
+def test_formula_returns_trailing_prose_mark_once(punct: str, already_in_text: bool) -> None:
+    chars = _chars(["f(x)" + punct + " next"])
+    comma = chars[4]
+    comma.bbox = comma.bbox.model_copy(update={"x0": comma.bbox.x0 + 0.4})
+    block = _row_block(
+        [
+            LayoutSpan(kind="inline_formula", content="f(x)", bbox=Rect.of([10, 0, 35, 10])),
+            LayoutSpan(
+                kind="text", content=(punct if already_in_text else "") + " next", bbox=Rect.of([35, 0, 60, 10])
+            ),
+        ]
+    )
+    formula, text = clean_formula_lines(block, chars).lines[0].spans
+    assert formula.bbox.x1 < chars[4].bbox.center[0] and text.bbox.contains_point(*chars[4].bbox.center)
+    assert text.content == punct + " next"
+    assert formula.bbox.x1 + 0.3 <= comma.bbox.x0
+
+
+@pytest.mark.parametrize(
+    ("native", "latex", "font"),
+    [("f(x,y)", "f(x,y)", "Times"), ("f(x,", "f", "Times"), ("x,", "x", "CMSY10"), ("a.", "a", "Times")],
+)
+def test_formula_keeps_internal_or_mathematical_marks(native: str, latex: str, font: str) -> None:
+    chars = _chars([native])
+    chars[-1].font = font
+    box = Rect.of([10, 0, chars[-1].bbox.x1, 10])
+    block = _row_block([LayoutSpan(kind="inline_formula", content=latex, bbox=box)])
+    assert clean_formula_lines(block, chars).lines == block.lines
+
+
+@pytest.mark.parametrize(("letter", "font"), [("R", "STIXMathBlackboard"), ("ℝ", "Times"), ("𝔸", "Times")])
+def test_promote_blackboard_space_preserves_outer_text(letter: str, font: str) -> None:
+    raw = "(Var ∈ " + letter + "o)"
+    chars = _chars([raw])
+    chars[7].font = font
+    chars[8].size, chars[8].origin_y = 7, 6
+    chars[8].bbox = Rect.of([50, -2, 55, 5])
+    for c in chars:
+        if c.origin_y is None:
+            c.origin_y = 8
+    block = _row_block([LayoutSpan(kind="text", content=raw, bbox=Rect.of([10, 0, 60, 10]))])
+    result = promote_native_math_spans(block, chars)
+    left, formula, right = result.lines[0].spans
+    name = "A" if letter == "𝔸" else "R"
+    assert (left.content, formula.content, right.content) == ("(", rf"Var \in \mathbb{{{name}}}^{{o}}", ")")
+    assert formula.bbox == Rect.of([15, -2, 55, 10]) and formula.located
+    assert clean_formula_lines(result, chars).lines == result.lines
+
+
+@pytest.mark.parametrize("raw", ["Ro", "R", "R∈R", "ℝ", "ℝo"])
+def test_promote_requires_blackboard_and_math_context(raw: str) -> None:
+    chars = _chars([raw])
+    block = _row_block([LayoutSpan(kind="text", content=raw, bbox=Rect.of([10, 0, chars[-1].bbox.x1, 10]))])
+    assert promote_native_math_spans(block, chars) is block
+
+
+def test_mixed_line_promotes_text_and_preserves_existing_formula() -> None:
+    raw = "(Var ∈ ℝo)"
+    chars = _chars(["xi " + raw])
+    chars[-2].size = 7
+    chars[-2].bbox = Rect.of([chars[-2].bbox.x0, -2, chars[-2].bbox.x1, 5])
+    existing = LayoutSpan(kind="inline_formula", content="x_i", bbox=Rect.of([10, 0, 20, 10]))
+    text = LayoutSpan(kind="text", content=raw, bbox=Rect.of([25, 0, chars[-1].bbox.center[0] - 0.4, 10]))
+    result = promote_native_math_spans(_row_block([existing, text]), chars)
+    old, left, promoted, right = result.lines[0].spans
+    assert old == existing
+    assert (left.content, promoted.content, right.content) == ("(", r"Var \in \mathbb{R}^{o}", ")")
+    assert (promoted.bbox.x0, promoted.bbox.y0, promoted.bbox.x1) == (chars[4].bbox.x0, -2, chars[-2].bbox.x1)
+    assert promote_native_math_spans(result, chars) is result
+
+
+def test_overlapping_text_does_not_reuse_glyphs_of_existing_formula() -> None:
+    chars = _chars(["ℝo Ro"])
+    chars[1].size, chars[1].origin_y = 7, 5
+    for c in chars:
+        if c.origin_y is None:
+            c.origin_y = 8
+    existing = LayoutSpan(kind="inline_formula", content=r"\mathbb{R}^o", bbox=Rect.of([10, 0, 20, 10]))
+    text = LayoutSpan(kind="text", content="Ro", bbox=Rect.of([10, 0, 35, 10]))
+    block = _row_block([existing, text])
+    assert promote_native_math_spans(block, chars) is block
+
+
+def test_blackboard_codomain_reclaims_geometric_exponent() -> None:
+    chars = _chars(["X→ℝo×v end"])
+    for c in chars[3:6]:
+        c.size = 7
+        c.bbox = Rect.of([c.bbox.x0, -2, c.bbox.x1, 5])
+    block = _row_block(
+        [
+            LayoutSpan(kind="inline_formula", content="X", bbox=Rect.of([10, 0, 20, 10])),
+            LayoutSpan(kind="text", content="R<sup>o×v</sup> end", bbox=Rect.of([20, -2, 60, 10])),
+        ]
+    )
+    formula, text = clean_formula_lines(block, chars).lines[0].spans
+    assert formula.content == r"X \to \mathbb{R}^{o\times v}"
+    assert (formula.bbox.x1, text.bbox.x0, text.content.strip()) == (40, 40, "end")
+
+
+@pytest.mark.parametrize(
+    ("raw", "size", "origin", "expected"),
+    [
+        ("ℝo", 8.5, 6.5, r"\mathbb{R}^{o}"),
+        ("ℝo", 8.5, 7.0, ""),
+        ("ℝo", 9.0, 5.0, ""),
+        ("R∈ℕ", 10.0, 8.0, r"R \in \mathbb{N}"),
+        ("R↦ℍo", 7.0, 10.0, r"R \mapsto \mathbb{H}_{o}"),
+    ],
+)
+def test_native_space_requires_a_relation_or_raised_exponent(
+    raw: str, size: float, origin: float, expected: str
+) -> None:
+    chars = _chars(["(" + raw + ")"])
+    for c in chars:
+        c.origin_y = 8
+        if c.c == "o":
+            c.size, c.origin_y = size, origin
+    block = _row_block([LayoutSpan(kind="text", content="(" + raw + ")", bbox=Rect.of([10, 0, 50, 10]))])
+    spans = promote_native_math_spans(block, chars).lines[0].spans
+    assert [s.content for s in spans if s.kind == "inline_formula"] == ([expected] if expected else [])

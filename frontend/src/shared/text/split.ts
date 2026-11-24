@@ -4,6 +4,7 @@
  */
 
 const BREAK_AFTER = new Set(["，", "。", "；", "：", "、", "）", "！", "？", ",", ";", ":", ".", ")"]);
+const STRONG_BREAK_AFTER = new Set("。！？；.!?;");
 const NO_START = new Set("，。、；：？！）》」』】〕〉”’…—,.;:?!)]}%");
 const SEARCH = 40;
 const CITATION_MAX = 40;
@@ -165,10 +166,12 @@ function avoidMidWord(atoms: Atom[], start: number, target: number, limit: numbe
 }
 
 function cutNear(atoms: Atom[], start: number, target: number, limit: number, radius: number = SEARCH): number {
-  for (let d = 0; d <= radius; d++) {
-    for (const pos of [target - d, target + d]) {
-      if (pos > start && pos <= limit && BREAK_AFTER.has(atoms[pos - 1]!.char)) {
-        return pos;
+  for (const punctuation of [STRONG_BREAK_AFTER, BREAK_AFTER]) {
+    for (let d = 0; d <= radius; d++) {
+      for (const pos of [target - d, target + d]) {
+        if (pos > start && pos <= limit && punctuation.has(atoms[pos - 1]!.char)) {
+          return pos;
+        }
       }
     }
   }

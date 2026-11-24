@@ -1,8 +1,13 @@
 """导出 PDF 的中文排版器（clreq）：两端对齐、中西文间距、行首行尾禁则、长词断行。用内置字体，不依赖字体文件。"""
 
+import re
+
 import pymupdf
 import pytest
 
+from pdftr.domain.geometry import Rect
+from pdftr.domain.ir import Block, BlockStyle, BlockType
+from pdftr.rendering.export import _box, _expand_title_box, _place
 from pdftr.rendering.typeset import drop_fake_scripts
 from pdftr.rendering.typesetter import MAX_JUSTIFY_EXTRA, FontSet, Style, Typesetter
 
@@ -56,6 +61,124 @@ def test_glue_between_han_and_latin_is_quarter_em():
     lines, _, _ = TS.layout(tokens, 500, SIZE, 1.5, False)
     assert lines[0].glue == [0.0, 0.0, SIZE / 4, SIZE / 4, 0.0, 0.0]  # 用|Adam 与 Adam|优 之间各 1/4 字宽
     assert _text(lines[0]) == "使用Adam优化器"  # 复制出的文字不多空格
+
+
+def _block(bid, kind, bounds):
+    return Block(
+        id=bid, page=0, type=kind, bbox=Rect.of(bounds), order=0,
+        style=BlockStyle(font_size=7.97), translatable=kind != BlockType.FIGURE,
+    )  # fmt: skip
+
+
+def _draw_title(title, neighbors):
+    tokens = TS.tokenize("甲乙丙丁戊己庚辛壬癸甲乙丙丁戊己庚", "heading", 7.97, lambda _: None)
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=600, height=400)
+        assert not _place(TS, page, title, tokens, False, {}, neighbors=neighbors)
+        blocks = page.get_textpage().extractDICT()["blocks"]
+        return [span for block in blocks for line in block["lines"] for span in line["spans"]]
+
+
+def test_short_title_expands_to_its_column_at_original_font_size():
+    title = _block("title", BlockType.TITLE, [36, 100, 122, 110])
+    body = _block("body", BlockType.TEXT, [36, 112, 286, 180])
+    abstract = _block("abstract", BlockType.TEXT, [36, 35, 560, 70])
+    right = _block("right", BlockType.TEXT, [314, 110, 564, 150])
+    neighbors = [abstract, title, right, body]
+    assert _expand_title_box(title, _box(title), 600, neighbors).x1 == 286
+    assert _expand_title_box(title, _box(title), 600, [abstract, right]) == _box(title)
+    spans = _draw_title(title, neighbors)
+    assert spans and all(s["size"] == pytest.approx(7.97, abs=0.1) for s in spans)
+    assert len({s["origin"][1] for s in spans}) == 1
+
+
+def test_title_avoids_right_obstacle_and_preserves_centered_box():
+    title = _block("title", BlockType.TITLE, [36, 100, 122, 110])
+    body = _block("body", BlockType.TEXT, [36, 160, 286, 180])
+    figure = _block("figure", BlockType.FIGURE, [160, 101, 280, 150])
+    assert _expand_title_box(title, _box(title), 600, [body, figure]).x1 == 152
+    spans = _draw_title(title, [body, figure])
+    assert len({s["origin"][1] for s in spans}) == 2
+    assert all(s["size"] == pytest.approx(7.97, abs=0.1) and s["bbox"][2] <= 152.01 for s in spans)
+    centered = _block("center", BlockType.TITLE, [150, 100, 450, 110])
+    wide = _block("wide", BlockType.TEXT, [36, 160, 564, 180])
+    assert _expand_title_box(centered, _box(centered), 600, [wide]) == _box(centered)
+
+
+def test_single_column_short_title_uses_full_body_width_at_original_size():
+    title = _block("title", BlockType.TITLE, [70, 100, 156, 110])
+    body = _block("body", BlockType.TEXT, [70, 120, 525, 180])
+    assert _expand_title_box(title, _box(title), 595, [title, body]).width == 455
+    spans = _draw_title(title, [title, body])
+    assert len({s["origin"][1] for s in spans}) == 1
+    assert all(s["size"] == pytest.approx(7.97, abs=0.1) for s in spans)
+
+
+def test_title_borrows_only_when_two_lines_have_clearance():
+    title = _block("title", BlockType.TITLE, [36, 100, 122, 110])
+    clear = _draw_title(title, [])
+    assert len({s["origin"][1] for s in clear}) == 2
+    assert all(s["size"] == pytest.approx(7.97, abs=0.1) for s in clear)
+    below = _block("below", BlockType.FIGURE, [36, 119.5, 140, 150])
+    blocked = _draw_title(title, [below])
+    assert blocked and max(s["size"] for s in blocked) < 7.87
+    assert max(s["bbox"][3] for s in blocked) < below.bbox.y0
+
+
+@pytest.mark.parametrize("expr", ["<i>U</i>(1<i>,</i> 3)", "N(0, 1)", "<i>Be</i>ta(1, 2)"])
+def test_short_parameter_group_moves_whole_across_styles(expr):
+    tokens = TS.tokenize("均匀分布" + expr + "生成", "body", 8, lambda _: None)
+    lines = list(map(_text, TS.break_lines(tokens, 47, 8, 0)))
+    assert lines[0] == "均匀分布"
+    assert lines[1].startswith(re.sub(r"</?i>", "", expr))
+    assert all(not line.startswith(",") for line in lines)
+
+
+def test_long_parentheses_break_inside_without_leading_styled_comma():
+    text = "前置<i>F</i>(111111<i>,</i>222222,333333,444444)结束"
+    tokens = TS.tokenize(text, "body", 8, lambda _: None)
+    lines = list(map(_text, TS.break_lines(tokens, 37, 8, 0)))
+    assert len(lines) >= 4
+    assert any(line.endswith("111111,") for line in lines)
+    assert any(line.endswith("222222,") for line in lines)
+    assert all(not line.startswith(",") for line in lines)
+    assert "".join(lines) == "前置F(111111,222222,333333,444444)结束"
+
+
+@pytest.mark.parametrize("expr", ["N0(0, 1)", "f_1(x, y)", "log2(x, y)"])
+def test_short_function_with_digit_or_underscore_wraps_as_a_group(expr):
+    tokens = TS.tokenize("甲乙丙丁戊" + expr, "body", 8, lambda _: None)
+    # 第一行剩余宽度刚好能放到逗号，只有整体分组才会把函数名也移到第二行。
+    prefix = TS.tokenize("甲乙丙丁戊" + expr.split(",")[0] + ",", "body", 8, lambda _: None)
+    width = sum(t.width for t in prefix) + 8 / 4 + 0.1
+    assert list(map(_text, TS.break_lines(tokens, width, 8, 0))) == ["甲乙丙丁戊", expr]
+
+
+def test_fallback_formula_keeps_link_boundary_before_italic_text():
+    formula, text = TS.tokenize("<m1/><i>next</i>", "body", 8, lambda _: None, formulas={"m1": "x"})
+    assert not formula.track_links and text.track_links
+    assert not text.joined_prev and not text.attach
+
+
+@pytest.mark.parametrize("mark", [",", ")", "]", "}", ";", ":", "%", ")]"])
+def test_styled_ascii_closing_marks_hang_on_previous_line(mark):
+    lines = list(map(_text, _lines(f"甲乙<i>{mark}</i>丙", 20)))
+    assert lines == ["甲乙" + mark, "丙"]
+
+
+@pytest.mark.parametrize("mark", ["(", "[", "{"])
+def test_styled_ascii_opening_marks_move_with_next_word(mark):
+    lines = list(map(_text, _lines(f"甲乙<i>{mark}</i>abc", 28)))
+    assert lines == ["甲乙", mark + "abc"]
+
+
+def test_short_parentheses_respect_whitespace_newlines_and_available_width():
+    adjacent = TS.tokenize("<i>U</i>(1<i>,</i> 3)", "body", 8, lambda _: None)
+    separated = TS.tokenize("<i>U</i> (1<i>,</i> 3)", "body", 8, lambda _: None)
+    assert adjacent[1].joined_prev and not separated[2].joined_prev
+    assert len(TS.break_lines(adjacent, 12, 8, 0)) > 1
+    tokens = TS.tokenize("均匀分布<i>U</i>(1, \n3)生成", "body", 8, lambda _: None)
+    assert _text(TS.break_lines(tokens, 47, 8, 0)[0]).startswith("均匀分布U")
 
 
 def test_no_line_starts_with_closing_punctuation():

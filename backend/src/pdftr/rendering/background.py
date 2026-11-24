@@ -6,7 +6,9 @@
 
 from collections import defaultdict
 from collections.abc import Iterable
+from itertools import chain
 from pathlib import Path
+from statistics import median
 
 import pymupdf
 
@@ -45,6 +47,53 @@ def paper_color(page: pymupdf.Page, rect: pymupdf.Rect) -> tuple[float, float, f
     return (r / 255, g / 255, b / 255)
 
 
+def _glyph_rows(page: pymupdf.Page, clip: pymupdf.Rect | None = None) -> Iterable[list[Rect]]:
+    text = page.get_textpage(clip=clip, flags=pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_PRESERVE_IMAGES)
+    for block in text.extractRAWDICT()["blocks"]:
+        for line in block.get("lines", []):
+            boxes = [Rect.of(ch["bbox"]) for span in line["spans"] for ch in span["chars"] if ch["c"].strip()]
+            if boxes:
+                if abs(line["dir"][1]) < 0.01:
+                    yield boxes
+                else:
+                    yield from ([box] for box in boxes)
+
+
+def _safe_body_rects(page: pymupdf.Page, rects: list[Rect]) -> list[Rect]:
+    # 从每个待擦框减掉外部字框的交集。上下左右分别切开，保留同一行其余位置的擦除面积。
+    pieces = [[r] for r in rects]
+    guards = []
+    for row in _glyph_rows(page):
+        # 紧邻行的下标中心有时也伸进了下一正文块，归属时同时核对原生行的位置。
+        row_y = median(box.center[1] for box in row)
+        for glyph in row:
+            x, y = glyph.center
+            if not any(r.y0 <= row_y <= r.y1 and r.contains_point(x, y) for r in rects):
+                guards.append(glyph)
+    for glyph in guards:
+        # 极窄的字形和零宽组合符也要避开，且浮点坐标写回 PDF 后仍要分离。
+        guard = glyph.shrink(-0.01)
+        for i, r in enumerate(rects):
+            if not r.intersection(guard):
+                continue
+            kept = []
+            for piece in pieces[i]:
+                cut = piece.intersection(guard)
+                if cut is None:
+                    kept.append(piece)
+                    continue
+                for part in (
+                    (piece.x0, piece.y0, piece.x1, cut.y0),
+                    (piece.x0, cut.y1, piece.x1, piece.y1),
+                    (piece.x0, cut.y0, cut.x0, cut.y1),
+                    (cut.x1, cut.y0, piece.x1, cut.y1),
+                ):
+                    if part[0] < part[2] and part[1] < part[3]:
+                        kept.append(Rect.of(part))
+            pieces[i] = kept
+    return [piece for group in pieces for piece in group]
+
+
 def make_background(pdf: Path, blocks: Iterable[Block], out: Path, scanned: set[int] | None = None) -> int:
     """返回实际去字的块数。
 
@@ -76,6 +125,8 @@ def make_background(pdf: Path, blocks: Iterable[Block], out: Path, scanned: set[
                     box = pymupdf.Rect(r.x0 - COVER_PAD, r.y0 - COVER_PAD, r.x1 + COVER_PAD, r.y1 + COVER_PAD)
                     covers.append((box & page.rect, paper_color(page, box & page.rect)))
             body_rects = [*by_page[page_no], *overflows[page_no]]
+            if body_rects and page_no not in scanned:
+                body_rects = _safe_body_rects(page, body_rects)
             for rects, graphics in ((labels[page_no], _LINE_ART_NONE), (body_rects, _LINE_ART_REMOVE_IF_TOUCHED)):
                 if not rects:
                     continue
@@ -184,10 +235,21 @@ def _trim_formula_edges(pix: pymupdf.Pixmap, zoom: float) -> pymupdf.Pixmap:
 
 
 def crop_formula(page: pymupdf.Page, bbox: Rect, zoom: float = 4.0) -> tuple[bytes, float, float] | None:
-    """裁图及其实际宽高（pt）：水平留 0.3pt，垂直按原公式框裁切。"""
-    clip = pymupdf.Rect(bbox.x0 - 0.3, bbox.y0, bbox.x1 + 0.3, bbox.y1) & page.rect
+    """裁图及其实际宽高（pt），给边缘抗锯齿留水平 0.3pt、垂直 0.25pt。"""
+    clip = pymupdf.Rect(bbox.x0 - 0.3, bbox.y0 - 0.25, bbox.x1 + 0.3, bbox.y1 + 0.25) & page.rect
     if clip.is_empty:
         return None
+    # 只需检查同一行附近的字，查询框多留出字高，确保紧邻的完整字框可提取。
+    margin = max(16.0, bbox.height)
+    search = pymupdf.Rect(clip.x0 - margin, clip.y0 - margin, clip.x1 + margin, clip.y1 + margin)
+    for ch in chain.from_iterable(_glyph_rows(page, search)):
+        if ch.y0 >= bbox.y1 or ch.y1 <= bbox.y0:
+            continue
+        x, _ = ch.center
+        if x < bbox.x0:
+            clip.x0 = max(clip.x0, min(ch.x1, bbox.x0))
+        elif x > bbox.x1:
+            clip.x1 = min(clip.x1, max(ch.x0, bbox.x1))
     pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip, colorspace=pymupdf.csRGB, alpha=True)
     pix = _trim_formula_edges(pix, zoom)
     return pix.tobytes("png"), pix.width / zoom, pix.height / zoom

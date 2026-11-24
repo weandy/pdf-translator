@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 
 from pdftr.domain.chars import Char, CharPage
 from pdftr.domain.geometry import Rect
-from pdftr.domain.ir import BlockType, PageKind
-from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutResult
+from pdftr.domain.ir import Block, BlockType, PageKind, Span
+from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutPage, LayoutResult
 from pdftr.domain.text import RICH_TAG
 
 TOL = 3.0  # 行中心点落在块框外扩 3pt 内即视为属于该块
@@ -29,11 +29,21 @@ class RelocationReport:
     unmatched_lines: int = 0
     # (页, 块序号) → 它接续的 (页, 块序号)
     links: dict[tuple[int, int], tuple[int, int]] = field(default_factory=dict)
+    deduped_lines: int = 0
+    deduped_blocks: int = 0
 
 
 def _inside(line: LayoutLine, block: LayoutBlock) -> bool:
     x, y = line.bbox.center
     return block.bbox.contains_point(x, y, TOL)
+
+
+def _char_buckets(chars: Sequence[Char]) -> dict[int, list[Char]]:
+    buckets: dict[int, list[Char]] = {}
+    for ch in chars:
+        if ch.c.strip():
+            buckets.setdefault(int(ch.bbox.center[1] // _BUCKET_HEIGHT), []).append(ch)
+    return buckets
 
 
 def _index_chars(char_pages: Sequence[CharPage] | None) -> dict[int, dict[int, list[Char]]]:
@@ -43,21 +53,27 @@ def _index_chars(char_pages: Sequence[CharPage] | None) -> dict[int, dict[int, l
     for cp in char_pages:
         if cp.kind is not PageKind.NATIVE or not cp.chars:
             continue
-        buckets: dict[int, list[Char]] = {}
-        for ch in cp.chars:
-            if ch.c.isspace():
-                continue
-            key = int(ch.bbox.center[1] // _BUCKET_HEIGHT)
-            buckets.setdefault(key, []).append(ch)
+        buckets = _char_buckets(cp.chars)
         if buckets:
             indexed[cp.index] = buckets
     return indexed
 
 
-def _line_text_key(line: LayoutLine) -> str:
-    raw = "".join(RICH_TAG.sub("", span.content) for span in line.spans if span.kind == "text")
-    norm = unicodedata.normalize("NFKC", raw).lower()
+def _text_key(raw: str) -> str:
+    norm = unicodedata.normalize("NFKC", RICH_TAG.sub("", raw)).lower()
     return "".join(ch for ch in norm if ch.isalnum())
+
+
+def _line_text_key(line: LayoutLine) -> str:
+    return _text_key("".join(span.content for span in line.spans if span.kind == "text"))
+
+
+def _bands(box: Rect, tol: float = 0.0) -> range:
+    return range(int((box.y0 - tol) // _BUCKET_HEIGHT), int((box.y1 + tol) // _BUCKET_HEIGHT) + 1)
+
+
+def _box_chars(box: Rect, buckets: dict[int, list[Char]]) -> list[Char]:
+    return [ch for band in _bands(box, TOL) for ch in buckets.get(band, ()) if box.contains_point(*ch.bbox.center, TOL)]
 
 
 def _char_match_ratio(line: LayoutLine, page_buckets: dict[int, list[Char]] | None) -> float | None:
@@ -66,13 +82,7 @@ def _char_match_ratio(line: LayoutLine, page_buckets: dict[int, list[Char]] | No
     wanted = _line_text_key(line)
     if len(wanted) < 3:
         return None
-    lo = int((line.bbox.y0 - TOL) // _BUCKET_HEIGHT)
-    hi = int((line.bbox.y1 + TOL) // _BUCKET_HEIGHT)
-    hits: list[Char] = []
-    for bucket_idx in range(lo, hi + 1):
-        for ch in page_buckets.get(bucket_idx, ()):
-            if line.bbox.contains_point(*ch.bbox.center, TOL):
-                hits.append(ch)
+    hits = _box_chars(line.bbox, page_buckets)
     if not hits:
         return 0.0
     hits.sort(key=lambda c: (c.line, c.bbox.x0))
@@ -106,6 +116,162 @@ def _geom_cross_page(line: LayoutLine, stays: Sequence[LayoutLine]) -> bool:
         if min_h > 0 and v_ov > 0.5 * min_h:
             return True
     return False
+
+
+type _Region = tuple[Rect, str]
+
+
+def _overlapping_boxes(a: Rect, b: Rect, *, native: bool) -> bool:
+    inter = a.intersection(b)
+    if inter is None:
+        return False
+    area = inter.area / min(a.area, b.area)
+    if not native:
+        return area >= 0.85
+    return area >= 0.70 or (
+        inter.width >= 0.70 * min(a.width, b.width) and inter.height >= 0.70 * min(a.height, b.height)
+    )
+
+
+class _PageLines:
+    """按纵向分桶保存已归属的物理行；仅在框相交时提取并缓存字形集合。"""
+
+    def __init__(self, buckets: dict[int, list[Char]]) -> None:
+        self.buckets = buckets
+        self.glyphs: dict[Rect, set[int]] = {}
+        self.owners: dict[int, list[_Region]] = {}
+
+    def add(self, lines: Sequence[_Region]) -> None:
+        for box, key in lines:
+            for band in _bands(box):
+                self.owners.setdefault(band, []).append((box, key))
+
+    def _glyphs(self, box: Rect) -> set[int]:
+        if box not in self.glyphs:
+            self.glyphs[box] = {id(ch) for ch in _box_chars(box, self.buckets)}
+        return self.glyphs[box]
+
+    def contains(self, line: _Region) -> bool:
+        box, key = line
+        for band in _bands(box):
+            for other, other_key in self.owners.get(band, ()):
+                if not _overlapping_boxes(box, other, native=bool(self.buckets)):
+                    continue
+                if self.buckets:
+                    left, right = self._glyphs(box), self._glyphs(other)
+                    if left and right and len(left & right) >= 0.80 * min(len(left), len(right)):
+                        return True
+                elif (
+                    key
+                    and other_key
+                    and (
+                        key == other_key
+                        or difflib.SequenceMatcher(None, key, other_key, autojunk=False).ratio() >= 0.85
+                    )
+                ):
+                    return True
+        return False
+
+
+def _dedupe_relocated_pages(
+    pages: Sequence[LayoutPage],
+    links: dict[tuple[int, int], tuple[int, int]],
+    char_index: dict[int, dict[int, list[Char]]],
+) -> tuple[int, int]:
+    linked = set(links) | set(links.values())
+    removed: set[tuple[int, int]] = set()
+    deduped = 0
+    for page in pages:
+        owners = _PageLines(char_index.get(page.index, {}))
+        candidates: list[tuple[LayoutBlock, list[tuple[LayoutLine, _Region]]]] = []
+        for block in page.blocks:
+            if block.type is not BlockType.TEXT or block.discarded or block.placeholder:
+                continue
+            rows = [
+                (line, (line.bbox, _line_text_key(line)))
+                for line in block.lines
+                if any(s.content.strip() for s in line.spans)
+            ]
+            if rows:
+                candidates.append((block, rows))
+        candidates.sort(
+            key=lambda pair, pi=page.index: (
+                (pi, pair[0].order) not in linked,
+                -len(pair[1]),
+                -sum(len(key) for _, (_, key) in pair[1]),
+                pair[0].order,
+            )
+        )
+        for block, rows in candidates:
+            kept = [(line, region) for line, region in rows if not owners.contains(region)]
+            deduped += len(rows) - len(kept)
+            if not kept:
+                removed.add((page.index, block.order))
+                continue
+            if len(kept) < len(rows):
+                kept_ids = {id(line) for line, _ in kept}
+                dropped = {id(line) for line, _ in rows} - kept_ids
+                block.lines = [line for line in block.lines if id(line) not in dropped]
+            owners.add([region for _, region in kept])
+        page.blocks = [block for block in page.blocks if (page.index, block.order) not in removed]
+    for target, source in list(links.items()):
+        if target in removed or source in removed:
+            del links[target]
+    return deduped, len(removed)
+
+
+def _block_regions(block: Block) -> list[_Region]:
+    # 只比较实际有内容的行，否则块框内的留白也会吞掉真正的补漏行。
+    rows: dict[int, list[Span]] = {}
+    for span in block.spans:
+        if span.text.strip() or span.formula:
+            rows.setdefault(span.line, []).append(span)
+    regions: list[_Region] = []
+    for row in rows.values():
+        box = Rect(
+            x0=min(s.bbox.x0 for s in row),
+            y0=min(s.bbox.y0 for s in row),
+            x1=max(s.bbox.x1 for s in row),
+            y1=max(s.bbox.y1 for s in row),
+        )
+        regions.append((box, _text_key("".join(s.text for s in row))))
+    return regions
+
+
+def dedupe_page_blocks(blocks: list[Block], page_chars: Sequence[Char] | None = None) -> list[Block]:
+    """孤儿补漏后复核行归属，只移除所有内容行都有物理副本的正文块，保持阅读顺序。"""
+    linked = {b.continues_from for b in blocks if b.continues_from}
+    pages: dict[int, list[tuple[Block, list[_Region]]]] = {}
+    for block in blocks:
+        if block.type is BlockType.TEXT and block.translatable and (regions := _block_regions(block)):
+            pages.setdefault(block.page, []).append((block, regions))
+    removed: set[int] = set()
+    # 字符序列只属于一页，混合页输入不能把这批字形用于别的页。
+    buckets = _char_buckets(page_chars) if page_chars and len({b.page for b in blocks}) == 1 else {}
+    for candidates in pages.values():
+        owners = _PageLines(buckets)
+        candidates.sort(
+            key=lambda pair: (
+                pair[0].orphan,
+                not (pair[0].continues_from or pair[0].id in linked),
+                -len(pair[1]),
+                -sum(len(key) for _, key in pair[1]),
+                pair[0].order,
+            )
+        )
+        for block, regions in candidates:
+            if all(owners.contains(region) for region in regions):
+                removed.add(id(block))
+            else:
+                owners.add(regions)
+    if not removed:
+        return blocks
+    retained = [block for block in blocks if id(block) not in removed]
+    removed_ids = {b.id for b in blocks if id(b) in removed} - {b.id for b in retained}
+    return [
+        block.model_copy(update={"continues_from": None}) if block.continues_from in removed_ids else block
+        for block in retained
+    ]
 
 
 def relocate(
@@ -221,4 +387,5 @@ def relocate(
         for b in page.blocks:
             if b.placeholder and b.lines:
                 b.placeholder = False
+    report.deduped_lines, report.deduped_blocks = _dedupe_relocated_pages(pages, report.links, char_index)
     return result, report

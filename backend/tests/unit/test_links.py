@@ -45,6 +45,39 @@ def test_figure_numbers_prefer_chinese_labels_and_skip_decimals():
     assert [text[text.index("表") + 1]] == ["6"] and _found(got) == [("6", 1), ("2", 0)]
 
 
+@pytest.mark.parametrize(
+    ("anchor", "label"),
+    [
+        ("Table 5.", "表5"),
+        ("Tab. 5,", "表5"),
+        ("Fig. 3", "图3"),
+        ("Figure 3", "图3"),
+        ("Section 4.2", "第4.2节"),
+        ("Sec. 4.2", "4.2节"),
+        ("Section 4.2", "节4.2"),
+        ("Alg. 2", "算法2"),
+        ("Eq. 7", "式7"),
+        ("Equation 7", "公式7"),
+        ("Eq. 7", "方程7"),
+        ("App. A.1", "附录A.1"),
+        ("Thm. 9", "定理9"),
+        ("Lemma 1", "引理1"),
+        ("Prop. 6", "命题6"),
+        ("Def. 8", "定义8"),
+        ("Cor. 2", "推论2"),
+    ],
+)
+def test_labelled_cross_reference(anchor: str, label: str) -> None:
+    assert _found(locate([_link(anchor, kind="")], {"b1": "见" + label + "。"})) == [(label, 0)]
+
+
+def test_cross_reference_number_boundary_and_mixed_labels() -> None:
+    pieces = {"b1": "表50、表5.1、表5a。第14.2节、4.20节。见表5、表5和第4.2节、节4.2。"}
+    links = [_link(a, kind="") for a in ("Table 5", "Table 5", "Section 4.2", "Sec. 4.2")]
+    assert _found(locate(links, pieces)) == [("表5", 3), ("表5", 4), ("第4.2节", 0), ("节4.2", 0)]
+    assert _found(locate([_link("Fig. 3", kind="cite")], {"b1": "图3"})) == [("", 0)]
+
+
 def test_footnotes_skipped_and_missing_text_left_empty():
     got = locate([_link("s1,", kind="Hfootnote"), _link("[99]")], {"b1": "没有这条引用 [12]"})
     assert _found(got) == [("", 0), ("", 0)]

@@ -396,6 +396,7 @@ def segment(
         if b.continues_from is not None and b.continues_from in selected and b.id in selected
     }
     segments: list[Segment] = []
+    emitted_blocks: set[str] = set()
     section = ""
     for block in blocks:
         if block.type is BlockType.TITLE:
@@ -410,9 +411,11 @@ def segment(
                 )
                 or section
             )
-        if block.id not in selected or block.continues_from in selected:
+        if block.id not in selected or block.id in emitted_blocks:
+            continue
+        if block.continues_from is not None and next_of.get(block.continues_from) is block:
             continue  # 续接块随链头一起处理
-        chain = _chain(block, next_of)
+        chain = [b for b in _chain(block, next_of) if b.id not in emitted_blocks]
         formulas: dict[str, str] = {}
         refs: dict[str, FormulaRef] = {}
         parts: list[SegmentPart] = []
@@ -446,4 +449,5 @@ def segment(
                 role=block.type,
             )
         )
+        emitted_blocks.update(b.id for b in chain)
     return segments

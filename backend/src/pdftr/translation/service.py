@@ -305,6 +305,7 @@ def _target_problems(
     *,
     translated_terms: dict[str, str] | None = None,
     formulas: Mapping[str, str] | None = None,
+    prev_context: str = "",
 ) -> list[str]:
     if problems := _protocol_tag_problems(source, target):
         return problems
@@ -331,6 +332,7 @@ def _target_problems(
         citation_problems(source, target)
         + script_value_problems(source, target)
         + percentage_problems(source, target, formulas=formulas)
+        + _context_leakage_problems(source, target, prev_context)
     )
     return anchors or prose_problems(source, target, translated_terms=translated_terms)
 
@@ -342,11 +344,98 @@ _BACK_REFERENCE = re.compile(
     re.I,
 )
 _CONTEXT_FORMULA = re.compile(r"<m\d+/>")
+_LOCATOR_NAMES = {"algorithm": "算法", "table": "表", "section": "节", "figure": "图"}
+_CONTEXT_COMMON_WORDS = {
+    "A",
+    "An",
+    "The",
+    "It",
+    "Its",
+    "We",
+    "Our",
+    "He",
+    "She",
+    "They",
+    "Their",
+    "This",
+    "That",
+    "These",
+    "Those",
+    "In",
+    "On",
+    "At",
+    "For",
+    "From",
+    "As",
+    "By",
+    "With",
+    "However",
+}
+_CONTEXT_ANCHOR = re.compile(
+    r"(?<![A-Za-z0-9_])(?:"
+    r"(?P<locator>(?i:Algorithm|Table|Section|Figure)|算法|表|节|图)\s*(?P<label>\d+(?:\.\d+)*)"
+    r"|第\s*(?P<section>\d+(?:\.\d+)*)\s*节"
+    r"|(?P<name>[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*)"
+    r"|(?<!\d\.)(?P<number>\d+(?:\.\d+)?)(?:\s*(?P<unit>%|％|ms|kg|cm|mm|km|kHz|MHz|GHz|Hz))?"
+    r")(?![A-Za-z0-9_])"
+)
+_CONTEXT_PREFIX = re.compile(r"[A-Za-z][A-Za-z0-9,;:.'’ ()-]*")
+_CONTEXT_HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U000323af]")
 _SENTENCE_MARK = re.compile(
     r"\b(?:e\.g\.|i\.e\.|et al\.|Fig\.|Eq\.|Sec\.|No\.|vs\.|Dr\.)(?=\s|$)|(?<=\d)\.(?=\d)|"
     r"""(?P<end>[.!?]+["'”’）)」』]*(?:\s+|$)|[。！？]+["'”’）)」』]*\s*)""",
     re.I,
 )
+
+
+def _context_anchors(text: str, *, names_only_if_capitalized: bool) -> set[str]:
+    anchors: set[str] = set()
+    for match in _CONTEXT_ANCHOR.finditer(text):
+        if locator := match["locator"]:
+            anchors.add(_LOCATOR_NAMES.get(locator.lower(), locator) + match["label"])
+        elif section := match["section"]:
+            anchors.add("节" + section)
+        elif name := match["name"]:
+            significant = len(name) >= 2 and name[0].isupper() and name not in _CONTEXT_COMMON_WORDS
+            if not names_only_if_capitalized or significant:
+                anchors.add(name.casefold())
+        else:
+            num = match["number"]
+            unit = match["unit"] or ""
+            if unit or "." in num or (len(num) >= 2 and num not in {"10", "100"}):
+                anchors.add(num + unit.replace("％", "%"))
+    return anchors
+
+
+def _context_leakage_problems(source: str, target: str, prev_context: str) -> list[str]:
+    if not prev_context:
+        return []
+    context = " ".join(_CONTEXT_FORMULA.sub(" ", RICH_TAG.sub("", prev_context)).split())
+    if len(context) <= 30:
+        return []
+    original = " ".join(_CONTEXT_FORMULA.sub(" ", RICH_TAG.sub("", source)).split())
+    translated = " ".join(_CONTEXT_FORMULA.sub(" ", RICH_TAG.sub("", target)).split())
+    if len(translated) < 50:
+        return []
+    copied = False
+    if prefix := _CONTEXT_PREFIX.match(translated):
+        for count, word in enumerate(re.finditer(r"[A-Za-z0-9]+", prefix[0]), 1):
+            if count >= 6 and word.end() >= 30:
+                phrase = translated[: word.end()]
+                copied = phrase in context and phrase not in original
+                break
+    if not copied:
+        # 英文逐字照抄已有短语证据。中文吸纳则以源词数估算篇幅，给正常意译留出余量；
+        # 独有锚点仍须同时成立，单纯的长译文不足以触发重试。
+        words = re.findall(r"[A-Za-z]+", original)
+        if len(_CONTEXT_HAN.findall(translated)) < max(50, 2.8 * len(words), 0.4 * sum(map(len, words))):
+            return []
+        unique = _context_anchors(context, names_only_if_capitalized=True) - _context_anchors(
+            original, names_only_if_capitalized=False
+        )
+        if len(unique & _context_anchors(translated, names_only_if_capitalized=True)) < 2:
+            return []
+    return ["译文疑似吸纳了参考上文内容，请仅翻译本段原文，不要重复翻译上文"]
 
 
 def _last_sentence(source: str) -> str:
@@ -370,7 +459,6 @@ def _previous_context(segments: Sequence[Segment]) -> dict[str, str]:
             or current.section != previous.section
             or not previous.block_ids
             or not current.block_ids
-            or not _BACK_REFERENCE.match(RICH_TAG.sub("", current.source).lstrip())
         ):
             continue
         before = _BLOCK_PAGE.fullmatch(previous.block_ids[-1])
@@ -440,9 +528,9 @@ class _Unit(BaseModel):
         return expand_formulas(self.source, self.formulas)
 
     def meta(self, number: int) -> SegmentPromptMeta:
-        return SegmentPromptMeta(
-            number, self.section, self.role, self.prev_context, self.user_terms, self.reference_terms
-        )
+        # 同批普通段也会串入上一段，校验始终用相邻末句；只有指代句需要在提示词中展示上文。
+        prompt_context = self.prev_context if _BACK_REFERENCE.match(RICH_TAG.sub("", self.source).lstrip()) else ""
+        return SegmentPromptMeta(number, self.section, self.role, prompt_context, self.user_terms, self.reference_terms)
 
 
 def _is_high_formula(unit: _Unit) -> bool:
@@ -557,7 +645,9 @@ async def translate(
         if (
             o.use_cache
             and (hit := cache.get(key))
-            and not _target_problems(seg.source, hit, translated_terms=active_terms, formulas=seg.formulas)
+            and not _target_problems(
+                seg.source, hit, translated_terms=active_terms, formulas=seg.formulas, prev_context=prev_context
+            )
         ):
             seg.target, seg.status = normalize_cjk_spacing(hit), SegmentStatus.DONE
             report.cached += 1
@@ -717,7 +807,11 @@ async def translate(
             target = normalize_formula_placeholders(raw_target) if raw_target else ""
             active_terms = ctx.terms | u.user_terms if u.user_terms else ctx.terms
             errors = (
-                _target_problems(u.source, target, translated_terms=active_terms, formulas=u.formulas) if target else []
+                _target_problems(
+                    u.source, target, translated_terms=active_terms, formulas=u.formulas, prev_context=u.prev_context
+                )
+                if target
+                else []
             )
             if target and not errors:
                 target = normalize_cjk_spacing(target)

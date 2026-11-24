@@ -8,7 +8,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 
 import "./fonts.css";
 
-import { blockTexts, layoutBox, roleOf, type BlockText } from "@/entities/document/model";
+import { blockTexts, headingAlign, layoutBox, roleOf, type BlockText } from "@/entities/document/model";
 import {
   fileUrl,
   formulaUrl,
@@ -167,7 +167,7 @@ export function ReaderView({
         bById.set(b.id, b);
         const bt = texts.get(b.id);
         if (bt) {
-          pageBlocks.push(b);
+          pageBlocks.push(bt.renderBox ? { ...b, bbox: bt.renderBox } : b);
           const segId = bt.segment.id;
           let set = pBySeg.get(segId);
           if (!set) {
@@ -1096,6 +1096,8 @@ const PageRow = memo(function PageRow({
                 <OverlayBlock
                   key={b.id}
                   item={t}
+                  pageBlocks={page.blocks}
+                  pageWidth={page.width}
                   className={mark(t.segment.id)}
                   scale={scale}
                   fontsVersion={fontsVersion}
@@ -1130,6 +1132,8 @@ function useFontsVersion(): number {
 
 function OverlayBlock({
   item,
+  pageBlocks,
+  pageWidth,
   className,
   scale,
   fontsVersion,
@@ -1140,6 +1144,8 @@ function OverlayBlock({
   onJump,
 }: {
   item: BlockText;
+  pageBlocks: readonly BlockData[];
+  pageWidth: number;
   className: string;
   scale: number;
   fontsVersion: number;
@@ -1154,7 +1160,10 @@ function OverlayBlock({
   const inner = useRef<HTMLDivElement>(null);
   const [overflow, setOverflow] = useState(false);
   const role = roleOf(block, translated);
-  const rect = layoutBox(block);
+  const renderBlock = item.renderBox ? { ...block, bbox: item.renderBox } : block;
+  const rect = layoutBox(renderBlock, pageBlocks, pageWidth, item.sourceText);
+  const width = rect.x1 - rect.x0;
+  const height = rect.y1 - rect.y0;
   // 排版规则（clreq）：中西文之间加空格、正文段首缩进两字；没有译文时显示原文，不做处理
   const normalized = dropFakeScripts(text);
   const shown = translated ? spaceCjkLatin(normalized) : normalized;
@@ -1178,7 +1187,7 @@ function OverlayBlock({
     if (box.current && inner.current) {
       setOverflow(fitElement(box.current, inner.current, block.font_size * scale).overflow);
     }
-  }, [text, block.font_size, scale, fontsVersion]);
+  }, [text, block.font_size, width, height, scale, fontsVersion]);
 
   return (
     <div
@@ -1187,8 +1196,9 @@ function OverlayBlock({
       style={{
         left: rect.x0 * scale,
         top: rect.y0 * scale,
-        width: (rect.x1 - rect.x0) * scale,
-        height: (rect.y1 - rect.y0) * scale,
+        width: width * scale,
+        height: height * scale,
+        textAlign: block.type === "title" ? headingAlign(block, pageWidth, item.sourceText) : undefined,
         color: `#${block.color.toString(16).padStart(6, "0")}`,
       }}
       title={overflow ? "译文放不下，点击查看全文" : undefined}

@@ -6,7 +6,7 @@ from pathlib import Path
 import pymupdf
 import pytest
 
-from pdftr.domain.chars import CharPage
+from pdftr.domain.chars import Char, CharPage
 from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import BlockType, PageKind, SegmentStatus
 from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutPage, LayoutResult, LayoutSpan
@@ -29,6 +29,81 @@ def layout_block(order: int, kind: BlockType, coords: list[float], text: str = "
 
 def single_page_layout(*blocks: LayoutBlock) -> LayoutResult:
     return LayoutResult(parser="synthetic", pages=[LayoutPage(index=0, width=600, height=800, blocks=list(blocks))])
+
+
+def _native_row(text: str, x: int, y: int, line: int = 0) -> list[Char]:
+    return [
+        Char(c=c, bbox=Rect.of([x + i * 5, y, x + i * 5 + 5, y + 10]), line=line, size=10, font="Times", origin_y=y + 8)
+        for i, c in enumerate(text)
+    ]
+
+
+@pytest.mark.parametrize("block_only", [False, True])
+def test_fuse_promotes_native_space_and_keeps_ordinary_ro(block_only: bool):
+    raw = "(Var ∈ ℝo) and Ro"
+    chars = _native_row(raw, 50, 100)
+    exponent = chars[raw.index("o")]
+    exponent.size, exponent.origin_y = 7, 105
+    exponent.bbox = exponent.bbox.model_copy(update={"y0": 98, "y1": 105})
+    block = layout_block(0, BlockType.TEXT, [50, 98, chars[-1].bbox.x1, 110], raw)
+    if block_only:
+        block = block.model_copy(update={"lines": [], "content": raw})
+    page = CharPage(index=0, width=600, height=800, chars=chars)
+    doc, _ = fuse("synthetic", single_page_layout(block), [page], used_cloud=False)
+    (body,) = doc.blocks()
+    (formula,) = body.formulas
+    assert formula.latex == r"Var \in \mathbb{R}^{o}" and formula.located
+    assert formula.bbox == Rect.of([55, 98, exponent.bbox.x1, 110])
+    assert [(s.kind, s.text.strip() or s.formula) for s in body.spans] == [
+        ("text", "("),
+        ("formula", formula.key),
+        ("text", ") and Ro"),
+    ]
+
+
+def test_fuse_keeps_attached_subscript_out_of_neighboring_text():
+    chars = _native_row("RPTjm end", 50, 100)
+    for c in chars[3:5]:
+        c.size, c.origin_y = 7, 111
+        c.bbox = c.bbox.model_copy(update={"y0": 106, "y1": 113})
+    box = Rect.of([50, 100, chars[-1].bbox.x1, 113])
+    line = LayoutLine(
+        bbox=box,
+        spans=[
+            LayoutSpan(kind="inline_formula", content="RPT_{jm}", bbox=Rect.of([50, 100, 70, 108])),
+            LayoutSpan(kind="text", content="<i>jm</i> end", bbox=Rect.of([65, 100, box.x1, 113])),
+        ],
+    )
+    block = LayoutBlock(order=0, type=BlockType.TEXT, bbox=box, lines=[line])
+    page = CharPage(index=0, width=600, height=800, chars=chars)
+    doc, _ = fuse("synthetic", single_page_layout(block), [page], used_cloud=False)
+    (body,) = doc.blocks()
+    (formula,) = body.formulas
+    assert (formula.latex, formula.bbox) == ("RPT_{jm}", Rect.of([50, 100, 75, 113]))
+    assert [(s.kind, s.text.strip() or s.formula) for s in body.spans] == [("formula", formula.key), ("text", "end")]
+
+
+def test_fuse_dedupes_physical_orphan_after_linking_columns():
+    head_text, tail_text = "A sample continues", "in the next column."
+    head = layout_block(0, BlockType.TEXT, [50, 300, 145, 310], head_text)
+    tail = layout_block(1, BlockType.TEXT, [320, 100, 415, 110], tail_text)
+    head.lines.extend(tail.lines)
+    # 占位块底边高于原生字心 3pt：续行能够归位，原生字仍会单独生成一个补漏块。
+    placeholder = LayoutBlock(order=1, type=BlockType.TEXT, bbox=Rect.of([320, 98, 415, 102]), placeholder=True)
+    page = CharPage(
+        index=0,
+        width=600,
+        height=800,
+        chars=[
+            *_native_row(head_text, 50, 300),
+            *_native_row(tail_text, 320, 100, 1),
+        ],
+    )
+    doc, report = fuse("synthetic", single_page_layout(head, placeholder), [page], used_cloud=False)
+    assert (report.moved_lines, report.orphan_blocks, report.continuations) == (1, 1, 1)
+    source, continuation = doc.blocks()
+    assert [(b.orphan, [s.text for s in b.spans]) for b in doc.blocks()] == [(False, [head_text]), (False, [tail_text])]
+    assert source.continues_from is None and continuation.continues_from == source.id
 
 
 # (页, x, 基线 y, 文字)：与夹具中各行的框对应

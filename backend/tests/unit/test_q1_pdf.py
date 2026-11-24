@@ -21,6 +21,25 @@ def _block(page: int, order: int, box: list[float], text: str, prev: str | None 
     )  # fmt: skip
 
 
+def test_background_preserves_tall_glyphs_touching_body_from_above(tmp_path: Path) -> None:
+    original, out = tmp_path / "tight.pdf", tmp_path / "erased.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=160, height=100)
+        page.insert_text((24, 40), "A||B", fontsize=14)
+        end = 24 + pymupdf.get_text_length("A||B", fontsize=14)
+        page.insert_text((end, 44), "k", fontsize=7)
+        page.insert_text((24, 51), "sample", fontsize=10)
+        page.insert_text((24, 63), "again", fontsize=10)
+        keep = page.search_for("A||B")[0]
+        body = page.search_for("sample")[0] | page.search_for("again")[0]
+        assert keep.y0 < body.y0 + 0.5 < keep.y1
+        pdf.save(original)
+    make_background(original, [_block(0, 0, list(body), "sample again")], out)
+    with pymupdf.open(out) as pdf:
+        assert "".join(pdf[0].get_textpage().extractText().split()) == "A||Bk"
+        assert pdf[0].search_for("A||B")[0] == keep
+
+
 @pytest.fixture
 def columns(tmp_path: Path) -> tuple[Path, Document]:
     original = tmp_path / "two-columns.pdf"

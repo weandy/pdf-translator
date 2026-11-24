@@ -13,7 +13,7 @@ from pdftr.domain.ir import BlockType
 from pdftr.domain.text import RICH_TAG
 
 BATCH_TOKENS = 1500
-VALIDATION_VERSION = 6
+VALIDATION_VERSION = 7
 _PLACEHOLDER = re.compile(r"<m\d+/>")
 _SPACED_FORMULA_PLACEHOLDER = re.compile(r"<(m\d+)\s+/>")
 _RICH_TAG = re.compile(r"<(/?)(b|i|sup|sub)>")
@@ -431,7 +431,7 @@ def _expand_citation_items(numbers: Sequence[tuple[int, int | None]]) -> list[_C
 
 def _citation_anchors(
     text: str, *, target: bool = False, expected: Mapping[_Citation, int] | None = None
-) -> tuple[Counter[_Citation], Counter[_Citation]]:
+) -> tuple[Counter[_Citation], Counter[_Citation], set[tuple[int, ...]]]:
     view = _CITATION_BOUNDARY.sub("\x00", RICH_TAG.sub("", text))
     pattern = _TARGET_BRACKETS if target else _SOURCE_BRACKETS
     locator_pattern = _TARGET_LOCATOR_BRACKET if target else _SOURCE_LOCATOR_BRACKET
@@ -443,6 +443,7 @@ def _citation_anchors(
     groups.sort(key=lambda item: item[0])
     confirmed: Counter[_Citation] = Counter()
     excluded: Counter[_Citation] = Counter()
+    orders: set[tuple[int, ...]] = set()
     i = 0
     while i < len(groups):
         start, end, numbers = groups[i]
@@ -474,9 +475,13 @@ def _citation_anchors(
             valid = not blocked and all(1 <= a <= (b if b is not None else a) <= upper for a, b in numbers)
             if valid:
                 confirmed.update(anchors)
+                if 2 <= len(anchors) <= 15 and len(set(anchors)) == len(anchors):
+                    seq = tuple(a for a in anchors if isinstance(a, int))
+                    if len(seq) == len(anchors):
+                        orders.add(seq)
             else:
                 excluded.update(anchors)
-    return confirmed, excluded
+    return confirmed, excluded, orders
 
 
 def _sup_citation_anchors(
@@ -544,9 +549,9 @@ def _format_citation(anchor: _Citation) -> str:
 def citation_problems(source: str, target: str) -> list[str]:
     """比对原文可确认引文（方括号、混合定位及上标数字引文），并处理与数学/代码共用的歧义编号。"""
     problems: list[str] = []
-    want, excluded = _citation_anchors(source)
+    want, excluded, source_orders = _citation_anchors(source)
     if want:
-        got, _ = _citation_anchors(target, target=True, expected=want)
+        got, _, target_orders = _citation_anchors(target, target=True, expected=want)
         for anchor in excluded.keys() - want.keys():
             got.pop(anchor, None)
         for anchor in sorted(want.keys() | got.keys(), key=_citation_sort_key):
@@ -557,6 +562,21 @@ def citation_problems(source: str, target: str) -> list[str]:
                 problems.append(f"缺少引文 [{_format_citation(anchor)}]（{low - actual} 次）")
             elif actual > high:
                 problems.append(f"多出引文 [{_format_citation(anchor)}]（{actual - high} 次）")
+        source_groups = {tuple(sorted(seq)) for seq in source_orders}
+        for seq in sorted(target_orders - source_orders):
+            if tuple(sorted(seq)) in source_groups:
+                problems.append(f"引文编号顺序与原文不一致：[{', '.join(map(str, seq))}] 应保持原文顺序")
+        if source_orders:
+            view = _CITATION_BOUNDARY.sub("\x00", RICH_TAG.sub("", target)).translate(_FULLWIDTH_DIGITS)
+            for match in _TARGET_BRACKETS.finditer(view):
+                raw = match[1] or match[2]
+                if not re.fullmatch(r"\s*\d{1,4}(?:\s+\d{1,4})+\s*", raw):
+                    continue
+                seq = tuple(map(int, raw.split()))
+                if tuple(sorted(seq)) in source_groups:
+                    hard, soft, _ = _citation_context(view, *match.span(), target=True, interval_like=len(seq) == 2)
+                    if not (hard or soft):
+                        problems.append(f"引文 {match[0]} 缺少编号之间的分隔符，请保持原文分隔")
 
     sup_want = _sup_citation_anchors(source)
     if sup_want:

@@ -17,12 +17,27 @@ from pydantic import BaseModel
 from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import Document
 
-VERSION = 6  # 修复命名内部跳转（LINK_NAMED）纵坐标转换，统一 dest_y 与 dest_top 为 MuPDF 左上原点坐标系
+VERSION = 7  # 英文交叉引用的中文标签和完整编号参与热点定位
 _PLACEHOLDER = re.compile(r"<m\d+/>|</?(?:sup|sub|b|i)>")
 _COMPACT_TOKEN = re.compile(r"<m\d+/>|<(/?)(sup)>|</?(?:sub|b|i)>|\s+|[\s\S]")
 _SPACE = re.compile(r"\s+")
 _EDGE = " \t\n[]()（）【】,，;；:：.–—-−∗*†‡\u200b\ufeff"
 _NUMBER = re.compile(r"\d+(?:[.\-–]\d+)*[a-z]?")
+_REF_LABELS = {
+    "table tab": "表{}",
+    "figure fig": "图{}",
+    "section sec": "第{}节|{}节|节{}",
+    "algorithm alg": "算法{}",
+    "equation eq": "公式{}|方程{}|式{}",
+    "appendix app": "附录{}",
+    "theorem thm": "定理{}",
+    "lemma": "引理{}",
+    "proposition prop": "命题{}",
+    "definition def": "定义{}",
+    "corollary cor": "推论{}",
+}
+_REF_NAMES = {name: label for names, label in _REF_LABELS.items() for name in names.split()}
+_REF_ANCHOR = re.compile(rf"({'|'.join(_REF_NAMES)})\.?(\d+(?:[.-]\d+)*[a-z]?|[A-Z](?:\.\d+)*)", re.I)
 _LABELS = "图表节式算法附录定理引理推论定义章例"  # 中文译文里图表、章节编号前面的字
 SKIP_DESTS = ("page",)  # 页码跳转：编号很短，译文里容易配错，不加
 _FOOTNOTE_DESTS = frozenset({"Hfootnote", "footnote"})  # 脚注仅在 <sup> 上标区间内精准匹配 1-2 位编号
@@ -294,7 +309,7 @@ def _has_cite_prefix(text: str, pos: int) -> bool:
     return pos > 0 and _CITE_PREFIX.search(text, max(pos - 48, 0), pos) is not None
 
 
-def _candidates(link: PdfLink, text: str, sup_ranges: Sequence[tuple[int, int]] = ()) -> tuple[str, list[int]]:
+def _literal_candidates(link: PdfLink, text: str, sup_ranges: Sequence[tuple[int, int]]) -> tuple[str, list[int]]:
     """（要加链接的文字, 它在 text 里可能的位置）。"""
     if link.uri:  # 先找完整网址（链接文字可能被换行截断、带着脚注编号或句末标点），再找去掉协议的网址、链接文字
         for core in (link.uri, re.sub(r"^(?:https?://|mailto:)", "", link.uri), compact(link.anchor).rstrip(".,;)）")):
@@ -336,6 +351,20 @@ def _candidates(link: PdfLink, text: str, sup_ranges: Sequence[tuple[int, int]] 
     return core, spots
 
 
+def _candidates(link: PdfLink, text: str, sup_ranges: Sequence[tuple[int, int]]) -> list[tuple[int, str]]:
+    core, positions = _literal_candidates(link, text, sup_ranges)
+    ref = _REF_ANCHOR.fullmatch(core) if not link.uri and link.kind != "cite" else None
+    if not ref:
+        return [(p, core) for p in positions]
+    # 原样定位优先，英文和中文都须吃完整编号，不能把 5 配到 50 或 5.1。
+    number = rf"(?<![0-9])(?<!\d\.){re.escape(ref[2])}(?![0-9A-Za-z]|[.-]\d)"
+    exact = re.compile(re.escape(core[: ref.start(2)]) + number)
+    if matches := [(m.start(), m[0]) for m in exact.finditer(text)]:
+        return matches
+    pattern = _REF_NAMES[ref[1].lower()].replace("{}", number)
+    return [(m.start(), m[0]) for m in re.finditer(pattern, text)]
+
+
 def locate(
     links: Sequence[PdfLink], pieces: dict[str, str], siblings: dict[str, list[str]] | None = None
 ) -> list[PdfLink]:
@@ -351,14 +380,14 @@ def locate(
 
     def take(link: PdfLink, block_id: str) -> bool:
         text, sup_ranges = prepared.get(block_id, ("", []))
-        needle, spots = _candidates(link, text, sup_ranges)
+        spots = _candidates(link, text, sup_ranges)
         if not spots and link.whole and block_id == link.block_id and text:  # 整块链接（如译成中文的按钮）
-            needle, spots = text, [0]
+            spots = [(0, text)]
         taken = used.setdefault(block_id, set())
-        free = [p for p in spots if not any(a < p + len(needle) and p < b for a, b in taken)]
-        if not needle or not free:
+        free = [(p, word) for p, word in spots if not any(a < p + len(word) and p < b for a, b in taken)]
+        if not free:
             return False
-        pos = next((p for p in free if p >= last.get(block_id, 0)), free[0])
+        pos, needle = next((spot for spot in free if spot[0] >= last.get(block_id, 0)), free[0])
         taken.add((pos, pos + len(needle)))
         last[block_id] = pos + len(needle)
         link.block_id, link.text, link.nth = block_id, needle, _occurrences(text, needle).index(pos)

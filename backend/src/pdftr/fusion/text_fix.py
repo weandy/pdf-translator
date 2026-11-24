@@ -265,6 +265,31 @@ def _valid_inserted_digit(word: str, word_matched: list[bool], idx: int) -> bool
     return sum(word_matched) >= 2
 
 
+_CITATION_CORE = re.compile(r"\[\d+(?:[,;\-–—]\d+)+\]")
+_MATH_BRACKET_LEFT = re.compile(
+    r"(?:[=+*/∈⊂⊆\[\]-]|\b[A-Za-z]|\b(?:matri(?:x|ces)|vectors?|arrays?|ranges?|intervals?|tuples?|lists?)"
+    r"(?:\s+of)?|\b(?:[A-Za-z]|values?|falls?|lies?|uniformly)\s+in)\s*$",
+    re.I,
+)
+
+
+def _is_bracket_citation_sep(word: str, idx: int, plain: str) -> bool:
+    core = word.rstrip(".,;:!?)")
+    if not _CITATION_CORE.fullmatch(core) or not 0 < idx < len(core) - 1 or core[idx] not in ",-–—":
+        return False
+    if not (core[idx - 1].isdigit() and core[idx + 1].isdigit()):
+        return False
+    # 只核实当前 PDF 词对齐到的这一次出现。别处的同号引文不能为连写数字提供证据。
+    pattern = r"(?<![A-Za-z0-9_])\[\s*"
+    for num in re.finditer(r"\d+", core):
+        if num.start() > 1:
+            sep = core[num.start() - 1]
+            pattern += r"\s+" if num.start() - 1 == idx else rf"(?:\s*{re.escape(sep)}\s*|\s+)"
+        pattern += num[0]
+    aligned = re.search(pattern + r"\s*\][.,;:!?)]*\Z", plain)
+    return aligned is not None and _MATH_BRACKET_LEFT.search(plain, 0, aligned.start()) is None
+
+
 def recover_dropped_chars(parser_text: str, pdf_text: str) -> str:
     """补上已有词内/词尾少量缺字、受控数学/代码符号与括号、以及被粘连词的真实词间空格。"""
     if re.search(r"</?(?:sub|sup)>", parser_text) or not parser_text.strip() or is_broken(pdf_text):
@@ -287,7 +312,7 @@ def recover_dropped_chars(parser_text: str, pdf_text: str) -> str:
         elif tag == "insert":
             for j in range(j1, j2):
                 ch = actual[j]
-                if not (_LETTER.fullmatch(ch) or ch in ",." or ch in _SAFE_INSERT_SYMBOLS or ch.isdigit()):
+                if not (_LETTER.fullmatch(ch) or ch in ",.-–—" or ch in _SAFE_INSERT_SYMBOLS or ch.isdigit()):
                     return parser_text
         else:
             return parser_text
@@ -297,11 +322,14 @@ def recover_dropped_chars(parser_text: str, pdf_text: str) -> str:
 
     # 按 PDF 词边界检查：每个词都必须已有匹配字符（允许独立乘号 '×' 夹在数字表达式间），并逐类校验新增字符上下文。
     pdf_words = pdf_text.split()
+    plain_positions = [i for i, ch in enumerate(plain) if not ch.isspace()]
     pos = 0
+    matched_chars = 0
     for wi, word in enumerate(pdf_words):
         end = pos + len(word)
         word_matched = matched[pos:end]
         pos = end
+        matched_chars += sum(word_matched)
         if not any(word_matched):
             if (
                 word == "×"
@@ -318,10 +346,14 @@ def recover_dropped_chars(parser_text: str, pdf_text: str) -> str:
         for idx, (ch, ok) in enumerate(zip(word, word_matched, strict=True)):
             if ok:
                 continue
-            if ch in ",.":
-                # 新增的逗号/句号只允许出现在词尾（可紧跟闭合括号/标点），禁止在词内插入标点。
-                tail = word[idx + 1 :]
-                if tail and any(c.isalnum() for c in tail):
+            if ch in ",.-–—":
+                if ch in ",." and not any(c.isalnum() for c in word[idx + 1 :]):
+                    continue
+                # 截到当前词的最后一个对齐字符，保留左侧语境以排除矩阵、区间和索引。
+                word_end = plain_positions[matched_chars - 1] + 1
+                if plain[word_end:].lstrip().startswith(("[", "]", "=", "(")) or not _is_bracket_citation_sep(
+                    word, idx, plain[:word_end]
+                ):
                     return parser_text
             elif ch == "×":
                 between = 0 < idx < len(word) - 1 and (

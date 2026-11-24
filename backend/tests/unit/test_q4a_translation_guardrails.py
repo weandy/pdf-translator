@@ -36,6 +36,7 @@ from pdftr.translation.service import TranslateOptions, cache_key, translate
         ("See Citation [9999].", "见文献[9998]。"),
         ("See [7]. Matrix [1, 2].", "见[7]及[8]。矩阵[1, 2]。"),
         ("See [7].", "见[7]和[8]，数组[2]。"),
+        ("See [2; 3, 4].", "见［４、３；２］。"),
     ],
 )
 def test_citation_anchor_rejects_renumbering_loss_or_addition(source, target):
@@ -47,7 +48,7 @@ def test_citation_anchor_rejects_renumbering_loss_or_addition(source, target):
     [
         ("See [1, 2].", "见[1][2]。"),
         ("See [<b>1</b>][2].", "见［１，２］。"),
-        ("See [2; 3, 4].", "见［４、３；２］。"),
+        ("See [2; 3, 4].", "见［２、３；４］。"),
         ("See [００１].", "见[1]。"),
         ("See [7, 1–3].", "见［1、2、3］和[7]。"),
         ("See [1–31].", "见[1][2–31]。"),
@@ -430,7 +431,7 @@ def test_cache_key_is_deterministic_and_covers_semantic_inputs():
     seg = _segment(1, "A paragraph.")
     version = cache_key(seg, "m", {"b": "乙", "a": "甲"}, "default", reference_terms={"y": "乙", "x": "甲"})
     assert version == cache_key(seg, "m", {"a": "甲", "b": "乙"}, "default", reference_terms={"x": "甲", "y": "乙"})
-    assert VALIDATION_VERSION == 6
+    assert VALIDATION_VERSION == 7
     default = cache_key(seg, "m", {}, "default")
     keys = [
         default,

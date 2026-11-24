@@ -68,6 +68,21 @@ def _doc() -> Document:
                                                       Page(index=1, width=600, height=800, blocks=p1)])  # fmt: skip
 
 
+def test_duplicate_block_id_has_one_segment_part_across_continuation_chains() -> None:
+    left = _block("p0-b0", 0, BlockType.TEXT, [_text("Left head.")])
+    right = _block("p0-b1", 0, BlockType.TEXT, [_text("Right head.")])
+    tail = _block("p0-b2", 0, BlockType.TEXT, [_text("Shared tail.")], continues_from=left.id)
+    repeated = tail.model_copy(update={"continues_from": right.id})
+    sibling = _block("p0-b3", 0, BlockType.TEXT, [_text("Distinct branch.")], continues_from=right.id)
+    blocks = [left, right, tail, sibling, repeated, left]
+    doc = Document(job_id="synthetic", pages=[Page(index=0, width=600, height=800, blocks=blocks)])
+    segments = segment(doc)
+    part_ids = [part.block_id for seg in segments for part in seg.parts]
+    assert sorted(part_ids) == sorted({b.id for b in blocks})
+    assert all(seg.block_ids == [part.block_id for part in seg.parts] for seg in segments)
+    assert sum(s.source.count("Shared tail.") for s in segments) == 1
+
+
 def test_join_handles_line_end_hyphens():
     assert _join("a representa-", "tion") == "a representation"
     assert _join("left-to-", "right") == "left-to-right"  # 复合词保留连字符

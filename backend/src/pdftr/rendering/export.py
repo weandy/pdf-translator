@@ -16,7 +16,7 @@ from typing import Literal
 import pymupdf
 
 from pdftr.domain.geometry import Rect
-from pdftr.domain.ir import Block, BlockType, Document, FormulaRef, Segment
+from pdftr.domain.ir import Block, BlockType, Document, FormulaRef, Segment, SegmentPart
 from pdftr.domain.text import RICH_ATOM, RICH_TAG
 from pdftr.rendering.artifacts import pdf_destination
 from pdftr.rendering.background import crop_formula
@@ -33,6 +33,7 @@ MIN_SCALE = 0.4  # 常规适配的最小字号比例，极矮框的首行可继�
 BOTTOM_MARGIN = 4.0
 
 _BREAK_AFTER = set("，。；：、）！？,;:.)")
+_STRONG_BREAK_AFTER = set("。！？；.!?;")
 _SEARCH = 40
 _CITATION_MAX = 40
 _CITATION_CHARS = set(" ,–—-;，、；")
@@ -197,10 +198,11 @@ def _avoid_mid_word(atoms: list[_Atom], start: int, target: int, limit: int) -> 
 
 
 def _cut_near(atoms: list[_Atom], start: int, target: int, limit: int, radius: int = _SEARCH) -> int:
-    for d in range(radius + 1):
-        for pos in (target - d, target + d):
-            if start < pos <= limit and atoms[pos - 1].char in _BREAK_AFTER:
-                return pos
+    for punctuation in (_STRONG_BREAK_AFTER, _BREAK_AFTER):
+        for d in range(radius + 1):
+            for pos in (target - d, target + d):
+                if start < pos <= limit and atoms[pos - 1].char in punctuation:
+                    return pos
     return _avoid_mid_word(atoms, start, target, limit)
 
 
@@ -380,6 +382,44 @@ def _heading_align(block: Block, page_width: float) -> str:
     return "left"
 
 
+def _expand_title_box(block: Block, box: pymupdf.Rect, page_width: float, neighbors: Sequence[Block]) -> pymupdf.Rect:
+    if block.type is not BlockType.TITLE or box.is_empty or page_width <= 0:
+        return box
+    if _heading_align(block, page_width) != "left":
+        return box
+    mid = page_width / 2
+    left = block.bbox.x1 <= mid + block.style.font_size
+    right = block.bbox.x0 >= mid - block.style.font_size
+    max_left = block.bbox.x0 + max(24.0, 3 * block.style.font_size)
+    bodies = [b for b in neighbors if b.type is BlockType.TEXT and b.page == block.page and b.id != block.id]
+    has_left_col = any(b.bbox.x0 <= max_left and b.bbox.x1 <= mid + b.style.font_size for b in bodies)
+    has_right_col = any(b.bbox.x0 >= mid - b.style.font_size for b in bodies)
+    col_right = box.x1
+    safe_right = page_width - BOTTOM_MARGIN
+    for other in neighbors:
+        if other.id == block.id or other.page != block.page:
+            continue
+        ob = other.bbox
+        if ob.y0 < box.y1 and ob.y1 > box.y0 and ob.x0 >= block.bbox.x1 - 2:
+            safe_right = min(safe_right, ob.x0 - _COLUMN_MIN_GAP)
+    for other in bodies:
+        ob = other.bbox
+        if ob.x0 > max_left:
+            continue
+        if left and has_left_col:
+            same_column = ob.x1 <= mid + other.style.font_size
+        elif right and has_right_col:
+            same_column = ob.x0 >= mid - other.style.font_size
+        elif (left or right) and (has_left_col or has_right_col):
+            continue  # 只有对栏正文时，也不能借用全幅摘要的右缘。
+        else:
+            same_column = ob.x1 >= block.bbox.x1 - 2
+        if same_column:
+            col_right = max(col_right, ob.x1)
+    x1 = min(col_right, safe_right)
+    return pymupdf.Rect(box.x0, box.y0, x1, box.y1) if x1 > box.x1 else box
+
+
 def _place(
     ts: Typesetter,
     page: pymupdf.Page,
@@ -394,7 +434,8 @@ def _place(
     placed_images: dict[str, list[pymupdf.Rect]] | None = None,
 ) -> bool:
     """先收紧行距再缩小字号。返回译文是否有行未写入 PDF。"""
-    box = _clamp_column_right(block, _box(block) & page.rect, neighbors)
+    box = _expand_title_box(block, _box(block) & page.rect, page.rect.width, neighbors)
+    box = _clamp_column_right(block, box, neighbors)
     if box.is_empty:
         return translated and any(
             token.kind == "image" or (token.kind != "space" and any(run.text for run in token.runs)) for token in tokens
@@ -441,6 +482,10 @@ def _place(
         lines, bases, height = layout(scale, pitch)
         if fits(lines, bases, height, scale):
             break
+        if block.type is BlockType.TITLE and pitch == LINE_HEIGHT and len(lines) <= 2:
+            drawn = max((_line_bottom(line, base, size) for line, base in zip(lines, bases, strict=True)), default=0)
+            if max(height, drawn) <= safe_height(lines, scale) - 2:
+                break
     else:
         lines, bases, height = layout(MIN_SCALE, LINE_HEIGHT)
         needs_gap = height > box_limit
@@ -482,17 +527,70 @@ def _exported_text(seg: Segment) -> str:
     return seg.target or seg.source
 
 
+@dataclass
+class _RenderGroup:
+    block: Block | None  # 首块的样式和合区坐标；缺块也保留权重，避免后面的译文错位。
+    member_ids: set[str]
+    chars: int
+
+
+def _merged_bounds(prev: Block, nxt: Block, bounds: Rect, members: set[str], neighbors: Sequence[Block]) -> Rect | None:
+    if prev.page != nxt.page or prev.type is not BlockType.TEXT or nxt.type is not BlockType.TEXT:
+        return None
+    a, b = prev.bbox, nxt.bbox
+    size = max(prev.style.font_size, nxt.style.font_size)
+    min_width = min(a.width, b.width)
+    if (
+        min_width <= 0
+        or min(a.height, b.height) <= 0
+        or min(a.x1, b.x1) - max(a.x0, b.x0) < 0.70 * min_width
+        or abs(a.x0 - b.x0) > 1.2 * size
+        or b.x1 > a.x1 + 1.5 * size
+        or not -0.5 * size <= b.y0 - a.y1 <= 1.5 * size
+    ):
+        return None
+    union = Rect(x0=min(bounds.x0, b.x0), y0=min(bounds.y0, b.y0), x1=max(bounds.x1, b.x1), y1=max(bounds.y1, b.y1))
+    # 后续块可能把整个外接框加宽，早先块旁的图也必须避开。
+    for other in neighbors:
+        if other.id != nxt.id and other.id not in members and union.intersection(other.bbox) is not None:
+            return None
+    return union
+
+
+def _merge_render_parts(seg: Segment, blocks: dict[str, Block], by_page: dict[int, list[Block]]) -> list[_RenderGroup]:
+    parts = seg.parts or [SegmentPart(block_id=bid, chars=len(seg.source)) for bid in seg.block_ids[:1]]
+    groups: list[_RenderGroup] = []
+    prev = None
+    for part in parts:
+        block = blocks.get(part.block_id)
+        group = groups[-1] if groups else None
+        if prev is not None and block is not None and group is not None and group.block is not None:
+            merged = _merged_bounds(prev, block, group.block.bbox, group.member_ids, by_page[block.page])
+            if merged is not None:
+                group.block = group.block.model_copy(update={"bbox": merged})
+                group.member_ids.add(block.id)
+                group.chars += part.chars
+                prev = block
+                continue
+        groups.append(_RenderGroup(block, {part.block_id}, part.chars))
+        prev = block
+    return groups
+
+
 def block_pieces(
     doc: Document, segments: list[Segment], shown: Callable[[Segment], str] = _exported_text
 ) -> dict[str, str]:
     """块 id → 这一块显示的文字（拆分方式与 _typeset_all、前端一致）。shown：一段显示译文还是原文。"""
-    ids = {b.id for b in doc.blocks()}
+    blocks = {b.id: b for b in doc.blocks()}
+    by_page = {page.index: page.blocks for page in doc.pages}
     out: dict[str, str] = {}
     for seg in segments:
-        texts = split_by_parts(shown(seg), [p.chars for p in seg.parts] or [len(seg.source)])
-        for part, piece in zip(seg.parts, texts, strict=False):
-            if part.block_id in ids:
-                out[part.block_id] = piece
+        groups = _merge_render_parts(seg, blocks, by_page)
+        texts = split_by_parts(shown(seg), [group.chars for group in groups])
+        for group, piece in zip(groups, texts, strict=False):
+            if group.block is not None:
+                out.update(dict.fromkeys(group.member_ids, ""))
+                out[group.block.id] = piece
     return out
 
 
@@ -512,9 +610,10 @@ def _typeset_all(
     by_page = {page.index: page.blocks for page in doc.pages}
     for seg in segments:
         images = _formula_images(src, seg)
-        texts = split_by_parts(_exported_text(seg), [p.chars for p in seg.parts] or [len(seg.source)])
-        for n, (part, piece) in enumerate(zip(seg.parts, texts, strict=False)):
-            block = blocks.get(part.block_id)
+        groups = _merge_render_parts(seg, blocks, by_page)
+        texts = split_by_parts(_exported_text(seg), [group.chars for group in groups])
+        for n, (group, piece) in enumerate(zip(groups, texts, strict=False)):
+            block = group.block
             if block is None or not piece.strip() or block.page >= len(out):
                 continue
             r = role(block, translated=bool(seg.target))
@@ -526,9 +625,17 @@ def _typeset_all(
             tokens = ts.tokenize(drop_fake_scripts(text), r, block.style.font_size, size, caption_no,
                                  formulas=seg.formulas)  # fmt: skip
             indent = bool(seg.target) and wants_indent(block, seg, first=n == 0)
+            neighbors = by_page[block.page]
+            runs = placed.setdefault(block.id, [])
+            drawn_images = placed_images.setdefault(block.id, {})
+            if len(group.member_ids) > 1:
+                neighbors = [other for other in neighbors if other.id not in group.member_ids]
+                for bid in group.member_ids:
+                    placed[bid] = runs
+                    placed_images[bid] = drawn_images
             overflow = _place(
-                ts, out[block.page], block, tokens, indent, images, placed.setdefault(block.id, []), bool(seg.target),
-                neighbors=by_page[block.page], placed_images=placed_images.setdefault(block.id, {}),
+                ts, out[block.page], block, tokens, indent, images, runs, bool(seg.target),
+                neighbors=neighbors, placed_images=drawn_images,
             )  # fmt: skip
             if overflow:
                 overflow_pages.add(block.page + 1)

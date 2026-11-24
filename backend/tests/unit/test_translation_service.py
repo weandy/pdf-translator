@@ -3,11 +3,11 @@ import re
 
 import pytest
 
-from pdftr.domain.ir import Segment, SegmentStatus
+from pdftr.domain.ir import BlockType, Segment, SegmentStatus
 from pdftr.domain.llm import ChatError, ChatOptions, ChatResult, ChatUsage
-from pdftr.translation.batching import normalize_cjk_spacing
+from pdftr.translation.batching import citation_problems, normalize_cjk_spacing
 from pdftr.translation.prompt import DocContext
-from pdftr.translation.service import TranslateOptions, cache_key, translate
+from pdftr.translation.service import TranslateOptions, _target_problems, cache_key, translate
 
 
 class FakeChat:
@@ -636,3 +636,100 @@ def test_accepted_model_output_is_normalized_before_cache_and_persistence():
     assert cache.get(key) == expected
     cached, report = asyncio.run(translate([seg], chat=FakeChat(), cache=cache, ctx=DocContext()))
     assert cached[0].target == expected and report.cached == 1
+
+
+_PREVIOUS = "NovaGrid recorded 47 samples during the initial calibration."
+_ELABORATION = (
+    "这次测量持续了整个校准过程，研究人员逐项记录每轮读数，并独立核对设备状态，"
+    "随后对照所有观测结果调整了采样方式，最终将这些数据汇总到同一份报告中。"
+)
+
+
+@pytest.mark.parametrize("source", ["This worked.", "Calibration succeeded."])
+def test_context_leakage_rejects_cache_and_retries_model_output(source: str) -> None:
+    previous = _seg(0, _PREVIOUS, section="Calibration")
+    current = _seg(1, source, section="Calibration")
+    previous.role = current.role = BlockType.TEXT
+    bad = "NovaGrid记录了47个样本。" + _ELABORATION
+    chat, cache = RepeatedFailures(1, "1|" + bad), DictCache()
+    key = cache_key(
+        current, chat.model, {}, "default", section=current.section, role=BlockType.TEXT.value, prev_context=_PREVIOUS
+    )
+    cache.put(key, bad)
+    (out,), report = asyncio.run(
+        translate(
+            [current],
+            context_segments=[previous, current],
+            chat=chat,
+            cache=cache,
+            ctx=DocContext(),
+            opts=TranslateOptions(max_attempts=2),
+        )
+    )
+    assert out.status is SegmentStatus.DONE and report.cached == 0
+    assert report.requests == out.translation_attempts == 2
+    assert (_PREVIOUS in chat.calls[0][0]) == source.startswith("This")
+    assert "吸纳了参考上文" in chat.calls[1][0]
+    assert cache.get(key) == out.target and out.target != bad
+
+
+@pytest.mark.parametrize(
+    ("source", "context", "target", "leaks"),
+    [
+        ("This worked.", _PREVIOUS, "该方法有效。", False),
+        ("This worked.", _PREVIOUS, "NovaGrid的47次测量有效。", False),
+        ("This worked.", _PREVIOUS, "NovaGrid与147次采样。" + _ELABORATION, False),
+        ("This worked on 47 samples.", _PREVIOUS, "NovaGrid与47次采样。" + _ELABORATION, False),
+        ("This worked.", _PREVIOUS, "NovaGrid与47次采样。" + _ELABORATION, True),
+        ("This worked.", "NovaGrid and 47.", "NovaGrid与47次采样。" + _ELABORATION, False),
+        ("This worked.", "According to Algorithm 2 the update took 4ms.", "算法2耗时4ms。" + _ELABORATION, True),
+        ("This worked.", "Section 3 compares our data with Table 5.", "第3节对照表5。" + _ELABORATION, True),
+        ("This worked.", "We recorded several values. It took longer.", "We和It的译法。" + _ELABORATION, False),
+        ("This worked.", _PREVIOUS, _PREVIOUS + "这一做法有效。", True),
+        (
+            "This worked.",
+            "The lab ran 10 and 100 trials for each setup.",
+            "分别运行10次和100次。" + _ELABORATION,
+            False,
+        ),
+    ],
+)
+def test_context_leakage_requires_length_and_distinct_evidence(
+    source: str, context: str, target: str, leaks: bool
+) -> None:
+    errors = _target_problems(source, target, prev_context=context)
+    assert any("吸纳了参考上文" in error for error in errors) == leaks
+
+
+def test_translated_context_in_an_ordinary_length_paragraph() -> None:
+    context = "The LUX-UV instrument uses LUX to collect samples and UV to check the readings."
+    source = (
+        "This second trial measures the speed of the LUX controller when the operator changes the sampling interval "
+        "and then compares each result with a separate set of independent observations."
+    )
+    clean = "第二轮试验测量操作人员改变采样间隔时控制器的响应速度，再将各次测量结果与另一组独立观测数据逐一比较。"
+    copied = "此前使用LUX-UV仪器采集样本，并利用UV通道复核各个测点的读数。" + _ELABORATION[:35]
+    assert not _target_problems(source, clean, prev_context=context)
+    assert not _target_problems(source, clean + _ELABORATION, prev_context=context)
+    assert not _target_problems(source, "该LUX-UV仪器的UV通道参与测量。" + clean, prev_context=context)
+    assert any("吸纳了参考上文" in s for s in _target_problems(source, copied + clean, prev_context=context))
+
+
+def test_citation_rejects_lost_separator_and_reordered_group() -> None:
+    source = "See prior work [29, 30]."
+    errors = citation_problems(source, "见[29 30]。")
+    assert all(any(term in error for error in errors) for term in ["缺少引文 [29]", "缺少引文 [30]", "分隔符"])
+    assert any("应保持原文顺序" in error for error in citation_problems(source, "见[30, 29]。"))
+    assert any("缺少编号之间的分隔符" in error for error in citation_problems(source, "见[30 29]。"))
+    assert citation_problems(source, "见[29, 30]。") == []
+    assert citation_problems(source, "见[29]、[30]。") == []
+
+
+def test_citation_order_uses_only_confirmed_short_groups() -> None:
+    assert citation_problems("See [4–6].", "见［６、５、４］。")
+    assert citation_problems("See [4–6].", "见[4,5,6]。") == []
+    assert citation_problems("See [29,30] and [30,29].", "见[30,29]和[29,30]。") == []
+    assert citation_problems("Matrix [29,30]. See [7].", "矩阵[30,29]。见[7]。") == []
+    assert citation_problems("See [29,30].", "见[29,30]，矩阵[29 30]。") == []
+    assert citation_problems("See [2,2,3].", "见[3,2,2]。") == []
+    assert citation_problems("See [1–16].", "见[16,1–15]。") == []

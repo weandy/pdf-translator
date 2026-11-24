@@ -13,12 +13,13 @@ import statistics
 import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from itertools import pairwise
+from itertools import groupby, pairwise
 
 from pdftr.domain.chars import Char
 from pdftr.domain.geometry import Rect
+from pdftr.domain.ir import BlockType
 from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutSpan
-from pdftr.domain.text import RICH_TAG
+from pdftr.domain.text import RICH_ATOM, RICH_TAG
 from pdftr.fusion.text_fix import chars_in, main_metrics, script_glyph, text_of
 
 _FORMULA = re.compile(r"\$\$?([^$]+?)\$\$?")
@@ -466,16 +467,50 @@ def _box(chars: Sequence[Char]) -> Rect:
     )
 
 
-def _formula_box(part: Sequence[Char], centers: Sequence[float], first: int, last: int) -> Rect:
-    """左右覆盖全部字形，上下按字框和相邻视觉行的中线共同约束。"""
+def _formula_box(
+    part: Sequence[Char], centers: Sequence[float], first: int, last: int, rows: Sequence[Sequence[Char]] | None = None
+) -> Rect:
+    """左右覆盖全部字形，上下只避开与公式水平投影重叠的邻行字形。"""
     box = _box(part)
     normal = _box([c for c in part if c.bbox.height <= _NORMAL_GLYPH_HEIGHT * c.size] or part)
     top, bottom = normal.y0, normal.y1
     if first:
-        top = max(top, (centers[first - 1] + centers[first]) / 2)
+        top = max(top, _neighbor_limit(normal, box, part, centers, rows, first, above=True))
     if last + 1 < len(centers):
-        bottom = min(bottom, (centers[last] + centers[last + 1]) / 2)
+        bottom = min(bottom, _neighbor_limit(normal, box, part, centers, rows, last, above=False))
     return Rect(x0=box.x0, y0=top, x1=box.x1, y1=bottom) if top < bottom else normal
+
+
+def _neighbor_limit(
+    normal: Rect,
+    box: Rect,
+    owned: Sequence[Char],
+    centers: Sequence[float],
+    rows: Sequence[Sequence[Char]] | None,
+    index: int,
+    *,
+    above: bool,
+) -> float:
+    other = index - 1 if above else index + 1
+    midpoint = (centers[index] + centers[other]) / 2
+    if not owned or rows is None or len(rows) != len(centers):
+        return midpoint
+    neighbors = [c.bbox for c in rows[other] if c.c.strip() and c.bbox.x1 > box.x0 - 0.5 and c.bbox.x0 < box.x1 + 0.5]
+    if not neighbors:
+        return centers[other]
+    size, baseline = main_metrics(rows[index])
+    tall = [c.bbox for c in owned if c.bbox.height > 1.4 * c.size and not script_glyph(c, size, baseline)]
+    if above:
+        edge = max(b.y1 for b in neighbors)
+        if any(b.y0 <= normal.y0 + 0.5 and b.y0 < edge for b in tall):
+            return midpoint
+        limit = edge + 0.2 if normal.y0 >= edge + 0.2 else max(min(midpoint, edge + 0.2), (normal.y0 + edge) / 2)
+        return max(centers[other], limit)
+    edge = min(b.y0 for b in neighbors)
+    if any(b.y1 >= normal.y1 - 0.5 and b.y1 > edge for b in tall):
+        return midpoint
+    limit = edge - 0.2 if normal.y1 <= edge - 0.2 else min(max(midpoint, edge - 0.2), (normal.y1 + edge) / 2)
+    return min(centers[other], limit)
 
 
 def _flush_text(run: list[Char], spans: list[LayoutSpan]) -> None:
@@ -603,9 +638,12 @@ _BARE_FONT_SWITCH = re.compile(
 _TRAILING_BARE_FONT_SWITCH = re.compile(rf"(?:\s*{_BARE_FONT_SWITCH.pattern})+$")
 _NATIVE_COLON_UNIT = re.compile(r"\\colon(?![A-Za-z])|\{\s*:\s*\}|:")
 _ITALIC_MATH_FONT = re.compile(r"CMMI", re.I)
-_BLACKBOARD_FONT = re.compile(r"MSBM|BBOLD|DSROM|BBO|DoubleStruck", re.I)
+_BLACKBOARD_FONT = re.compile(r"MSBM|BBOLD|DSROM|BBO|DoubleStruck|Blackboard", re.I)
+_BLACKBOARD_UNICODE = frozenset("ℝℕℤℚℂℙℍ") | frozenset(map(chr, range(0x1D538, 0x1D551)))
+_EXTRA_MATH_LETTERS = frozenset("ℎℏℓ℘ℯℴ")
+_SET_RELATIONS = {"∈": r"\in", "∉": r"\notin", "⊂": r"\subset", "⊆": r"\subseteq", "⊃": r"\supset",
+                  "⊇": r"\supseteq", "→": r"\to", "↦": r"\mapsto"}  # fmt: skip
 _CODOMAIN_TRIGGER = frozenset("→↦∈∉⊂⊆⊃⊇=")
-_CODOMAIN_TEXT_HEAD = re.compile(r"^(?P<lead>\s*)(?P<ch>[RNZQCKEP])(?=$|\s|[,.;:!?)\]}])(?P<rest>.*)$", re.S)
 _HAS_MAPPING_ARROW = re.compile(r"(?:\\(?:to|rightarrow|longrightarrow|mapsto)(?![A-Za-z])|→)")
 _TRAILING_ARROW = re.compile(r"(?:\\(?:to|rightarrow|longrightarrow|mapsto)(?![A-Za-z])|→)\s*$")
 _MAPPING_COLON = re.compile(r"\\colon(?![A-Za-z])|:")
@@ -621,6 +659,55 @@ _DOT_GLYPHS = frozenset("\u0307\u02d9˙·\u22c5•")
 
 def _nearest_center(centers: Sequence[float], y: float) -> int:
     return min(range(len(centers)), key=lambda i: abs(centers[i] - y))
+
+
+def _blackboard_letter(ch: Char) -> str | None:
+    if ch.c in _BLACKBOARD_UNICODE:
+        letter = unicodedata.normalize("NFKC", ch.c)
+        return letter if re.fullmatch("[A-Z]", letter) else None
+    return ch.c if len(ch.c) == 1 and ch.c in "RNZQCKEPH" and _BLACKBOARD_FONT.search(ch.font) else None
+
+
+def _is_math_glyph(ch: Char) -> bool:
+    return (
+        bool(MATH_FONT.search(ch.font))
+        or (len(ch.c) == 1 and 0x1D400 <= ord(ch.c) <= 0x1D7FF)
+        or ch.c in _EXTRA_MATH_LETTERS
+        or _blackboard_letter(ch) is not None
+    )
+
+
+def _is_strict_superscript(ch: Char, body_size: float, baseline: float | None, row_cy: float) -> bool:
+    if ch.size > 0.85 * body_size:
+        return False
+    if baseline is not None and ch.origin_y is not None:
+        return baseline - ch.origin_y >= 0.15 * body_size
+    return row_cy - ch.bbox.center[1] >= 0.12 * body_size
+
+
+def exclude_formula_chars(
+    chars: Sequence[Char], formula_boxes: Sequence[Rect], body_size: float, line_baseline: float | None = None
+) -> list[Char]:
+    """正文与公式独占各自的字形，包括落在公式矩形边缘之外的同一行上下标。"""
+
+    def belongs(ch: Char) -> bool:
+        x, y = ch.bbox.center
+        script = script_glyph(ch, body_size, line_baseline)
+        return any(
+            box.contains_point(x, y, 0.5)
+            or (
+                script
+                and box.x0 - 0.15 * body_size <= x <= box.x1 + 0.15 * body_size
+                and (
+                    abs(y - line_baseline) <= 0.85 * body_size
+                    if line_baseline is not None
+                    else box.y0 - 0.35 * body_size <= y <= box.y1 + 0.45 * body_size
+                )
+            )
+            for box in formula_boxes
+        )
+
+    return [ch for ch in chars if not belongs(ch)] if formula_boxes else list(chars)
 
 
 def _scan_latex_surface_units(latex: str) -> list[tuple[str, int, int, str]]:
@@ -803,7 +890,9 @@ def _tokenize_native_chars(chars: Sequence[Char]) -> list[tuple[str, list[Char]]
     return tokens
 
 
-def _split_native_if_formulas(line: LayoutLine, chars: Sequence[Char], block_centers: Sequence[float]) -> LayoutLine:
+def _split_native_if_formulas(
+    line: LayoutLine, chars: Sequence[Char], block_centers: Sequence[float], block_rows: Sequence[Sequence[Char]]
+) -> LayoutLine:
     """原生页公式内若 PDF 字符明确包含独立词 if:/if（即便 MinerU 错识成 it: 或吞掉 f），按字符坐标拆开。"""
     if not chars or not any(s.kind == "inline_formula" and s.located for s in line.spans):
         return line
@@ -854,19 +943,85 @@ def _split_native_if_formulas(line: LayoutLine, chars: Sequence[Char], block_cen
         row_idx = _nearest_center(block_centers, row_y) if block_centers else None
         if left_chars:
             left_box = (
-                _formula_box(left_chars, block_centers, row_idx, row_idx) if row_idx is not None else _box(left_chars)
+                _formula_box(left_chars, block_centers, row_idx, row_idx, block_rows)
+                if row_idx is not None
+                else _box(left_chars)
             )
             out.append(LayoutSpan(kind="inline_formula", content=left_latex, bbox=left_box, located=True))
         out.append(LayoutSpan(kind="text", content=cond_word, bbox=_box(cond_chars)))
         right_box = (
-            _formula_box(right_chars, block_centers, row_idx, row_idx) if row_idx is not None else _box(right_chars)
+            _formula_box(right_chars, block_centers, row_idx, row_idx, block_rows)
+            if row_idx is not None
+            else _box(right_chars)
         )
         out.append(LayoutSpan(kind="inline_formula", content=right_latex, bbox=right_box, located=True))
         changed = True
     return line.model_copy(update={"spans": out}) if changed else line
 
 
-def _recover_right_blackboard_codomain(line: LayoutLine, chars: Sequence[Char]) -> LayoutLine:
+def _rich_slice(content: str, start: int, stop: int) -> str:
+    """按可见文字切片，保留横跨切口的强调和上下标。"""
+    if not RICH_TAG.search(content):
+        return content[start:stop]
+    parts: list[str] = []
+    pos = 0
+    for m in RICH_ATOM.finditer(content):
+        if RICH_TAG.fullmatch(m[0]):
+            parts.append(m[0])
+        else:
+            if start <= pos < stop:
+                parts.append(m[0])
+            pos += len(m[0])
+    result = "".join(parts)
+    while True:
+        result, count = re.subn(r"<(sup|sub|b|i)>(\s*)</\1>", r"\2", result)
+        if not count:
+            return result
+
+
+def _is_lower_script(ch: Char, size: float, baseline: float | None, cy: float) -> bool:
+    if ch.size > 0.85 * size:
+        return False
+    if baseline is not None and ch.origin_y is not None:
+        return ch.origin_y - baseline >= 0.15 * size
+    return ch.bbox.center[1] - cy >= 0.12 * size
+
+
+def _script_end(
+    row: Sequence[Char], start: int, size: float, baseline: float | None, cy: float, *, lower: bool = False
+) -> int:
+    check_height = _is_lower_script if lower else _is_strict_superscript
+    end = start + 1
+    while end < len(row):
+        c = row[end]
+        if (
+            not (c.c.isalnum() or c.c in {"×", "·", "+", "-", "−", ","})
+            or c.bbox.x0 - row[end - 1].bbox.x1 > 0.35 * size
+            or not check_height(c, size, baseline, cy)
+        ):
+            break
+        end += 1
+    return end
+
+
+def _native_letters(chars: Sequence[Char]) -> str:
+    return unicodedata.normalize("NFKC", "".join(c.c for c in chars))
+
+
+def _script_latex(glyphs: Sequence[Char], marker: str) -> str:
+    return marker + "{" + _native_letters(glyphs).translate(_BRIDGE_LATEX).rstrip() + "}" if glyphs else ""
+
+
+def _script_pattern(glyphs: Sequence[Char], marker: str) -> str:
+    # 解析器可能把几何上标写成普通字母、^o 或 ^{o}。
+    if not glyphs:
+        return ""
+    mark = re.escape(marker)
+    power = r"\s*".join(re.escape(c) for c in _native_letters(glyphs))
+    return rf"\s*(?:{mark}\s*\{{\s*{power}\s*\}}|{mark}?\s*{power})"
+
+
+def _recover_right_blackboard_codomain(line: LayoutLine, row: Sequence[Char]) -> LayoutLine:
     """回收紧贴在公式右侧、被 MinerU 甩入相邻正文开头的黑板粗体集合符号（如 → ℝ）。"""
     if len(line.spans) < 2 or not any(s.kind == "inline_formula" and s.located for s in line.spans):
         return line
@@ -878,50 +1033,44 @@ def _recover_right_blackboard_codomain(line: LayoutLine, chars: Sequence[Char]) 
         if cur.kind != "inline_formula" or not cur.located or nxt.kind != "text":
             i += 1
             continue
-        head = _CODOMAIN_TEXT_HEAD.match(nxt.content)
-        if head is None:
-            i += 1
-            continue
-        f_chars = sorted((c for c in chars_in(chars, cur.bbox, tol=0.5) if not c.c.isspace()), key=lambda c: c.bbox.x0)
+        f_chars = [c for c in chars_in(row, cur.bbox, tol=0.5) if c.c.strip()]
         if not f_chars or f_chars[-1].c not in _CODOMAIN_TRIGGER:
             i += 1
             continue
         last_char = f_chars[-1]
-        ch = head["ch"]
-        candidates = [
-            g
-            for g in chars
-            if not g.c.isspace()
-            and g.c == ch
-            and _BLACKBOARD_FONT.search(g.font)
-            and not cur.bbox.contains_point(*g.bbox.center, 0.5)
-            and 0.0 <= g.bbox.x0 - last_char.bbox.x1 <= 0.8 * last_char.size
-            and abs(g.bbox.center[1] - last_char.bbox.center[1]) <= 0.5 * last_char.size
-        ]
-        if len(candidates) != 1:
+        idx = next((j for j, c in enumerate(row) if c.c.strip() and c.bbox.center[0] > last_char.bbox.center[0]), None)
+        if idx is None:
             i += 1
             continue
-        glyph = candidates[0]
-        new_box = Rect(
-            x0=min(cur.bbox.x0, glyph.bbox.x0),
-            y0=min(cur.bbox.y0, glyph.bbox.y0),
-            x1=max(cur.bbox.x1, glyph.bbox.x1),
-            y1=max(cur.bbox.y1, glyph.bbox.y1),
-        )
+        glyph = row[idx]
+        letter = _blackboard_letter(glyph)
+        if letter is None or not 0 <= glyph.bbox.x0 - last_char.bbox.x1 <= 0.8 * last_char.size:
+            i += 1
+            continue
+        size, baseline = main_metrics(row)
+        end = _script_end(row, idx, size, baseline, statistics.median(c.bbox.center[1] for c in row))
+        exponent = row[idx + 1 : end]
+        plain = RICH_TAG.sub("", nxt.content)
+        pattern = letter + _script_pattern(exponent, "^")
+        head = re.match(rf"\s*{pattern}(?=$|\s|[,.;:!?)\]}}])", unicodedata.normalize("NFKC", plain))
+        if head is None:
+            i += 1
+            continue
+        recovered_box = _box(row[idx:end])
+        new_box = _union_box(cur.bbox, recovered_box)
         body = cur.content.rstrip()
         if last_char.c == "→" and not _TRAILING_ARROW.search(body):
             body = f"{body} \\to"
-        new_latex = f"{body} \\mathbb{{{ch}}}"
+        new_latex = rf"{body} \mathbb{{{letter}}}" + _script_latex(exponent, "^")
         spans[i] = cur.model_copy(update={"content": new_latex, "bbox": new_box})
-        rest = head["rest"]
+        rest = _rich_slice(nxt.content, _source_offset(plain, head.end()), len(plain))
         if not rest.strip():
             spans.pop(i + 1)
         else:
-            new_text = rest if (rest[:1].isspace() or not head["lead"]) else f"{head['lead']}{rest}"
             new_nxt_box = nxt.bbox
-            if new_nxt_box.x0 < glyph.bbox.x1 < new_nxt_box.x1:
-                new_nxt_box = new_nxt_box.model_copy(update={"x0": glyph.bbox.x1})
-            spans[i + 1] = nxt.model_copy(update={"content": new_text, "bbox": new_nxt_box})
+            if new_nxt_box.x0 < recovered_box.x1 < new_nxt_box.x1:
+                new_nxt_box = new_nxt_box.model_copy(update={"x0": recovered_box.x1})
+            spans[i + 1] = nxt.model_copy(update={"content": rest, "bbox": new_nxt_box})
         changed = True
         i += 1
     return line.model_copy(update={"spans": spans}) if changed else line
@@ -1111,31 +1260,288 @@ def _recover_left_grazed_word(line: LayoutLine, chars: Sequence[Char]) -> Layout
     return line.model_copy(update={"spans": spans}) if changed else line
 
 
-def _clamp_line_formulas(line: LayoutLine, chars: Sequence[Char], block_centers: Sequence[float]) -> LayoutLine:
-    """用整块视觉行中线约束单行行内公式的上下边界，防止高数学字框扎入上下邻行。"""
+def _union_box(a: Rect, b: Rect) -> Rect:
+    return Rect(x0=min(a.x0, b.x0), y0=min(a.y0, b.y0), x1=max(a.x1, b.x1), y1=max(a.y1, b.y1))
+
+
+def _line_row(line: LayoutLine, chars: Sequence[Char], centers: Sequence[float]) -> int:
+    text_y = [
+        c.bbox.center[1]
+        for s in line.spans
+        if s.kind == "text"
+        for c in chars_in(chars, s.bbox, tol=0.5)
+        if c.c.strip()
+    ]
+    return _nearest_center(centers, statistics.median(text_y) if text_y else line.bbox.center[1])
+
+
+def _trim_absorbed_text(span: LayoutSpan, taken: Sequence[Char], *, head: bool) -> LayoutSpan:
+    if not taken or span.kind != "text":
+        return span
+    plain = RICH_TAG.sub("", span.content)
+    normalized = unicodedata.normalize("NFKC", plain)
+    fragment = re.escape(_native_letters(taken))
+    match = re.search(r"^\s*" + fragment if head else fragment + r"\s*$", normalized)
+    if match is None:
+        return span
+    # 将归一化索引映射回原字符，避免前文的连字改变切口位置。
+    boundary = match.end() if head else match.start()
+    cut = _source_offset(plain, boundary)
+    content = _rich_slice(span.content, cut, len(plain)) if head else _rich_slice(span.content, 0, cut)
+    box = span.bbox
+    if head:
+        box = box.model_copy(update={"x0": min(box.x1, max(box.x0, taken[-1].bbox.x1))})
+    else:
+        box = box.model_copy(update={"x1": max(box.x0, min(box.x1, taken[0].bbox.x0))})
+    return span.model_copy(update={"content": content, "bbox": box})
+
+
+def _source_offset(text: str, normalized_pos: int) -> int:
+    pos = 0
+    for idx, c in enumerate(text):
+        if pos >= normalized_pos:
+            return idx
+        pos += len(unicodedata.normalize("NFKC", c))
+    return len(text)
+
+
+def _trim_math_neighbors(spans: list[LayoutSpan], formula: int, taken: Sequence[Char], *, head: bool) -> None:
+    step = 1 if head else -1
+    i = formula + step
+    while taken and 0 <= i < len(spans) and spans[i].kind == "text":
+        span = spans[i]
+        edge = taken[0] if head else taken[-1]
+        if not span.bbox.x0 - 0.5 <= edge.bbox.center[0] <= span.bbox.x1 + 0.5:
+            break
+        count = len(taken)
+        trimmed = _trim_absorbed_text(span, taken, head=head)
+        if trimmed is span:
+            # 连续前缀也可能被解析器按字体拆在两个正文片段中。
+            inside = [c for c in taken if span.bbox.x0 - 0.5 <= c.bbox.center[0] <= span.bbox.x1 + 0.5]
+            count = len(inside)
+            trimmed = _trim_absorbed_text(span, inside, head=head)
+        if trimmed is span:
+            break
+        spans[i] = trimmed
+        taken = taken[count:] if head else taken[:-count]
+        i += step
+
+
+def _script_separator(row: Sequence[Char], i: int, size: float, baseline: float | None) -> bool:
+    if not 0 < i < len(row) - 1 or row[i].c not in {",", "+", "-", "−", "*", "/"}:
+        return False
+    left, mark, right = row[i - 1 : i + 2]
+    if not all(c.c.isalnum() and script_glyph(c, size, baseline) for c in (left, right)):
+        return False
+    if max(mark.bbox.x0 - left.bbox.x1, right.bbox.x0 - mark.bbox.x1) > 0.25 * size:
+        return False
+    # 个别字体按正文字号报告下标标点，此时用紧邻下标的实际字框核实。
+    return script_glyph(mark, size, baseline) or all(
+        abs(mark.bbox.height - c.bbox.height) <= 0.2 * size
+        and abs(mark.bbox.center[1] - c.bbox.center[1]) <= 0.15 * size
+        for c in (left, right)
+    )
+
+
+def _trim_internal_script_copy(
+    after: LayoutSpan, owned: Sequence[Char], following: Sequence[Char], size: float, baseline: float | None
+) -> LayoutSpan:
+    if after.kind != "text":
+        return after
+    plain = RICH_TAG.sub("", after.content)
+    prefix = re.match(r"\s*([A-Za-z0-9]{1,8})(?!\w)", plain)
+    if not prefix or not re.match(r"\s*(?:<(?:i|sub)>\s*)*[A-Za-z0-9]", after.content):
+        return after
+    token = prefix[1]
+    native = _native_letters(following).lstrip()
+    rest = plain[prefix.end() :].lstrip()
+    # 正文字框可能伸进公式。用右侧实际文字作见证：同名真词保留，余文对不上也不动。
+    if not native or native.startswith(token) or not rest or not native.startswith(rest[:3]):
+        return after
+    cy = statistics.median(c.bbox.center[1] for c in owned)
+    for is_script, run in groupby(owned, lambda c: c.c.isalnum() and _is_lower_script(c, size, baseline, cy)):
+        if is_script and _native_letters(list(run)) == token:
+            return after.model_copy(update={"content": _rich_slice(after.content, prefix.end(), len(plain))})
+    return after
+
+
+def _expand_math_token_bounds(line: LayoutLine, row: Sequence[Char]) -> LayoutLine:
+    if not row:
+        return line
+    size, baseline = main_metrics(row)
+    separators = {i for i in range(len(row)) if _script_separator(row, i, size, baseline)}
+    spans = list(line.spans)
+    formulas = [i for i, s in enumerate(spans) if s.kind == "inline_formula" and s.located]
+    # 优先拼回右公式被截断的词头，再用更新后的框限定左公式的右缘。
+    for n in reversed(range(len(formulas))):
+        idx = formulas[n]
+        span = spans[idx]
+        box = span.bbox
+        left_limit = spans[formulas[n - 1]].bbox.x1 if n else float("-inf")
+        right_limit = spans[formulas[n + 1]].bbox.x0 if n + 1 < len(formulas) else float("inf")
+        hits = [
+            k
+            for k, c in enumerate(row)
+            if c.c.strip() and left_limit < c.bbox.center[0] < right_limit and box.contains_point(*c.bbox.center, 0.5)
+        ]
+        if not hits:
+            continue
+        first, last = hits[0], hits[-1]
+        lo, hi = first, last
+        scripted = any(ch in span.content for ch in "_^") or any(_is_math_glyph(row[k]) for k in hits)
+        while lo > 0:
+            c, edge = row[lo - 1], row[lo]
+            if c.bbox.center[0] <= left_limit:
+                break
+            gap = edge.bbox.x0 - c.bbox.x1
+            word = (
+                edge.c.isalpha()
+                and (_is_math_glyph(edge) or (scripted and edge.italic))
+                and c.c.isalpha()
+                and _is_math_glyph(c)
+                and gap <= 0.22 * max(c.size, edge.size)
+            )
+            separator = lo - 1 in separators and row[lo - 2].bbox.center[0] > left_limit
+            script = (
+                c.c.isalnum()
+                and script_glyph(c, size, baseline)
+                and (c.bbox.center[0] >= box.x0 - 0.15 * size or (lo in separators and gap <= 0.25 * size))
+            )
+            if not (word or script or separator):
+                break
+            lo -= 1
+        while hi + 1 < len(row):
+            edge, c = row[hi], row[hi + 1]
+            if c.bbox.center[0] >= right_limit or not c.c.strip():
+                break
+            gap = c.bbox.x0 - edge.bbox.x1
+            word = (
+                edge.c.isalpha()
+                and (_is_math_glyph(edge) or (scripted and edge.italic))
+                and c.c.isalpha()
+                and _is_math_glyph(c)
+                and gap <= 0.22 * max(c.size, edge.size)
+            )
+            separator = hi + 1 in separators and row[hi + 2].bbox.center[0] < right_limit
+            script = (
+                c.c.isalnum()
+                and script_glyph(c, size, baseline)
+                and (edge.c.isalnum() or edge.c in ")]}" or hi in separators)
+                and gap <= 0.25 * size
+            )
+            if not (word or script or separator):
+                break
+            hi += 1
+
+        recovered = [
+            c
+            for k, c in enumerate(row[lo : hi + 1], lo)
+            if c.c.strip() and (_is_math_glyph(c) or script_glyph(c, size, baseline) or k in separators)
+        ]
+        if not recovered:
+            continue
+        # 同行小字可能只有中心落在原框的左右投影内，完整字框决定下钩实际底边。
+        normal = [c for c in recovered if c.bbox.height <= _NORMAL_GLYPH_HEIGHT * c.size] or recovered
+        new_box = _union_box(box, _box(normal))
+        content = span.content
+        prefix = _native_letters(row[lo:first])
+        initial = re.match("[A-Za-z]+", content)
+        if (
+            prefix.isascii()
+            and prefix.isalpha()
+            and initial
+            and not any(script_glyph(c, size, baseline) for c in row[lo:first])
+        ):
+            suffix = initial[0]
+            if _native_letters(row[first : first + len(suffix)]) == suffix:
+                content = prefix + content
+        spans[idx] = span.model_copy(update={"bbox": new_box, "content": content})
+        _trim_math_neighbors(spans, idx, row[lo:first], head=False)
+        if idx + 1 < len(spans):
+            after = spans[idx + 1]
+            # 包括横向已经入框、纵向原来被漏掉且又出现在相邻正文的下标。
+            start = last + 1
+            while start > lo and (script_glyph(row[start - 1], size, baseline) or start - 1 in separators):
+                if row[start - 1].bbox.center[0] < after.bbox.x0 - 0.5:
+                    break
+                start -= 1
+            _trim_math_neighbors(spans, idx, row[start : hi + 1], head=True)
+            if spans[idx + 1] is after:
+                spans[idx + 1] = _trim_internal_script_copy(after, row[lo : hi + 1], row[hi + 1 :], size, baseline)
+    return line.model_copy(update={"spans": [s for s in spans if s.kind != "text" or s.content.strip()]})
+
+
+def _trim_trailing_prose_punct(line: LayoutLine, row: Sequence[Char]) -> LayoutLine:
+    if not row:
+        return line
+    prose = [c for c in row if c.c.isalpha() and not c.italic and not _is_math_glyph(c)]
+    size, baseline = main_metrics(prose or row)
+    spans = line.spans.copy()
+    for i in reversed(range(len(spans))):
+        span = spans[i]
+        if span.kind != "inline_formula" or not span.located:
+            continue
+        owned = [c for c in chars_in(row, span.bbox, tol=0) if c.c.strip()]
+        if len(owned) < 2:
+            continue
+        tail = owned[-1]
+        if tail.c not in {",", ";", "."} or tail.italic or _is_math_glyph(tail) or script_glyph(tail, size, baseline):
+            continue
+        body = _native_letters(owned[:-1])
+        if _delimiters(span.content)[1] or _delimiters(body)[1]:
+            continue
+        if tail.c == "." and (body[-1] in ".0123456789" or re.search(r"(?:^|[^A-Za-z])[A-Za-z]$", body)):
+            continue
+        prev_x1 = max(c.bbox.x1 for c in owned[:-1])
+        crop_limit = tail.bbox.x0 - 0.35
+        x1 = min(prev_x1 + 0.2, crop_limit) if crop_limit >= prev_x1 else min(tail.bbox.x0, prev_x1)
+        if x1 <= span.bbox.x0:
+            continue
+        latex = span.content.rstrip()
+        if latex.endswith(tail.c):
+            if latex.endswith("\\" + tail.c):
+                continue
+            latex = latex[:-1].rstrip()
+        spans[i] = span.model_copy(update={"bbox": span.bbox.model_copy(update={"x1": x1}), "content": latex})
+        if i + 1 < len(spans) and spans[i + 1].kind == "text":
+            after = spans[i + 1]
+            text = after.content
+            if not RICH_TAG.sub("", text).lstrip().startswith(tail.c):
+                text = tail.c + text
+            spans[i + 1] = after.model_copy(update={"content": text, "bbox": _union_box(after.bbox, tail.bbox)})
+        else:
+            spans.insert(i + 1, LayoutSpan(kind="text", content=tail.c, bbox=tail.bbox))
+    return line.model_copy(update={"spans": spans})
+
+
+def _clamp_line_formulas(
+    line: LayoutLine,
+    chars: Sequence[Char],
+    block_centers: Sequence[float],
+    block_rows: Sequence[Sequence[Char]] | None = None,
+    *,
+    indices: Sequence[int] | None = None,
+) -> LayoutLine:
     if len(block_centers) < 2 or not any(s.kind == "inline_formula" and s.located for s in line.spans):
         return line
-    text_chars = [
-        c for s in line.spans if s.kind == "text" for c in chars_in(chars, s.bbox, tol=0.5) if not c.c.isspace()
-    ]
-    ref_y = statistics.median(c.bbox.center[1] for c in text_chars) if text_chars else line.bbox.center[1]
-    row_idx = _nearest_center(block_centers, ref_y)
-    lo = (block_centers[row_idx - 1] + block_centers[row_idx]) / 2 if row_idx > 0 else float("-inf")
-    hi = (block_centers[row_idx] + block_centers[row_idx + 1]) / 2 if row_idx + 1 < len(block_centers) else float("inf")
-    changed = False
-    out: list[LayoutSpan] = []
-    for span in line.spans:
+    rows = block_rows if block_rows is not None else visual_lines(chars)
+    idx = _line_row(line, chars, block_centers)
+    spans = line.spans.copy()
+    for i in range(len(spans)) if indices is None else indices:
+        span = spans[i]
         if span.kind != "inline_formula" or not span.located:
-            out.append(span)
             continue
-        top = max(span.bbox.y0, lo)
-        bottom = min(span.bbox.y1, hi)
-        if top < bottom and (top > span.bbox.y0 or bottom < span.bbox.y1):
-            out.append(span.model_copy(update={"bbox": Rect(x0=span.bbox.x0, y0=top, x1=span.bbox.x1, y1=bottom)}))
-            changed = True
-        else:
-            out.append(span)
-    return line.model_copy(update={"spans": out}) if changed else line
+        box = span.bbox
+        owned = [c for c in chars_in(rows[idx], box, tol=0.5) if c.c.strip()]
+        normal = _box([c for c in owned if c.bbox.height <= _NORMAL_GLYPH_HEIGHT * c.size] or owned) if owned else box
+        top, bottom = box.y0, box.y1
+        if idx > 0:
+            top = max(top, _neighbor_limit(normal, box, owned, block_centers, rows, idx, above=True))
+        if idx + 1 < len(block_centers):
+            bottom = min(bottom, _neighbor_limit(normal, box, owned, block_centers, rows, idx, above=False))
+        if top < bottom and (top != box.y0 or bottom != box.y1):
+            spans[i] = span.model_copy(update={"bbox": box.model_copy(update={"y0": top, "y1": bottom})})
+    return line.model_copy(update={"spans": spans})
 
 
 def _relation_counts(parts: Iterable[str]) -> dict[str, int]:
@@ -1143,22 +1549,160 @@ def _relation_counts(parts: Iterable[str]) -> dict[str, int]:
     return {op: joined.count(op) for op in _RELATION_CHARS}
 
 
+def _identifier_start(row: Sequence[Char], op: int, size: float) -> int:
+    end = op
+    while end and row[end - 1].c.isspace():
+        end -= 1
+    if not end or row[op].bbox.x0 - row[end - 1].bbox.x1 > 0.6 * size:
+        return op
+    start = end
+    while start and row[start - 1].c.isalnum():
+        if start < end and row[start].bbox.x0 - row[start - 1].bbox.x1 > 0.22 * size:
+            break
+        start -= 1
+    token = row[start:end]
+    word = _native_letters(token)
+    if not word or not word[0].isalpha() or word.lower() in _BRIDGE_STOP_WORDS:
+        return op
+    # 一个普通正文词也可能紧挨关系符，仅收有变量外观的标识符。
+    if len(word) == 1 or word[0].isupper() or all(_is_math_glyph(c) or c.italic for c in token):
+        return start
+    return op
+
+
+def _promote_text_span(
+    span: LayoutSpan, row: Sequence[Char], size: float, baseline: float | None, cy: float
+) -> list[LayoutSpan]:
+    glyphs = [
+        c
+        for c in row
+        if span.bbox.x0 - 0.5 <= c.bbox.center[0] <= span.bbox.x1 + 0.5
+        and (span.bbox.contains_point(*c.bbox.center, 0.5) or script_glyph(c, size, baseline))
+    ]
+    plain = RICH_TAG.sub("", span.content)
+    normalized = unicodedata.normalize("NFKC", plain)
+    spans: list[LayoutSpan] = []
+    text_start = glyph_start = 0
+    for i, c in enumerate(glyphs):
+        letter = _blackboard_letter(c)
+        if letter is None or i < glyph_start:
+            continue
+        end = _script_end(glyphs, i, size, baseline, cy)
+        op = i - 1
+        while op >= glyph_start and glyphs[op].c.isspace():
+            op -= 1
+        relation = op >= glyph_start and glyphs[op].c in _SET_RELATIONS and c.bbox.x0 - glyphs[op].bbox.x1 <= 0.8 * size
+        if not relation and end == i + 1:
+            continue
+        marker = "^"
+        if end == i + 1:
+            marker = "_"
+            end = _script_end(glyphs, i, size, baseline, cy, lower=True)
+        script = glyphs[i + 1 : end]
+        start = _identifier_start(glyphs, op, size) if relation else i
+        start = max(start, glyph_start)
+        pattern = letter + _script_pattern(script, marker)
+        latex = rf"\mathbb{{{letter}}}" + _script_latex(script, marker)
+        if relation:
+            identifier = [g for g in glyphs[start:op] if g.c.strip()]
+            sub = len(identifier)
+            while sub > 1 and _is_lower_script(identifier[sub - 1], size, baseline, cy):
+                sub -= 1
+            prefix = _native_letters(identifier[:sub])
+            lhs = prefix + _script_latex(identifier[sub:], "_")
+            lhs_pattern = re.escape(prefix) + _script_pattern(identifier[sub:], "_")
+            op_text = glyphs[op].c
+            pattern = (lhs_pattern + r"\s*" if prefix else "") + re.escape(op_text) + r"\s*" + pattern
+            latex = " ".join(filter(None, (lhs, _SET_RELATIONS[op_text], latex)))
+        matches = list(re.finditer(pattern, normalized))
+        if not matches:
+            continue
+        if len(matches) == 1:
+            match = matches[0]
+        else:
+            # 右侧可能有多个形同 Ro 的词；按原生字符序列中的实际出现次序配对。
+            native = _native_letters(glyphs)
+            physical = list(re.finditer(pattern, native))
+            pos = len(_native_letters(glyphs[:start]))
+            occurrence = next((n for n, m in enumerate(physical) if m.start() == pos), None)
+            if occurrence is None or len(matches) != len(physical):
+                continue
+            match = matches[occurrence]
+        lo, hi = _source_offset(plain, match.start()), _source_offset(plain, match.end())
+        if lo < text_start:
+            continue
+        left = _rich_slice(span.content, text_start, lo)
+        if left.strip():
+            if start == glyph_start:
+                continue
+            spans.append(span.model_copy(update={"content": left, "bbox": _box(glyphs[glyph_start:start])}))
+        spans.append(LayoutSpan(kind="inline_formula", content=latex, bbox=_box(glyphs[start:end])))
+        text_start, glyph_start = hi, end
+    if not spans:
+        return [span]
+    rest = _rich_slice(span.content, text_start, len(plain))
+    if rest.strip():
+        if glyph_start == len(glyphs):
+            return [span]
+        spans.append(span.model_copy(update={"content": rest, "bbox": _box(glyphs[glyph_start:])}))
+    return spans
+
+
+def promote_native_math_spans(block: LayoutBlock, chars: Sequence[Char]) -> LayoutBlock:
+    """用黑板体加关系符或实测上标识别正文片段中的向量空间记号。"""
+    if block.type is not BlockType.TEXT or not block.lines or not any(_blackboard_letter(c) for c in chars):
+        return block
+    rows = visual_lines(chars)
+    centers = [statistics.median(c.bbox.center[1] for c in row) for row in rows]
+    lines = block.lines.copy()
+    changed = False
+    for i, line in enumerate(lines):
+        if not any(s.kind == "text" and s.located for s in line.spans):
+            continue
+        idx = _line_row(line, chars, centers)
+        row = rows[idx]
+        if not any(_blackboard_letter(c) for c in row):
+            continue
+        size, baseline = main_metrics(row)
+        existing = [s.bbox for s in line.spans if s.kind == "inline_formula" and s.located]
+        available = [c for c in row if not any(box.contains_point(*c.bbox.center) for box in existing)]
+        spans: list[LayoutSpan] = []
+        promoted: list[int] = []
+        for span in line.spans:
+            if span.kind == "text" and span.located:
+                parts = _promote_text_span(span, available, size, baseline, centers[idx])
+                promoted.extend(i for i, part in enumerate(parts, len(spans)) if part.kind == "inline_formula")
+                spans.extend(parts)
+            else:
+                spans.append(span)
+        if promoted:
+            lines[i] = _clamp_line_formulas(
+                line.model_copy(update={"spans": spans}), chars, centers, rows, indices=promoted
+            )
+            changed = True
+    return block.model_copy(update={"lines": lines}) if changed else block
+
+
 def clean_formula_lines(block: LayoutBlock, chars: Sequence[Char]) -> LayoutBlock:
     """MinerU 已给行级公式时，只重新定位确实吞字的行，其余沿用原坐标。"""
-    block_centers = [statistics.median(c.bbox.center[1] for c in row) for row in visual_lines(chars)] if chars else []
+    block_rows = visual_lines(chars)
+    block_centers = [statistics.median(c.bbox.center[1] for c in row) for row in block_rows]
     lines: list[LayoutLine] = []
     for li, line in enumerate(block.lines):
         if len(line.spans) >= 3 and chars:
             line = merge_torn_formulas(line, chars)
-        if chars:
-            line = _split_native_if_formulas(line, chars, block_centers)
-            line = _recover_right_blackboard_codomain(line, chars)
+        if chars and any(s.kind == "inline_formula" and s.located for s in line.spans):
+            row = block_rows[_line_row(line, chars, block_centers)]
+            line = _split_native_if_formulas(line, chars, block_centers, block_rows)
+            line = _recover_right_blackboard_codomain(line, row)
             line = _restore_native_mapping_arrow(line, chars)
             line = _recover_left_grazed_word(line, chars)
+            line = _expand_math_token_bounds(line, row)
+            line = _trim_trailing_prose_punct(line, row)
         if not any(span.kind == "inline_formula" for span in line.spans) or any(
             span.kind == "text" and "$" in span.content for span in line.spans
         ):
-            lines.append(_clamp_line_formulas(line, chars, block_centers))
+            lines.append(_clamp_line_formulas(line, chars, block_centers, block_rows))
             continue
         next_line = block.lines[li + 1] if li + 1 < len(block.lines) else None
         next_text = (
@@ -1172,13 +1716,14 @@ def clean_formula_lines(block: LayoutBlock, chars: Sequence[Char]) -> LayoutBloc
         unchanged: dict[int, int] = {}
         cleaned = _content_parts(content, unchanged, trailing_after=next_text)
         if cleaned == _FORMULA.split(content):
-            lines.append(_clamp_line_formulas(line, chars, block_centers))
+            lines.append(_clamp_line_formulas(line, chars, block_centers, block_rows))
             continue
         line_chars = chars_in(chars, line.bbox, tol=1.0)
         refined, total, found = refine_block(
             block.model_copy(update={"bbox": line.bbox, "content": content}),
             line_chars,
             block_centers=block_centers,
+            block_rows=block_rows,
             trailing_after=next_text,
         )
         # 原框仍比无锚点的猜测可靠，扫描页则保留新分出的文字和公式。
@@ -1191,7 +1736,7 @@ def clean_formula_lines(block: LayoutBlock, chars: Sequence[Char]) -> LayoutBloc
             clean_rel[op] > orig_rel[op] and restored_rel[op] < clean_rel[op] for op in _RELATION_CHARS
         )
         if line_chars and (total != found or scripts != restored or relation_missed):
-            lines.append(_clamp_line_formulas(line, chars, block_centers))
+            lines.append(_clamp_line_formulas(line, chars, block_centers, block_rows))
             continue
         originals = [s for s in line.spans if s.kind == "inline_formula" and s.content.strip()]
         index = 0
@@ -1201,7 +1746,7 @@ def clean_formula_lines(block: LayoutBlock, chars: Sequence[Char]) -> LayoutBloc
                     if index in unchanged:
                         new_line.spans[j] = originals[unchanged[index]]
                     index += 1
-        lines.extend(_clamp_line_formulas(row, chars, block_centers) for row in refined.lines)
+        lines.extend(_clamp_line_formulas(row, chars, block_centers, block_rows) for row in refined.lines)
     return block.model_copy(update={"lines": lines})
 
 
@@ -1261,6 +1806,7 @@ def refine_block(
     chars: Sequence[Char],
     *,
     block_centers: Sequence[float] | None = None,
+    block_rows: Sequence[Sequence[Char]] | None = None,
     trailing_after: str = "",
 ) -> tuple[LayoutBlock, int, int]:
     """块级结果 → 带行与片段的块。返回（新块, 公式总数, 找到位置的公式数）。"""
@@ -1317,9 +1863,11 @@ def refine_block(
                 if use_block_centers and block_centers is not None:
                     first_idx = _nearest_center(block_centers, centers[line_no])
                     last_idx = _nearest_center(block_centers, centers[last_row])
-                    bbox = _formula_box(part, block_centers, min(first_idx, last_idx), max(first_idx, last_idx))
+                    bbox = _formula_box(
+                        part, block_centers, min(first_idx, last_idx), max(first_idx, last_idx), block_rows
+                    )
                 else:
-                    bbox = _formula_box(part, centers, line_no, last_row)
+                    bbox = _formula_box(part, centers, line_no, last_row, rows)
                 spans.append(LayoutSpan(kind="inline_formula", content=located[n].latex, bbox=bbox))
                 emitted.add(n)
         _flush_text(run, spans)

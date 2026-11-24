@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from pdftr.domain.chars import Char
 from pdftr.domain.geometry import Rect
 from pdftr.domain.ir import BlockType, PageKind, Segment
@@ -82,6 +84,33 @@ def test_script_geometry_in_a_mixed_line_distinguishes_the_payloads():
     chars[9].origin_y = None
     chars[9].size = 8.8
     assert strip_fake_scripts("fa<sup>s</sup>ter al<sub>p</sub>ha", chars) == "faster al<sub>p</sub>ha"
+
+
+@pytest.mark.parametrize("sep", [",", "-", "–", "—"])
+def test_recovers_citation_gap_from_pdf_with_rich_text(sep: str) -> None:
+    pdf = f"See prior work [29{sep}30]."
+    assert recover_dropped_chars("See prior work [29 30].", pdf) == pdf
+    assert recover_dropped_chars("See prior work <i>[29 30]</i>.", pdf) == f"See prior work <i>[29{sep}30]</i>."
+    assert recover_dropped_chars("See [2,3 4].", f"See [2,3{sep}4].") == f"See [2,3{sep}4]."
+
+
+@pytest.mark.parametrize(
+    ("parser", "pdf"),
+    [
+        ("See A[2 3].", "See A[2,3]."),
+        ("See [2930].", "See [29,30]."),
+        ("See [29 30] and [2930].", "See [29,30] and [29,30]."),
+        ("A matrix [2 3].", "A matrix [2,3]."),
+        ("Range [2 3].", "Range [2,3]."),
+        ("Take x in [2 3].", "Take x in [2,3]."),
+        ("Use [[2 3]].", "Use [[2,3]]."),
+        ("The sample.", "The sam,ple."),
+        ("Two cases.", "Two ca-ses."),
+        ("See [29 30].", ""),
+    ],
+)
+def test_citation_gap_requires_aligned_space_and_citation_context(parser: str, pdf: str) -> None:
+    assert recover_dropped_chars(parser, pdf) == parser
 
 
 def test_recovers_only_letter_omissions_inside_existing_words():

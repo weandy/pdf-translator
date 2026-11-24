@@ -10,7 +10,7 @@ from pdftr.domain.ir import BlockType, FormulaRef, Segment, SegmentStatus
 from pdftr.domain.layout import LayoutBlock, LayoutLine, LayoutPage, LayoutResult, LayoutSpan
 from pdftr.extraction.chars import extract
 from pdftr.fusion.build import _supplement_continuations, fuse
-from pdftr.rendering.background import crop_png, make_background
+from pdftr.rendering.background import crop_formula, crop_png, make_background
 from pdftr.rendering.export import _formula_images, export_pdf_to_path
 from pdftr.translation.segmenter import segment
 
@@ -211,8 +211,11 @@ def test_compact_formula_crop_removes_only_detached_edge_ink(tmp_path, top):
     )
     with pymupdf.open(original) as pdf:
         page = pdf[0]
-        raw = page.get_pixmap(matrix=pymupdf.Matrix(4, 4), clip=pymupdf.Rect(39.7, 50, 80.3, 64), alpha=True)
+        raw = page.get_pixmap(matrix=pymupdf.Matrix(4, 4), clip=pymupdf.Rect(39.7, 49.75, 80.3, 64.25), alpha=True)
         png, width, height = _formula_images(pdf, seg)["m1"]
+    # 4 倍采样下，上下各多保留一行抗锯齿像素，模拟的邻行笔画也各多一行。
+    top += 1
+    bottom += 1
     raw_rows = _ink_rows(raw)
     assert raw_rows[: top + 1] == [True] * top + [False]
     assert raw_rows[-bottom - 1 :] == [False] + [True] * bottom
@@ -224,6 +227,65 @@ def test_compact_formula_crop_removes_only_detached_edge_ink(tmp_path, top):
     assert trimmed.samples[-bottom * trimmed.stride :] == bytes(bottom * trimmed.stride)
     assert _ink_rows(trimmed)[:-bottom] == raw_rows[top:-bottom]
     assert sum(_ink_rows(trimmed)) == 7 * 4
+
+
+@pytest.mark.parametrize(("mark", "left"), [(";", False), ("(", True)])
+def test_crop_formula_excludes_touching_punctuation(mark: str, left: bool) -> None:
+    # 分色直接识别邻字渗入；同时与单独绘制公式的原页比较主体全部墨迹。
+    bbox = Rect.of([30, 25, 46, 42])
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=100, height=80)
+        page.insert_text((31, 38), "Qj", fontsize=12)
+        clean = crop_formula(page, bbox)
+        assert clean is not None
+        x = bbox.x0 - pymupdf.get_text_length(mark, fontsize=3) if left else bbox.x1
+        page.insert_text((x, 38), mark, fontsize=3, color=(1, 0, 0))
+        raw = page.get_pixmap(matrix=pymupdf.Matrix(4, 4), clip=pymupdf.Rect(29.7, 24.75, 46.3, 42.25), alpha=True)
+        assert any(raw.samples[::4])
+        tight = crop_formula(page, bbox)
+        assert tight is not None
+        before, after = (pymupdf.Pixmap(img[0]) for img in (clean, tight))
+        assert after.width < before.width
+        assert not any(after.samples[::4])
+        assert sum(after.samples[3::4]) == sum(before.samples[3::4])
+
+
+def test_crop_formula_preserves_descender_in_vertical_padding() -> None:
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=64, height=64)
+        page.draw_rect(pymupdf.Rect(22, 23, 23, 30.25), color=None, fill=(0, 0, 0))
+        result = crop_formula(page, Rect.of([20, 20, 25, 30]))
+        assert result is not None
+        png, width, height = result
+        pix = pymupdf.Pixmap(png)
+        assert (width, height) == (6, 10.5)
+        assert _ink_rows(pix)[-2:] == [True, True]
+
+
+@pytest.mark.parametrize(
+    ("bands", "expected"),
+    [
+        ([(0, 3), (8, 36)], [(0, 3), (8, 36)]),
+        ([(0, 6), (9, 36)], [(0, 6), (9, 36)]),
+        ([(2, 34), (37, 40)], [(2, 34), (37, 40)]),
+        ([(0, 12), (18, 21), (27, 40)], [(0, 12), (18, 21), (27, 40)]),
+        ([(0, 4), (10, 36)], [(6, 32)]),
+        ([(2, 30), (36, 40)], [(2, 30)]),
+    ],
+    ids=["bar", "tilde", "relation", "fraction", "top-ghost", "bottom-ghost"],
+)
+def test_padded_crop_distinguishes_math_strokes_and_ghosts(
+    bands: list[tuple[int, int]], expected: list[tuple[int, int]]
+) -> None:
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=64, height=64)
+        for top, bottom in bands:
+            page.draw_rect(pymupdf.Rect(22, 20 + top / 4, 25, 20 + bottom / 4), color=None, fill=(0, 0, 0))
+        result = crop_formula(page, Rect.of([20, 20.25, 28, 29.75]))
+        assert result is not None
+        pix = pymupdf.Pixmap(result[0])
+        assert pix.height == (36 if expected == [(6, 32)] else 40)
+        assert _ink_rows(pix) == [any(top <= y < bottom for top, bottom in expected) for y in range(pix.height)]
 
 
 def test_export_normalizes_legacy_spacing_and_keeps_link_geometry(tmp_path):

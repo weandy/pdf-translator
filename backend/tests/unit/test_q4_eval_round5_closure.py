@@ -292,7 +292,7 @@ def test_r5_2_prompt_v7_contains_trailing_relation_attachment_rule():
 
 
 def test_r5_3a_footnote_links_match_superscripts_only():
-    assert LINKS_VERSION == 6
+    assert LINKS_VERSION == 7
 
     def fn(anchor: str, x: float, kind: str = "Hfootnote") -> PdfLink:
         return PdfLink(
@@ -328,7 +328,7 @@ def test_r5_3a_footnote_links_match_superscripts_only():
 
 
 def test_r5_3b_formula_internal_links_mapped_in_mono_and_dual_exports(tmp_path: Path):
-    assert EXPORT_CACHE_VERSION == 15
+    assert EXPORT_CACHE_VERSION == 17
 
     orig_pdf = tmp_path / "orig.pdf"
     bg_pdf = tmp_path / "bg.pdf"

@@ -27,6 +27,7 @@ _IMAGE_TRAILING_PUNCT = frozenset("，。；：、！？")
 _TOKEN = re.compile(r"<(/?)(sup|sub|b|i)>|<(m\d+)/>")
 _SCRIPT_SCALE = 0.7  # 上下标字号
 _WORD_BREAK = re.compile(r"(?<=[A-Za-z0-9][/_\-–])(?=[A-Za-z0-9])")
+_SHORT_PARENS = re.compile(r"[A-Za-z0-9_]{0,10}\((?:[^()]|\([^()]*\))*\)[,.;:!?%]*")
 MAX_JUSTIFY_EXTRA = 0.25  # 超过四分之一个字号的额外字距会造成明显断层
 
 
@@ -95,9 +96,60 @@ class Token:
     width: float = 0.0
     height: float = 0.0  # 图片高度
     image: str = ""  # 公式占位符
-    char: str = ""  # cjk 的字，用于禁则判断
+    char: str = ""  # 汉字或全角标点；空格中保留换行标记供括号分组判断。
     attach: bool = False  # 紧接上一个 token（同一个词在 / 或连字符后拆开的部分）：不加间距、不拉伸，但可在此断行
     track_links: bool = True  # 公式占位符在匹配链接时视为空。
+    joined_prev: bool = False  # 跨样式且无空白，仍是同一串西文。
+
+
+def _token_text(tok: Token) -> str:
+    return "".join(run.text for run in tok.runs) or tok.char
+
+
+def _is_no_start(tok: Token) -> bool:
+    if tok.kind == "word":
+        text = _token_text(tok)
+        return bool(text) and all(ch in _NO_START for ch in text)
+    return tok.kind == "cjk" and tok.char in _NO_START
+
+
+def _is_no_end(tok: Token) -> bool:
+    if tok.kind == "word":
+        text = _token_text(tok)
+        return bool(text) and all(ch in _NO_END for ch in text)
+    return tok.kind == "cjk" and tok.char in _NO_END
+
+
+def _group_short_parens(tokens: list[Token], width: float, size: float) -> list[list[Token]]:
+    groups: list[list[Token]] = []
+    start = 0
+    while start < len(tokens):
+        first = tokens[start]
+        end = start + 1
+        # 换样式或下划线断词点会把函数名前缀与开括号分到不同词中。
+        prefix = _token_text(first) if first.kind == "word" else ""
+        if prefix and (
+            "(" in prefix
+            or (end < len(tokens) and (tokens[end].joined_prev or (prefix.endswith("_") and tokens[end].attach)))
+        ):
+            plain = ""
+            advance = 0.0
+            for i in range(start, len(tokens)):
+                tok = tokens[i]
+                if tok.kind not in ("word", "space") or not tok.track_links or tok.char == "\n":
+                    break
+                if i > start and tok.kind == tokens[i - 1].kind == "word" and not (tok.joined_prev or tok.attach):
+                    break
+                plain += _token_text(tok)
+                advance += tok.width  # 组内只有西文和原有空格，没有中西文附加间距。
+                if len(plain) > 16 or advance > 0.75 * width:
+                    break
+                if _SHORT_PARENS.fullmatch(plain):
+                    end = i + 1
+                    break
+        groups.append(tokens[start:end])
+        start = end
+    return groups
 
 
 @dataclass
@@ -201,37 +253,30 @@ class Typesetter:
         tokens: list[Token] = []
         stack: list[str] = []
         pos = 0
+        depth = 0
+        after_tag = False
         if caption_no and text.startswith(caption_no):
-            tokens += self._text_tokens(caption_no, Style(role, no=True), size)
+            depth = self._append_text_tokens(tokens, caption_no, Style(role, no=True), size)
             pos = len(caption_no)
         for m in _TOKEN.finditer(text, pos):
-            tokens += self._text_tokens(
-                text[pos : m.start()],
-                self._style(role, stack),
-                size,
-                allow_leading_space=bool(tokens and tokens[-1].kind != "space"),
+            depth = self._append_text_tokens(
+                tokens, text[pos : m.start()], self._style(role, stack), size, depth=depth, after_tag=after_tag
             )
             pos = m.end()
+            after_tag = not m.group(3)
             if key := m.group(3):
                 wh = image_size(key)
                 if wh:
                     tokens.append(Token("image", width=wh[0], height=wh[1], image=key))
                 else:
                     fallback = f"${formulas[key]}$" if formulas is not None and key in formulas else m.group(0)
-                    for token in self._text_tokens(fallback, self._style(role, stack), size):
-                        token.track_links = False
-                        tokens.append(token)
+                    self._append_text_tokens(tokens, fallback, self._style(role, stack), size, track_links=False)
             elif m.group(1):
                 if m.group(2) in stack:
                     stack.remove(m.group(2))
             else:
                 stack.append(m.group(2))
-        tokens += self._text_tokens(
-            text[pos:],
-            self._style(role, stack),
-            size,
-            allow_leading_space=bool(tokens and tokens[-1].kind != "space"),
-        )
+        self._append_text_tokens(tokens, text[pos:], self._style(role, stack), size, depth=depth, after_tag=after_tag)
         return tokens
 
     @staticmethod
@@ -239,32 +284,69 @@ class Typesetter:
         script = next((t for t in reversed(stack) if t in ("sup", "sub")), "")
         return Style(role, bold="b" in stack, italic="i" in stack, script=script)
 
-    def _text_tokens(self, text: str, style: Style, size: float, *, allow_leading_space: bool = False) -> list[Token]:
-        out: list[Token] = []
+    def _append_text_tokens(
+        self,
+        out: list[Token],
+        text: str,
+        style: Style,
+        size: float,
+        *,
+        depth: int = 0,
+        after_tag: bool = False,
+        track_links: bool = True,
+    ) -> int:
+        start = len(out)
+        attached = False
         word = ""
 
         def flush() -> None:
-            nonlocal word
+            nonlocal word, attached
             # 长词（如 Python/OR-Tools）允许在 / 与连字符后断行，否则整行放不下时上一行字距会被拉得很开
             for i, piece in enumerate(p for p in _WORD_BREAK.split(word) if p):
                 runs = self._runs(piece, style, size)
-                out.append(Token("word", runs, sum(r.width for r in runs), attach=i > 0))
+                joined = (
+                    after_tag
+                    and len(out) == start
+                    and start > 0
+                    and out[-1].kind == "word"
+                    and out[-1].track_links == track_links
+                )
+                out.append(
+                    Token(
+                        "word",
+                        runs,
+                        sum(r.width for r in runs),
+                        attach=i > 0 or attached or joined,
+                        track_links=track_links,
+                        joined_prev=joined,
+                    )
+                )
             word = ""
+            attached = False
 
         for ch in text:
             if ch.isspace():
                 flush()
-                if (out or allow_leading_space) and (not out or out[-1].kind != "space"):
+                if out and out[-1].kind != "space":
                     runs = self._runs(" ", style, size)
-                    out.append(Token("space", runs, sum(r.width for r in runs)))
+                    out.append(Token("space", runs, sum(r.width for r in runs), track_links=track_links))
+                if out and ch in "\r\n\u2028\u2029":
+                    out[-1].char = "\n"
             elif _CJK.fullmatch(ch):
                 flush()
                 runs = self._runs(ch, style, size)
-                out.append(Token("cjk", runs, sum(r.width for r in runs), char=ch))
+                out.append(Token("cjk", runs, sum(r.width for r in runs), char=ch, track_links=track_links))
             else:
                 word += ch
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth = max(depth - 1, 0)
+                elif ch == "," and depth:
+                    flush()
+                    attached = True
         flush()
-        return out
+        return depth
 
     # ---- 断行 ----
     @staticmethod
@@ -285,33 +367,31 @@ class Typesetter:
         cur: list[Token] = []
         glue: list[float] = []
         used = indent
-        for tok in tokens:
-            g = self._glue_before(cur[-1] if cur else None, tok, size)
-            if tok.kind == "space" and not cur:
-                continue  # 行首空格丢弃
-            fits = used + g + tok.width <= width + 0.01
-            hang = tok.kind == "cjk" and tok.char in _NO_START and cur  # 行首禁则：悬挂在本行行尾
-            if fits or hang or not cur:
+
+        def append(tok: Token) -> None:
+            nonlocal used
+            if tok.kind != "space" or cur:
+                g = self._glue_before(cur[-1] if cur else None, tok, size)
                 cur.append(tok)
                 glue.append(g)
                 used += g + tok.width
-                continue
-            carry: list[Token] = []
-            while cur and cur[-1].kind == "space":  # 行尾空格不计
-                cur.pop()
-                glue.pop()
-            if cur and cur[-1].kind == "cjk" and cur[-1].char in _NO_END and len(cur) > 1:
-                carry.append(cur.pop())  # 行尾禁则：开始括号、引号移到下一行
-                glue.pop()
-            lines.append(Line(cur, glue))
-            cur, glue, used = [], [], 0.0
-            for t in [*carry, tok]:
-                if t.kind == "space" and not cur:
-                    continue
-                g = self._glue_before(cur[-1] if cur else None, t, size)
-                cur.append(t)
-                glue.append(g)
-                used += g + t.width
+
+        for group in _group_short_parens(tokens, width, size):
+            first = group[0]
+            g = self._glue_before(cur[-1] if cur else None, first, size)
+            fits = used + g + sum(t.width for t in group) <= width + 0.01
+            if cur and first.kind != "space" and not fits and not _is_no_start(first):
+                cut = len(cur)
+                while cut and (cur[cut - 1].kind == "space" or _is_no_end(cur[cut - 1])):
+                    cut -= 1
+                if cut:
+                    lines.append(Line(cur[:cut], glue[:cut]))
+                    carry = cur[cut:]
+                    cur, glue, used = [], [], 0.0
+                    for tok in carry:
+                        append(tok)
+            for tok in group:
+                append(tok)
         while cur and cur[-1].kind == "space":
             cur.pop()
             glue.pop()

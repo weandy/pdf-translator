@@ -31,8 +31,16 @@ from pdftr.domain.layout import LayoutBlock, LayoutResult
 from pdftr.domain.text import INLINE_ABSTRACT, PUBLICATION_DATE, RICH_TAG, SECTION_NUMBER, is_pua
 from pdftr.fusion.align import align
 from pdftr.fusion.emphasis import bold_ranges, italic_ranges
-from pdftr.fusion.formula_align import MATH_FONT, MATH_WORDS, clean_formula_lines, refine_block, visual_lines
-from pdftr.fusion.relocate import relocate
+from pdftr.fusion.formula_align import (
+    MATH_FONT,
+    MATH_WORDS,
+    clean_formula_lines,
+    exclude_formula_chars,
+    promote_native_math_spans,
+    refine_block,
+    visual_lines,
+)
+from pdftr.fusion.relocate import dedupe_page_blocks, relocate
 from pdftr.fusion.structure import margin_marks, split_layout
 from pdftr.fusion.style import block_style
 from pdftr.fusion.text_fix import (
@@ -134,11 +142,14 @@ def fuse(
 
     pages: list[Page] = []
     endpoints: dict[tuple[int, int], tuple[Block, Block]] = {}
+    native_chars: dict[int, list[Char]] = {}
     selected = set(pages_to_translate) if pages_to_translate is not None else pdf_indexes
     by_index = {page.index: page for page in relocated.pages}
     native_captions: set[str] = set()
     for cp in sorted(char_pages, key=lambda page: page.index):
-        if cp.kind is not PageKind.NATIVE:
+        if cp.kind is PageKind.NATIVE:
+            native_chars[cp.index] = cp.chars
+        else:
             report.non_native_pages.append(cp.index)
         visible = [c for c in cp.chars if not c.c.isspace()]
         if cp.index in expected_layout:
@@ -169,6 +180,10 @@ def fuse(
                 report.formulas_unlocated += total - found
             elif any(s.kind == "inline_formula" for line in lb.lines for s in line.spans):
                 lb = clean_formula_lines(lb, chars)
+            if cp.kind is PageKind.NATIVE and lb.type is BlockType.TEXT and chars:
+                promoted = promote_native_math_spans(lb, chars)
+                if promoted is not lb:
+                    lb = clean_formula_lines(promoted, chars)
             first = len(blocks)
             pieces, matched = split_layout(lb, chars, marks, cp.width)
             if matched:
@@ -209,6 +224,8 @@ def fuse(
         if not nxt.list_item:
             nxt.continues_from = prev.id
             report.continuations += 1
+    for page in pages:
+        page.blocks = dedupe_page_blocks(page.blocks, native_chars.get(page.index))
     report.continuations += _supplement_continuations(pages)
     _even_scan_sizes(pages)
     _even_caption_sizes(pages, native_captions)
@@ -599,6 +616,12 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], report: FusionRepor
     line_centers = [line.bbox.center[1] for line in lb.lines]
     for li, line in enumerate(lb.lines):
         formula_boxes = [s.bbox for s in line.spans if s.kind == "inline_formula" and s.located]
+        line_native = (
+            [c for c in chars_in(chars, line.bbox, tol=1.0) if not c.c.isspace()]
+            if cp.kind is PageKind.NATIVE and formula_boxes
+            else []
+        )
+        body_size, line_baseline = main_metrics(line_native) if line_native else (style.font_size, None)
         text_candidates = [s.bbox for s in line.spans if s.kind == "text"]
         rightmost_span = max(line.spans, key=lambda sp: sp.bbox.x1, default=None)
         for s in line.spans:
@@ -627,7 +650,11 @@ def _block(cp: CharPage, lb: LayoutBlock, chars: list[Char], report: FusionRepor
                 if overflow_x1 > s.bbox.x1:
                     # 仅扩展单行 Span.bbox 供背景去字擦除溢出尾字，不再撑大整块排版框 Block.bbox。
                     search_box = s.bbox.model_copy(update={"x1": overflow_x1})
-            span_chars = chars_in(chars, search_box, exclude=formula_boxes) if cp.kind is PageKind.NATIVE else []
+            span_chars = (
+                exclude_formula_chars(chars_in(chars, search_box), formula_boxes, body_size, line_baseline)
+                if cp.kind is PageKind.NATIVE
+                else []
+            )
             pdf_text = text_of(span_chars)
             stripped = strip_fake_scripts(s.content, span_chars)
             recovered = recover_dropped_chars(stripped, pdf_text)

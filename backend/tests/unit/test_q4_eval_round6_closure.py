@@ -44,9 +44,9 @@ from pdftr.translation.service import (
 
 
 def test_r6_versions_bumped_and_prompt_version_unchanged():
-    assert VALIDATION_VERSION == 6
-    assert LINKS_VERSION == 6
-    assert EXPORT_CACHE_VERSION == 15
+    assert VALIDATION_VERSION == 7
+    assert LINKS_VERSION == 7
+    assert EXPORT_CACHE_VERSION == 17
     assert PROMPT_VERSION == "v7"
 
 
