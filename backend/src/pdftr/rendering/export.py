@@ -9,6 +9,7 @@
 import logging
 import re
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -32,46 +33,180 @@ BOTTOM_MARGIN = 4.0
 
 _BREAK_AFTER = set("，。；：、）！？,;:.)")
 _SEARCH = 40
+_CITATION_MAX = 40
+_CITATION_CHARS = set(" ,–—-;，、；")
+_ASCII_DIGITS = set("0123456789")
+_ASCII_ALNUM = re.compile(r"[A-Za-z0-9]")
+_URL_CHAR = re.compile(r"[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]")
+_URL_TAIL = set(".,;:!?")
+_CLOSING_TAGS = re.compile(r"(?:</(?:b|i|sup|sub)>)*")
 # 图表标题开头的编号（“图 4.”“表2：”），按 GB/T 7713.2 用黑体（与前端 entities/document/model.ts 一致）
 CAPTION_NO = re.compile(r"^\s*(?:图|表)\s*[A-Z]?\d+(?:\.\d+)*[.:：．。]?")
 
 
-def _cut_near(atoms: list[re.Match[str]], start: int, target: int, limit: int) -> int:
+@dataclass(frozen=True, slots=True)
+class _Atom:
+    start: int
+    end: int
+    char: str  # 仅单单位原子参与标点与行首禁则判断
+
+
+def _citation_end(chars: list[str], start: int) -> int:
+    close = "]" if chars[start] == "[" else "］"
+    has_digit = False
+    for end in range(start + 1, min(len(chars), start + _CITATION_MAX)):
+        char = chars[end]
+        if char == close:
+            return end + 1 if has_digit else start
+        if char in _ASCII_DIGITS:
+            has_digit = True
+        elif char not in _CITATION_CHARS:
+            break
+    return start
+
+
+def _url_end(chars: list[str], start: int) -> int:
+    if start and _ASCII_ALNUM.fullmatch(chars[start - 1]):
+        return start
+    prefix = "".join(chars[start : start + 8]).lower()
+    if prefix.startswith("https://"):
+        head = start + 8
+    elif prefix.startswith("http://"):
+        head = start + 7
+    elif prefix.startswith("www."):
+        head = start + 4
+    else:
+        return start
+
+    # 记录配对的右括号最远位置，剥除尾部时可区分 URL 内的括号与外部括号。
+    parens = brackets = 0
+    paired_paren = query = fragment = -1
+    paired_brackets: list[int] = []
+    end = head
+    while end < len(chars) and _URL_CHAR.fullmatch(chars[end]):
+        char = chars[end]
+        if char == "(":
+            parens += 1
+        elif char == ")" and parens:
+            parens -= 1
+            paired_paren = end
+        elif char == "[":
+            brackets += 1
+        elif char == "]" and brackets:
+            brackets -= 1
+            paired_brackets.append(end)
+        elif char == "?" and query < 0 and fragment < 0:
+            query = end
+        elif char == "#" and fragment < 0:
+            fragment = end
+        end += 1
+
+    while end > head:
+        tail = end - 1
+        char = chars[tail]
+        if char in _URL_TAIL or (char == ")" and tail > paired_paren):
+            end -= 1
+        elif char == "]":
+            if not paired_brackets or tail > paired_brackets[-1]:
+                end -= 1
+                continue
+            opening = tail - 1
+            while opening > head and tail - opening < _CITATION_MAX and chars[opening] != "[":
+                opening -= 1
+            if (
+                opening <= head
+                or (0 <= query < opening and (fragment < 0 or opening < fragment))
+                or chars[opening] != "["
+                or _citation_end(chars, opening) != end
+            ):
+                break
+            end = opening
+            # 已剥除配对的引文括号，后续尾括号须按仍在 URL 中的配对来判定。
+            paired_brackets.pop()
+        else:
+            break
+    return end if end > head else start
+
+
+def _number_end(chars: list[str], start: int) -> tuple[int, bool]:
+    """单趟消费数字串，即使没有小数点也无需从每个数字重新查找。"""
+    end = start + int(chars[start] in ("v", "V"))
+    decimal = False
+    while True:
+        while end < len(chars) and chars[end] in _ASCII_DIGITS:
+            end += 1
+        if end + 1 >= len(chars) or chars[end] != "." or chars[end + 1] not in _ASCII_DIGITS:
+            return end, decimal
+        decimal = True
+        end += 1
+
+
+def _split_atoms(text: str) -> tuple[list[_Atom], list[int]]:
+    units = [unit for unit in RICH_ATOM.finditer(text) if not RICH_TAG.fullmatch(unit[0])]
+    chars = [unit[0] for unit in units]
+    atoms: list[_Atom] = []
+    prefix = [0]
+    start = 0
+    while start < len(units):
+        char = chars[start]
+        end = start
+        if char in ("h", "H", "w", "W"):
+            end = _url_end(chars, start)
+        elif char in ("[", "［"):
+            end = _citation_end(chars, start)
+        elif char in _ASCII_DIGITS or (
+            char in ("v", "V") and start + 1 < len(chars) and chars[start + 1] in _ASCII_DIGITS
+        ):
+            end, decimal = _number_end(chars, start)
+            if not decimal:
+                for i in range(start, end):
+                    atoms.append(_Atom(units[i].start(), units[i].end(), chars[i]))
+                    prefix.append(prefix[-1] + 1)
+                start = end
+                continue
+        end = max(start + 1, end)
+        atoms.append(_Atom(units[start].start(), units[end - 1].end(), char if end == start + 1 else ""))
+        prefix.append(prefix[-1] + end - start)
+        start = end
+    return atoms, prefix
+
+
+def _cut_near(atoms: list[_Atom], start: int, target: int, limit: int) -> int:
     for d in range(_SEARCH + 1):
         for pos in (target - d, target + d):
-            if start < pos <= limit and atoms[pos - 1][0] in _BREAK_AFTER:
+            if start < pos <= limit and atoms[pos - 1].char in _BREAK_AFTER:
                 return pos
-    return min(max(target, start + 1), limit)
-
-
-_CLOSING_TAGS = re.compile(r"(?:</(?:b|i|sup|sub)>)*")
+    return target
 
 
 def split_by_parts(text: str, part_chars: list[int]) -> list[str]:
     """把跨栏/跨页段落的译文按各块原文长度拆开，优先在标点处断开（与前端 shared/text/split.ts 一致）。"""
     if len(part_chars) <= 1:
         return [text]
-    atoms = [atom for atom in RICH_ATOM.finditer(text) if not RICH_TAG.fullmatch(atom[0])]
+    atoms, prefix = _split_atoms(text)
     total = sum(part_chars) or 1
     pieces: list[str] = []
-    start = offset = cumulative = 0
+    start = offset = cumulative = nearest = 0
     for i, chars in enumerate(part_chars[:-1]):
         cumulative += chars
         if start >= len(atoms):
             pieces.append(text[offset:])
             offset = len(text)
             continue
-        # 按可见码点计数，半数向上舍入。给剩余块预留位置，再执行行首禁则。
-        target = (2 * len(atoms) * cumulative + total) // (2 * total)
+        # 目标与合法索引区间单调前移。同距保留左边界，给剩余块预留位置。
+        target = (2 * prefix[-1] * cumulative + total) // (2 * total)
         limit = max(start + 1, len(atoms) - (len(part_chars) - i - 1))
-        cut = _cut_near(atoms, start, min(max(target, start + 1), limit), limit)
-        end = atoms[cut - 1].end()
+        nearest = max(nearest, start + 1)
+        while nearest < limit and prefix[nearest] + prefix[nearest + 1] < 2 * target:
+            nearest += 1
+        cut = _cut_near(atoms, start, nearest, limit)
+        end = atoms[cut - 1].end
         while True:
             if closing := _CLOSING_TAGS.match(text, end):
                 end = closing.end()
-            if cut == len(atoms) or atoms[cut].start() != end or atoms[cut][0] not in _NO_START:
+            if cut == len(atoms) or atoms[cut].start != end or atoms[cut].char not in _NO_START:
                 break
-            end = atoms[cut].end()
+            end = atoms[cut].end
             cut += 1
         pieces.append(text[offset:end])
         offset = end
@@ -85,14 +220,15 @@ def _balance_rich_parts(parts: list[str]) -> list[str]:
     active: list[str] = []
     out: list[str] = []
     for part in parts:
-        prefix = "".join(f"<{tag}>" for tag in active)
+        visible = bool(RICH_TAG.sub("", part))
+        prefix = "".join(f"<{tag}>" for tag in active) if visible else ""
         for match in re.finditer(r"<(/?)(sup|sub|b|i)>", part):
             close, tag = match.groups()
             if not close:
                 active.append(tag)
             elif active and active[-1] == tag:
                 active.pop()
-        if not re.sub(r"</?(?:sup|sub|b|i)>", "", part):
+        if not visible:
             out.append("")
         else:
             out.append(prefix + part + "".join(f"</{tag}>" for tag in reversed(active)))
@@ -168,11 +304,14 @@ def _place(
     translated: bool = True,
     *,
     neighbors: Sequence[Block] = (),
-) -> None:
-    """先收紧行距再缩小字号。最小字号仍放不下时，复核同栏下方的可用空白。"""
+) -> bool:
+    """先收紧行距再缩小字号。返回译文是否有行未写入 PDF。"""
     box = _box(block) & page.rect
     if box.is_empty:
-        return
+        return translated and any(
+            token.kind == "image" or (token.kind != "space" and any(run.text for run in token.runs)) for token in tokens
+        )
+    overflow = False
     size = block.style.font_size
     r = role(block, translated=translated)
     align = {"label": "center", "heading": "left"}.get(r, "justify")
@@ -238,14 +377,16 @@ def _place(
             if count == 0:
                 # 去字后至少保留首行。极矮框允许首行低于常规最小字号。
                 scale, count = available / bottoms[0], 1
+            overflow = translated and count < len(lines)
             lines, bases = lines[:count], bases[:count]
     if not lines:
-        return
+        return False
     c = block.style.color
     writer = pymupdf.TextWriter(page.rect)
     ts.draw(page, writer, (box.x0, box.y0), box.width / scale, lines, bases, size, align, indent,
             lambda key: images[key][0] if key in images else None, scale, placed)  # fmt: skip
     writer.write_text(page, color=((c >> 16 & 255) / 255, (c >> 8 & 255) / 255, (c & 255) / 255))
+    return overflow
 
 
 def _exported_text(seg: Segment) -> str:
@@ -267,9 +408,10 @@ def block_pieces(
 
 
 def _typeset_all(src: pymupdf.Document, out: pymupdf.Document, doc: Document, segments: list[Segment],
-                 font_dir: Path | None) -> dict[str, list[Placed]]:  # fmt: skip
-    """把全部译文排进去字背景页。未翻译或失败的段落排入原文，避免出现空白。返回每块文字画在哪里。"""
+                 font_dir: Path | None) -> tuple[dict[str, list[Placed]], list[int]]:  # fmt: skip
+    """把译文和回退原文排进去字背景页，返回落位文字和截断译文的原页码。"""
     placed: dict[str, list[Placed]] = {}
+    overflow_pages: set[int] = set()
     ts = Typesetter(FontSet.load(font_dir))
     blocks = {b.id: b for b in doc.blocks()}
     by_page = {page.index: page.blocks for page in doc.pages}
@@ -289,11 +431,13 @@ def _typeset_all(src: pymupdf.Document, out: pymupdf.Document, doc: Document, se
             tokens = ts.tokenize(drop_fake_scripts(text), r, block.style.font_size, size, caption_no,
                                  formulas=seg.formulas)  # fmt: skip
             indent = bool(seg.target) and wants_indent(block, seg, first=n == 0)
-            _place(
+            overflow = _place(
                 ts, out[block.page], block, tokens, indent, images, placed.setdefault(block.id, []), bool(seg.target),
                 neighbors=by_page[block.page],
             )  # fmt: skip
-    return placed
+            if overflow:
+                overflow_pages.add(block.page + 1)
+    return placed, sorted(overflow_pages)
 
 
 def _rects(runs: list[Placed], needle: str, nth: int) -> list[pymupdf.Rect]:
@@ -353,8 +497,9 @@ def export_pdf(
     links: list[PdfLink] | None = None,
 ) -> bytes:
     """返回导出的 PDF 字节。font_dir 缺字体时用内置字体。links：原文链接（调用方已缓存时传入，省得重读）。"""
-    return _export(original, background, doc, segments, mode, font_dir, side, links,
-                   lambda pdf: pdf.tobytes(garbage=3, deflate=True))  # fmt: skip
+    data, _ = _export(original, background, doc, segments, mode, font_dir, side, links,
+                      lambda pdf: pdf.tobytes(garbage=3, deflate=True))  # fmt: skip
+    return data
 
 
 def export_pdf_to_path(
@@ -368,11 +513,12 @@ def export_pdf_to_path(
     links: list[PdfLink] | None = None,
     *,
     out: Path,
-) -> None:
-    """生产导出直接写盘，避免 Python 持有完整 PDF 字节串。"""
+) -> list[int]:
+    """直接写盘并返回有译文截断的原 PDF 页码（从 1 起）。"""
     with pdf_destination(out) as tmp:
-        _export(original, background, doc, segments, mode, font_dir, side, links,
-                lambda pdf: pdf.save(tmp, garbage=3, deflate=True))  # fmt: skip
+        _, overflow_pages = _export(original, background, doc, segments, mode, font_dir, side, links,
+                                    lambda pdf: pdf.save(tmp, garbage=3, deflate=True))  # fmt: skip
+    return overflow_pages
 
 
 def _export[T](
@@ -385,12 +531,12 @@ def _export[T](
     side: Side,
     links: list[PdfLink] | None,
     save: Callable[[pymupdf.Document], T],
-) -> T:
+) -> tuple[T, list[int]]:
     raw = links if links is not None else page_links(original, doc, segments)
     links = place_links(raw, doc, segments)
     block_pages = {b.id: b.page for b in doc.blocks()}
     with pymupdf.open(original) as src, pymupdf.open(background) as translated:
-        placed = _typeset_all(src, translated, doc, segments, font_dir)
+        placed, overflow_pages = _typeset_all(src, translated, doc, segments, font_dir)
         translated.subset_fonts()  # 中文字体只保留用到的字形
         if mode == "mono":
             # 去字时有些 PDF 里译文块内的旧链接没被删掉，停在原位置、下面已是别的译文：先删掉，再按译文位置补上
@@ -403,7 +549,7 @@ def _export[T](
                 if link.block_id is not None:
                     for rect in _translated_rects(link, placed):
                         _insert(translated[link.translated_page(block_pages)], link, rect)
-            return save(translated)
+            return save(translated), overflow_pages
 
         with pymupdf.open() as out:
             for i in range(len(src)):
@@ -430,4 +576,4 @@ def _export[T](
                     _insert(
                         out[tr_page], link, pymupdf.Rect(rect.x0 + dx_tr, rect.y0, rect.x1 + dx_tr, rect.y1), dest[1]
                     )
-            return save(out)
+            return save(out), overflow_pages

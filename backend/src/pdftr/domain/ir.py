@@ -160,6 +160,7 @@ class Segment(BaseModel):
     formula_refs: dict[str, FormulaRef] = Field(default_factory=dict)
     parts: list[SegmentPart] = Field(default_factory=list)
     section: str = ""  # 所在章节，作为批次上下文
+    role: BlockType | None = None  # 首块排版角色（正文、标题、图注、脚注等），旧存档兼容 None
     target: str | None = None
     status: SegmentStatus = SegmentStatus.PENDING
     quality: Quality = "default"

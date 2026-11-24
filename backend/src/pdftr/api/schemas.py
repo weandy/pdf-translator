@@ -61,6 +61,7 @@ class ExportPrepareOut(BaseModel):
     filename: str
     download_url: str
     size_bytes: int
+    overflow_pages: list[int] = Field(default_factory=list)
 
 
 class RectOut(BaseModel):

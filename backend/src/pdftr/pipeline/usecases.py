@@ -12,7 +12,6 @@ import shutil
 import tempfile
 import threading
 import time
-from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -36,7 +35,7 @@ from pdftr.domain.ir import (
 from pdftr.domain.job import STAGES, Job, JobOptions, JobStatus
 from pdftr.domain.llm import ChatError, ChatOptions
 from pdftr.domain.submissions import SubmissionContext
-from pdftr.domain.text import LETTER_HEADING, NUMBERED_HEADING, RICH_TAG, ROMAN_HEADING
+from pdftr.domain.text import LETTER_HEADING, NUMBERED_HEADING, RICH_TAG, ROMAN_HEADING, normalize_term_key
 from pdftr.extraction.chars import page_count
 from pdftr.extraction.outline import pdf_outline
 from pdftr.glossary.user_import import ParsedGlossary, parse_upload
@@ -318,7 +317,8 @@ def purge_expired(pipeline: Pipeline, retention_hours: int, now: datetime | None
 
 
 # 导出 PDF 的生成方式（排版、字体、链接等）变了就加一，让已缓存的导出文件失效
-EXPORT_CACHE_VERSION = 9  # 标题末行均衡
+EXPORT_CACHE_VERSION = 10  # 跨块原子切分与截断页码
+_EXPORT_LOCKS = tuple(threading.Lock() for _ in range(16))
 
 
 @dataclass(frozen=True)
@@ -328,6 +328,11 @@ class _Export:
     side: Side
     segments: list[Segment]
     path: Path
+    digest: str
+
+
+def _export_path(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side, digest: str) -> Path:
+    return pipeline.deps.artifacts.job_dir(job_id) / "exports" / f"{mode}-{side}-{digest}.pdf"
 
 
 def _export_snapshot(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side) -> _Export:
@@ -338,42 +343,98 @@ def _export_snapshot(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Si
     segments = deps.store.segments(job_id)
     state = json.dumps([EXPORT_CACHE_VERSION, [(s.id, s.target, s.status.value) for s in segments]], ensure_ascii=False)
     digest = hashlib.sha256(state.encode()).hexdigest()[:16]
-    folder = deps.artifacts.job_dir(job_id) / "exports"
-    return _Export(job, mode, side, segments, folder / f"{mode}-{side}-{digest}.pdf")
+    return _Export(job, mode, side, segments, _export_path(pipeline, job_id, mode, side, digest), digest)
 
 
-def _export_result(doc: Document, export: _Export) -> ExportResult:
+def _export_result(
+    doc: Document, job: Job, mode: ExportMode, path: Path, digest: str, overflow_pages: tuple[int, ...]
+) -> ExportResult:
     title = paper_title(doc.pages, fallback=doc.meta.title)
-    filename = download_filename(title, export.job.filename, bilingual=export.mode == "dual")
-    return ExportResult(filename, export.path, export.path.stat().st_size)
+    filename = download_filename(title, job.filename, bilingual=mode == "dual")
+    return ExportResult(filename, path, path.stat().st_size, digest, overflow_pages)
+
+
+def _read_export_meta(pdf: Path) -> tuple[int, ...] | None:
+    try:
+        if not pdf.is_file():
+            return None
+        meta = json.loads(pdf.with_suffix(".meta.json").read_text(encoding="utf-8"))
+        if not isinstance(meta, dict) or type(meta.get("v")) is not int or meta["v"] != EXPORT_CACHE_VERSION:
+            return None
+        pages = meta.get("overflow_pages")
+        if not isinstance(pages, list):
+            return None
+        previous = 0
+        for page in pages:
+            if type(page) is not int or page <= previous:
+                return None
+            previous = page
+        return tuple(pages)
+    except (OSError, ValueError, RecursionError):
+        return None
+
+
+def _write_export_meta(pdf: Path, overflow_pages: list[int]) -> None:
+    meta = pdf.with_suffix(".meta.json")
+    with tempfile.NamedTemporaryFile(dir=pdf.parent, prefix=f".{pdf.stem}-", suffix=".part", delete=False) as file:
+        tmp = Path(file.name)
+    try:
+        tmp.write_text(json.dumps({"v": EXPORT_CACHE_VERSION, "overflow_pages": overflow_pages}), encoding="utf-8")
+        tmp.replace(meta)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _cleanup_exports(export: _Export) -> None:
+    out = export.path
+    cutoff = time.time() - 60
+    for old in out.parent.glob(f"{export.mode}-{export.side}-*.pdf"):
+        with suppress(OSError):
+            if old != out and old.stat().st_mtime < cutoff:
+                meta = old.with_suffix(".meta.json")
+                # 提交标记刚发布时，仍需留出完整的下载宽限期。
+                if not meta.exists() or meta.stat().st_mtime < cutoff:
+                    meta.unlink(missing_ok=True)
+                    old.unlink()
+    for meta in out.parent.glob("*.meta.json"):
+        with suppress(OSError):
+            pdf = meta.with_name(meta.name.removesuffix(".meta.json") + ".pdf")
+            if not pdf.is_file() and meta.stat().st_mtime < cutoff:
+                meta.unlink()
+    for partial in out.parent.glob("*.part"):
+        with suppress(OSError):
+            if partial.stat().st_mtime < cutoff:
+                partial.unlink()
 
 
 def _render_export(pipeline: Pipeline, export: _Export) -> ExportResult:
     job_id, out = export.job.id, export.path
-    # 等待本机名额期间，任务可能已重新进入翻译。
-    if get_job(pipeline, job_id).status is not JobStatus.DONE:
-        raise UserError("任务完成后才能下载")
     deps = pipeline.deps
-    doc = load_document(deps, job_id)
-    if not out.exists():
-        try:
-            export_pdf_to_path(
-                deps.artifacts.path(job_id, "original.pdf"), deps.artifacts.path(job_id, "background.pdf"),
-                doc, export.segments, export.mode, deps.font_dir, export.side,
-                _raw_links(pipeline, job_id, doc, export.segments), out=out,
-            )  # fmt: skip
-        finally:
-            release_memory()
-        with suppress(UserError, NotFound, OSError):
-            if _export_snapshot(pipeline, job_id, export.mode, export.side).path == out:
-                with pipeline.export_cleanup_access(job_id) as allowed:
-                    if allowed:
-                        cutoff = time.time() - 60
-                        for old in out.parent.glob(f"{export.mode}-{export.side}-*.pdf"):
-                            with suppress(OSError):
-                                if old != out and old.stat().st_mtime < cutoff:
-                                    old.unlink()
-    return _export_result(doc, export)
+    with _EXPORT_LOCKS[hash(out) % len(_EXPORT_LOCKS)]:
+        # 等待本机名额或路径锁期间，任务可能已重新进入翻译。
+        if get_job(pipeline, job_id).status is not JobStatus.DONE:
+            raise UserError("任务完成后才能下载")
+        doc = load_document(deps, job_id)
+        pages = _read_export_meta(out)
+        if pages is None:
+            # PDF 缺失时，旧旁路文件也可能仍有效，必须在重建前撤下提交标记。
+            out.with_suffix(".meta.json").unlink(missing_ok=True)
+            try:
+                overflow_pages = export_pdf_to_path(
+                    deps.artifacts.path(job_id, "original.pdf"), deps.artifacts.path(job_id, "background.pdf"),
+                    doc, export.segments, export.mode, deps.font_dir, export.side,
+                    _raw_links(pipeline, job_id, doc, export.segments), out=out,
+                )  # fmt: skip
+                _write_export_meta(out, overflow_pages)
+            finally:
+                release_memory()
+            pages = tuple(overflow_pages)
+            with suppress(UserError, NotFound, OSError):
+                if _export_snapshot(pipeline, job_id, export.mode, export.side).path == out:
+                    with pipeline.export_cleanup_access(job_id) as allowed:
+                        if allowed:
+                            _cleanup_exports(export)
+    return _export_result(doc, export.job, export.mode, out, export.digest, pages)
 
 
 def _lookup_export(
@@ -383,8 +444,21 @@ def _lookup_export(
         if not allowed:
             raise NotFound("任务不存在")
         export = _export_snapshot(pipeline, job_id, mode, side)
-        cached = _export_result(load_document(pipeline.deps, job_id), export) if export.path.exists() else None
-        return export, cached
+        pages = _read_export_meta(export.path)
+        if pages is None:
+            return export, None
+        doc = load_document(pipeline.deps, job_id)
+        return export, _export_result(doc, export.job, mode, export.path, export.digest, pages)
+
+
+def published_export(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side, digest: str) -> ExportResult:
+    """在调用方持有下载保护期间读取已提交的快照。"""
+    job = get_job(pipeline, job_id)
+    path = _export_path(pipeline, job_id, mode, side, digest)
+    pages = _read_export_meta(path)
+    if pages is None:
+        raise NotFound("导出快照已失效，请重新下载")
+    return _export_result(load_document(pipeline.deps, job_id), job, mode, path, digest, pages)
 
 
 def export_job(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "right") -> tuple[str, Path]:
@@ -738,22 +812,28 @@ async def retranslate_segments(
     if not pipeline.begin_mutation(job_id):
         raise UserError("任务正在修改，请稍后再试")
     try:
-        segs = [_segment(pipeline, sid) for sid in dict.fromkeys(segment_ids)]
-        if any(s.job_id != job_id for s in segs):
-            raise NotFound("段落不属于这个任务")
+        deps = pipeline.deps
+        all_segs = deps.store.segments(job_id)
+        by_id = {s.id: s for s in all_segs}
+        befores: dict[str, Segment] = {}
+        for sid in dict.fromkeys(segment_ids):
+            before = by_id.get(sid)
+            if before is None:
+                _segment(pipeline, sid)
+                raise NotFound("段落不属于这个任务")
+            befores[sid] = before
+        segs = list(befores.values())
         terms = user_terms if user_terms is not None else job.options.user_terms
-        befores = {s.id: s.model_copy() for s in segs}
-        for s in segs:
-            s.status = SegmentStatus.PENDING
         if bad_source(segs):
             raise UserError(BAD_SOURCE_MESSAGE)
-        deps = pipeline.deps
         ctx, selection = await asyncio.to_thread(load_context, deps, job_id, terms)
         async with chat_session(deps.chat_factory(secrets)) as chat:
             outs, report = await translate(
-                segs, chat=chat, cache=deps.cache, ctx=ctx,
-                lookup_terms=selection.match_library, lookup_user_terms=selection.match_user,
-                opts=TranslateOptions(quality=quality, use_cache=False, total_timeout_s=45),
+                [s.model_copy(update={"status": SegmentStatus.PENDING}) for s in segs],
+                chat=chat, cache=deps.cache, ctx=ctx,
+                lookup_term_hits=selection.match_segment, context_segments=all_segs,
+                opts=TranslateOptions(quality=quality, concurrency=pipeline.llm_concurrency(secrets),
+                                      use_cache=False, total_timeout_s=45),
             )  # fmt: skip
         for out in outs:
             before = befores[out.id]
@@ -791,21 +871,22 @@ def job_terms(pipeline: Pipeline, job_id: str) -> list[TermUse]:
     job = get_job(pipeline, job_id)
     deps = pipeline.deps
     _, selection = load_context(deps, job_id, job.options.user_terms)
-    lookups: tuple[tuple[Literal["user", "paper", "library"], Callable[[str], dict[str, str]]], ...] = (
-        ("user", selection.match_user),
-        ("paper", selection.match_paper),
-        ("library", selection.match_library),
-    )
+    origins: tuple[Literal["user", "paper", "library"], ...] = ("user", "paper", "library")
     uses: dict[str, TermUse] = {}
     for seg in deps.store.segments(job_id):
         seen: set[str] = set()
-        for origin, lookup in lookups:
-            for source, target in lookup(seg.source).items():
-                key = source.casefold()
-                if key not in seen:
-                    seen.add(key)
-                    use = uses.setdefault(key, TermUse(source=source, target=target, origin=origin, segment_ids=[]))
-                    use.segment_ids.append(seg.id)
+        for origin, hits in zip(origins, selection.match_segment(seg.source), strict=True):
+            for source, target in hits.items():
+                key = normalize_term_key(source)
+                if key in seen:
+                    continue
+                seen.add(key)
+                use = uses.get(key)
+                if use is None:
+                    use = uses[key] = TermUse(source=source, target=target, origin=origin, segment_ids=[])
+                elif origins.index(origin) < origins.index(use.origin):
+                    use.source, use.target, use.origin = source, target, origin
+                use.segment_ids.append(seg.id)
     return sorted(uses.values(), key=lambda u: (-len(u.segment_ids), u.source.lower()))
 
 

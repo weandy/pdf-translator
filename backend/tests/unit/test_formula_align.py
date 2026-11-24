@@ -117,6 +117,94 @@ def test_torn_formula_requires_unique_math_bridge_and_a_single_visual_row():
     assert merge_torn_formulas(line, chars).spans == spans
 
 
+def _torn_line(left, bridge, right, *, font="Times", italic=False, bold=False, gap=0):
+    chars = _chars(["x" + bridge + "y"])
+    for i, glyph in enumerate(chars):
+        shift = 0 if i == 0 else gap if i <= len(bridge) else 2 * gap
+        glyph.bbox = Rect.of([glyph.bbox.x0 + shift, 0, glyph.bbox.x1 + shift, 10])
+        if 0 < i <= len(bridge):
+            glyph.font, glyph.italic, glyph.bold = font, italic, bold
+    middle_box = Rect.of([chars[1].bbox.x0, 0, chars[-2].bbox.x1, 10])
+    spans = [
+        LayoutSpan(kind="inline_formula", content=left, bbox=chars[0].bbox),
+        LayoutSpan(kind="text", content=bridge, bbox=middle_box),
+        LayoutSpan(kind="inline_formula", content=right, bbox=chars[-1].bbox),
+    ]
+    return LayoutLine(bbox=Rect.of([10, 0, chars[-1].bbox.x1, 10]), spans=spans), chars
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [(r"\left(x", r"y\right)"), ("[x", "y]"), (r"\{x", r"y\}"), (r"\langle x", r"y\rangle")],
+)
+def test_torn_formula_restores_complementary_outer_delimiters(left, right):
+    line, chars = _torn_line(left, ", k", right, italic=True)
+    (merged,) = merge_torn_formulas(line, chars).spans
+    assert merged.content == f"{left} , k {right}"
+
+
+@pytest.mark.parametrize(
+    ("bridge", "expected", "style"),
+    [
+        (", x", r", \mathbf{x}", {"bold": True}),
+        ("; sin", "; sin", {}),
+        ("-1.2,x≤2", r"-1.2,x\le 2", {"font": "CambriaMath"}),
+        ("−1×2·3≥", r"-1\times 2\cdot 3\ge", {}),
+        ("=", "=", {}),
+    ],
+)
+def test_torn_formula_math_items_and_glyph_styles(bridge, expected, style):
+    line, chars = _torn_line("(x", bridge, "y)", **style)
+    (merged,) = merge_torn_formulas(line, chars).spans
+    assert merged.content == f"(x {expected} y)"
+
+
+@pytest.mark.parametrize(
+    ("bridge", "style"),
+    [
+        (", AND", {"italic": True, "bold": True}),
+        ("where", {"font": "CMMI10"}),
+        (", density", {}),
+        (", m", {}),
+        ("x", {"bold": True}),
+        ("sin", {}),
+        ("x,y,z,w", {"italic": True}),
+        ("123456789,1234567", {}),
+        ("x 2", {"italic": True}),
+        ("x_1", {"italic": True}),
+        (r"x,\alpha", {"italic": True}),
+    ],
+)
+def test_torn_formula_rejects_prose_and_bridges_without_evidence(bridge, style):
+    line, chars = _torn_line("(x", bridge, "y)", **style)
+    assert merge_torn_formulas(line, chars).spans == line.spans
+
+
+@pytest.mark.parametrize(("gap", "merged"), [(-4, False), (-2, True), (15, True), (16, False)])
+def test_torn_formula_uses_local_median_gap_and_overlap(gap, merged):
+    line, chars = _torn_line("(x", ", abc", "y)", italic=True, gap=gap)
+    assert (len(merge_torn_formulas(line, chars).spans) == 1) is merged
+
+
+@pytest.mark.parametrize(("left", "right"), [("(x", "y]"), ("[(x", "y)]"), ("{x", "y}")])
+def test_torn_formula_rejects_mismatched_or_nested_unpaired_delimiters(left, right):
+    line, chars = _torn_line(left, ", k", right, italic=True)
+    assert merge_torn_formulas(line, chars).spans == line.spans
+
+
+def test_torn_formula_rejects_mismatched_glyph_text_and_multiple_visual_rows():
+    line, chars = _torn_line("(x", ", k", "y)", italic=True)
+    chars[3].c = "n"
+    assert merge_torn_formulas(line, chars).spans == line.spans
+    chars[3].c = "k"
+    chars[-1].line = 1
+    right = chars[-1].bbox
+    chars[-1].bbox = Rect.of([right.x0, 20, right.x1, 30])
+    line.spans[2].bbox = chars[-1].bbox
+    line.bbox = Rect.of([10, 0, right.x1, 30])
+    assert merge_torn_formulas(line, chars).spans == line.spans
+
+
 def test_formula_found_between_anchor_text():
     chars = _chars(["Let f(θ) be a noisy objective."])
     (f,) = locate_formulas("Let $f(\\theta)$ be a noisy objective.", chars)

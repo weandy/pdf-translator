@@ -980,6 +980,23 @@
        "default": "right",
        "title": "Side"
       }
+     },
+     {
+      "name": "snapshot",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "pattern": "^[0-9a-f]{16}$"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Snapshot"
+      }
      }
     ],
     "responses": {
@@ -2401,6 +2418,13 @@
      "size_bytes": {
       "type": "integer",
       "title": "Size Bytes"
+     },
+     "overflow_pages": {
+      "items": {
+       "type": "integer"
+      },
+      "type": "array",
+      "title": "Overflow Pages"
      }
     },
     "type": "object",

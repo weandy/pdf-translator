@@ -1,13 +1,11 @@
-"""术语表的程序校正（S10：只靠提示词管不住全大写标题和章节名混进术语表）。
-
-- 术语按正文中最常见的写法改写大小写（ADAM → Adam）
-- 正文中没出现的、等于某个章节标题的，丢弃
-- 译法与原文相同（不译）的，统一成正文写法
-"""
+"""按正文词形和出现次数校正模型抽取的术语。"""
 
 import re
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
+
+from pdftr.domain.text import RICH_TAG, normalize_term_key
+from pdftr.glossary.matcher import mask_term_boundaries, term_windows
 
 _SECTION_ONLY = frozenset({
     "abstract", "acknowledgment", "acknowledgments", "appendix", "background", "conclusion", "conclusions",
@@ -15,32 +13,41 @@ _SECTION_ONLY = frozenset({
     "method", "methodology", "methods", "overview", "references", "related work", "related works", "results",
     "results and analysis", "summary",
 })  # fmt: skip
+_HEADING_NUMBER = re.compile(r"^(?:[ivxlcdm]+[.)]|[a-z][.)]|\d+(?:\.\d+)*[.)]?)\s+")
 
 
-def _term_pattern(term: str) -> re.Pattern[str]:
-    flex = re.sub(r"(?:\\ |-)+", r"[\\s-]+", re.escape(term.strip()))
-    return re.compile(rf"(?<![\w-]){flex}(?![\w-])", flags=re.IGNORECASE)
+def normalize_terms(terms: dict[str, str], body: str | Sequence[str], headings: Iterable[str] = ()) -> dict[str, str]:
+    heading_lines = Counter(" ".join(RICH_TAG.sub("", h).casefold().split()) for h in headings)
+    heading_names = {_HEADING_NUMBER.sub("", h) for h in heading_lines}
+    if isinstance(body, str):
+        # 旧调用可能把独立标题行一并传入。段落序列由调用方先排除标题。
+        paragraphs: list[str] = []
+        for line in body.splitlines():
+            name = " ".join(RICH_TAG.sub("", line).casefold().split())
+            if heading_lines[name] > 0:
+                heading_lines[name] -= 1
+            else:
+                paragraphs.append(line)
+        body = paragraphs
 
+    entries: dict[str, Counter[str]] = {key: Counter() for term in terms if (key := normalize_term_key(term))}
+    if not entries:
+        return {}
+    max_words = max(len(key.split()) for key in entries)
+    for paragraph in body:
+        visible = mask_term_boundaries(RICH_TAG.sub("", paragraph))
+        for _, _, written in term_windows(visible, max_words):
+            forms = entries.get(normalize_term_key(written))
+            if forms is not None:
+                forms[" ".join(written.split())] += 1
 
-def normalize_terms(terms: dict[str, str], body: str, headings: Iterable[str] = ()) -> dict[str, str]:
-    heading_list = list(headings)
-    heading_set = {
-        re.sub(r"^(?:[IVXLCDM]+\.|[A-Z]\.|\d+(?:\.\d+)*\.?)\s*", "", h).strip().lower() for h in heading_list
-    }
-    heading_blob = "\n".join(heading_list)
     out: dict[str, str] = {}
     for term, target in terms.items():
-        pat = _term_pattern(term)
-        found = pat.findall(body)
-        if not found:
+        forms = entries.get(normalize_term_key(term))
+        low = " ".join(term.casefold().split())
+        if not forms or low in _SECTION_ONLY or (low in heading_names and forms.total() < 2):
             continue
-        low = term.strip().lower()
-        if low in heading_set:
-            if low in _SECTION_ONLY:
-                continue
-            body_hits = len(found) - len(pat.findall(heading_blob))
-            if body_hits < 2:
-                continue
-        written = term if term.isupper() and len(term) >= 2 and term in found else Counter(found).most_common(1)[0][0]
-        out[written] = written if target.strip().lower() == term.strip().lower() else target.strip()
+        written = forms.most_common(1)[0][0]
+        target = target.strip()
+        out[written] = written if target.casefold() == term.strip().casefold() else target
     return out

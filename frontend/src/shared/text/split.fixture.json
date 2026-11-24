@@ -7,5 +7,18 @@
   {"text":"甲，乙丙丁戊己庚辛壬","weights":[1,1,1,1],"expected":["甲，","乙丙丁","戊己庚","辛壬"]},
   {"text":"<b>甲乙<m12/>丙丁</b>普通","weights":[3,4],"expected":["<b>甲乙<m12/></b>","<b>丙丁</b>普通"]},
   {"text":"甲，乙。","weights":[1,1,1,1],"expected":["甲，","乙。","",""]},
-  {"text":"<i></i>","weights":[1,1],"expected":["",""]}
+  {"text":"<i></i>","weights":[1,1],"expected":["",""]},
+  {"text":"𠮷𝄞e\u0301甲","weights":[1,1],"expected":["𠮷𝄞e","\u0301甲"]},
+  {"text":"甲\u00a0乙\ufeff丙丁","weights":[1,1],"expected":["甲\u00a0乙","\ufeff丙丁"]},
+  {"text":"<i>甲[<b>12</b>]乙</i>","weights":[1,1],"expected":["<i>甲</i>","<i>[<b>12</b>]乙</i>"]},
+  {"text":"甲(HTTPS://example.test:8443/a(b)?x=1&y=%20),乙丙","weights":[1,1],"expected":["甲(HTTPS://example.test:8443/a(b)?x=1&y=%20),","乙丙"]},
+  {"text":"甲http://example.test[12]乙","weights":[1,1],"expected":["甲http://example.test","[12]乙"]},
+  {"text":"甲https://[::1]:8443/a?q=[12]乙","weights":[3,1],"expected":["甲https://[::1]:8443/a?q=[12]","乙"]},
+  {"text":"甲WWW.example.test\u00a0乙\ufeff丙","weights":[3,1],"expected":["甲WWW.example.test","\u00a0乙\ufeff丙"]},
+  {"text":"[1, 3–5]甲","weights":[1,1,1,1],"expected":["[1, 3–5]","甲","",""]},
+  {"text":"甲［1；<m9/>3］乙","weights":[1,1],"expected":["甲［1；","<m9/>3］乙"]},
+  {"text":"甲v2.1.0乙","weights":[1,1],"expected":["甲","v2.1.0乙"]},
+  {"text":"甲3.14乙","weights":[2,1],"expected":["甲3.14","乙"]},
+  {"text":"甲乙丙丁戊","weights":[9007199254740990,9007199254740991],"expected":["甲乙","丙丁戊"]},
+  {"text":"甲乙丙丁","weights":[0,0,0],"expected":["甲","乙","丙丁"]}
 ]

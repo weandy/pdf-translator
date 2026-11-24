@@ -5,6 +5,7 @@
 import { useSyncExternalStore } from "react";
 
 import { readJSON, writeJSON } from "@/shared/storage/local";
+import { normalizeTermKey } from "@/shared/text/termKey";
 
 export interface TermEntry {
   source: string;
@@ -108,6 +109,14 @@ export function planImport(items: IncomingTerm[], terms: TermEntry[] = current):
 
 export function findTerm(source: string, terms: TermEntry[] = current): TermEntry | undefined {
   return terms.find((t) => same(t.source, source));
+}
+
+/** 面板优先使用同拼写词条，其次匹配复数或连字符等词形变体。 */
+export function findTermMatching(source: string, terms: TermEntry[] = current): TermEntry | undefined {
+  const exact = findTerm(source, terms);
+  if (exact) return exact;
+  const key = normalizeTermKey(source);
+  return key ? terms.find((t) => normalizeTermKey(t.source) === key) : undefined;
 }
 
 /** 发给后端的 {英文: 中文}。 */

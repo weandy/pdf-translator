@@ -74,6 +74,13 @@ describe("共享 MinerU 设置引导", () => {
     });
   }
 
+  it("按服务商和模型说明思考设置，两档费用均按实际用量计", async () => {
+    await render(true);
+    const choices = [...host.querySelectorAll("label.choice")].map((label) => label.textContent?.trim());
+    expect(choices).toContain("默认思考设置依服务商和模型支持而定，费用按实际用量计。");
+    expect(choices).toContain("精翻在服务商和模型支持时尝试使用较高思考强度，费用按实际用量计。");
+  });
+
   it("按未保存的自定义配置获取模型，去重排序并选择保存，不发送解析 Token", async () => {
     const list = vi.spyOn(api, "llmModels").mockResolvedValue(["z-model", "a-model", "a-model"]);
     saveSettings({ ...DEFAULTS, parserKey: "synthetic-parser-token", model: "manual-model" });

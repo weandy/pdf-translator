@@ -10,6 +10,7 @@
 import difflib
 import re
 import statistics
+import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
@@ -388,26 +389,92 @@ def _flush_text(run: list[Char], spans: list[LayoutSpan]) -> None:
     run.clear()
 
 
-_MATH_BRIDGE = re.compile(r",?\s*[A-Za-z]{1,8}")
+_TORN_DELIMITERS = {("(", ")"), ("[", "]"), (r"\{", r"\}"), (r"\langle", r"\rangle")}
+_BRIDGE_OPERATORS = ",;:=+-−*/<>≤≥·×|"
+_BRIDGE_VECTOR_NEIGHBORS = frozenset(_BRIDGE_OPERATORS) - {";", ":"}
+_BRIDGE_SYMBOL = f"[{re.escape(_BRIDGE_OPERATORS)}]"
+_BRIDGE_TERM = r"\d+(?:\.\d+)?|[A-Za-z]{1,8}"
+_MATH_BRIDGE = re.compile(
+    rf"{_BRIDGE_SYMBOL}|{_BRIDGE_SYMBOL}?\s*(?:{_BRIDGE_TERM})"
+    rf"(?:\s*{_BRIDGE_SYMBOL}\s*(?:{_BRIDGE_TERM})){{0,2}}\s*{_BRIDGE_SYMBOL}?"
+)
+_BRIDGE_WORD = re.compile(r"[A-Za-z]+")
+_BRIDGE_STOP_WORDS = frozenset(
+    {"and", "or", "if", "in", "of", "to", "as", "is", "are", "be", "by", "for", "with", "from", "where", "when",
+     "then", "than", "the", "that", "this", "not", "vs"}
+)  # fmt: skip
+_BRIDGE_MATH_WORDS = MATH_WORDS - {"m", "g", "s"}
+_BRIDGE_LATEX = str.maketrans({"−": "-", "×": r"\times ", "·": r"\cdot ", "≤": r"\le ", "≥": r"\ge "})
+
+
+def _complementary_delimiters(left: str, right: str) -> bool:
+    _, opens = _delimiters(left)
+    _, closes = _delimiters(right)
+    return len(opens) == len(closes) == 1 and (opens[0][1], closes[0][1]) in _TORN_DELIMITERS
+
+
+def _math_bridge_latex(text: str, chars: Sequence[Char]) -> str | None:
+    glyphs = [
+        glyph
+        for glyph in sorted(chars, key=lambda c: (c.line, c.bbox.x0))
+        for char in unicodedata.normalize("NFKC", glyph.c)
+        if not char.isspace()
+    ]
+    pieces: list[str] = []
+    end = 0
+    for match in _BRIDGE_WORD.finditer(text):
+        word = match[0]
+        if word.lower() in _BRIDGE_STOP_WORDS:
+            return None
+        before = text[: match.start()].rstrip()[-1:]
+        after = text[match.end() :].lstrip()[:1]
+        neighbors = {before, after}
+        offset = len("".join(text[: match.start()].split()))
+        token_chars = glyphs[offset : offset + len(word)]
+        if len(word) == 1 and token_chars[0].bold and neighbors & _BRIDGE_VECTOR_NEIGHBORS:
+            rendered = rf"\mathbf{{{word}}}"
+        elif (word.lower() in _BRIDGE_MATH_WORDS and neighbors.intersection(_BRIDGE_OPERATORS)) or all(
+            MATH_FONT.search(c.font) or c.italic for c in token_chars
+        ):
+            rendered = word
+        else:
+            return None
+        pieces.extend((text[end : match.start()].translate(_BRIDGE_LATEX), rendered))
+        end = match.end()
+    pieces.append(text[end:].translate(_BRIDGE_LATEX))
+    return "".join(pieces).rstrip()
 
 
 def merge_torn_formulas(line: LayoutLine, chars: Sequence[Char]) -> LayoutLine:
     """只合并两端括号互补且中间字形唯一归属的公式。"""
     spans = line.spans.copy()
+    body_size: float | None = None
     i = 0
     while i + 2 < len(spans):
         left, middle, right = spans[i : i + 3]
+        bridge = middle.content.strip()
         if (
             (left.kind, middle.kind, right.kind) == ("inline_formula", "text", "inline_formula")
             and left.located and right.located
-            and [token for _, token in _delimiters(left.content)[1]] == ["("]
-            and [token for _, token in _delimiters(right.content)[1]] == [")"]
-            and _MATH_BRIDGE.fullmatch(middle.content.strip())
+            and len(bridge) <= 16 and _MATH_BRIDGE.fullmatch(bridge)
             and left.bbox.center[0] < middle.bbox.center[0] < right.bbox.center[0]
+            and _complementary_delimiters(left.content, right.content)
         ):  # fmt: skip
             boxes = (left.bbox, middle.bbox, right.bbox)
+            if body_size is None:
+                sizes = [glyph.size for glyph in chars_in(chars, line.bbox, tol=0)]
+                if not sizes:
+                    return line
+                body_size = statistics.median(sizes)
+            if not all(
+                -0.3 * body_size <= b.bbox.x0 - a.bbox.x1 <= 1.5 * body_size for a, b in pairwise((left, middle, right))
+            ):
+                i += 1
+                continue
             owned: list[list[Char]] = [[], [], []]
-            box = Rect.of((left.bbox.x0, min(b.y0 for b in boxes), right.bbox.x1, max(b.y1 for b in boxes)))
+            box = Rect.of(
+                (min(b.x0 for b in boxes), min(b.y0 for b in boxes), max(b.x1 for b in boxes), max(b.y1 for b in boxes))
+            )
             for glyph in chars_in(chars, box, tol=0):
                 if glyph.c.isspace():
                     continue
@@ -419,12 +486,13 @@ def merge_torn_formulas(line: LayoutLine, chars: Sequence[Char]) -> LayoutLine:
                 inner = owned[1]
                 if (
                     all(owned)
-                    and text_of(inner).replace(" ", "") == "".join(middle.content.split())
-                    and all(MATH_FONT.search(c.font) or c.italic for c in inner if c.c.isalpha())
+                    and text_of(inner).replace(" ", "") == "".join(bridge.split())
                     and len(visual_lines([c for group in owned for c in group])) == 1
+                    and (latex_bridge := _math_bridge_latex(bridge, inner)) is not None
                 ):
-                    latex = " ".join((left.content.rstrip(), middle.content.strip(), right.content.lstrip()))
-                    spans[i : i + 3] = [left.model_copy(update={"content": latex, "bbox": box})]
+                    latex = " ".join((left.content.rstrip(), latex_bridge, right.content.lstrip()))
+                    if not _delimiters(latex)[1]:
+                        spans[i : i + 3] = [left.model_copy(update={"content": latex, "bbox": box})]
         i += 1
     return line.model_copy(update={"spans": spans})
 

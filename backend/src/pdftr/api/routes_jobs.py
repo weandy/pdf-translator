@@ -9,7 +9,7 @@ from contextlib import ExitStack
 from typing import Annotated, Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import ValidationError
 
@@ -21,6 +21,7 @@ from pdftr.domain.submissions import NOTICE_VERSION, SubmissionContext
 from pdftr.pipeline import usecases
 from pdftr.pipeline.runner import ExportResult, Pipeline
 from pdftr.pipeline.secrets import Secrets
+from pdftr.pipeline.workers import run_thread
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -140,13 +141,18 @@ async def export_job(
     access: Annotated[ExitStack, Depends(_download_access)],
     mode: Literal["mono", "dual"] = "mono",
     side: Literal["left", "right"] = "right",  # 双语对照时译文放在左边还是右边
+    snapshot: str | None = Query(default=None, pattern=r"^[0-9a-f]{16}$"),
 ) -> Response:
-    filename, path, _ = await _export_with_timeout(p, job_id, mode, side)
-    if not access.enter_context(p.export_access(job_id)) or not path.is_file():
+    result = await _export_with_timeout(p, job_id, mode, side) if snapshot is None else None
+    if not access.enter_context(p.export_access(job_id)):
         raise usecases.NotFound("导出文件尚未生成")
-    disposition = f"attachment; filename=\"translated.pdf\"; filename*=UTF-8''{quote(filename)}"
+    if snapshot is not None:
+        result = await run_thread(usecases.published_export, p, job_id, mode, side, snapshot)
+    if result is None or not result.path.is_file():
+        raise usecases.NotFound("导出文件尚未生成")
+    disposition = f"attachment; filename=\"translated.pdf\"; filename*=UTF-8''{quote(result.filename)}"
     # 文件响应支持 HTTP Range：浏览器下载中断后可以续传
-    return FileResponse(path, media_type="application/pdf", headers={"Content-Disposition": disposition})
+    return FileResponse(result.path, media_type="application/pdf", headers={"Content-Disposition": disposition})
 
 
 @router.post("/{job_id}/export/prepare", response_model=ExportPrepareOut)
@@ -158,11 +164,12 @@ async def prepare_export(
 ) -> ExportPrepareOut:
     """先生成或命中导出缓存，再让前端启动可见的浏览器下载。"""
     result = await _export_with_timeout(p, job_id, mode, side)
-    query = f"mode={mode}&side={side}"
+    query = f"mode={mode}&side={side}&snapshot={result.digest}"
     return ExportPrepareOut(
         filename=result.filename,
         download_url=f"/api/jobs/{job_id}/export?{query}",
         size_bytes=result.size_bytes,
+        overflow_pages=list(result.overflow_pages),
     )
 
 

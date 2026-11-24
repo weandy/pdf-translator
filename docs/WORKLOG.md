@@ -4,6 +4,20 @@
 >
 > 最后更新：2026-11-24（Asia/Shanghai）
 
+### 本轮完成：Q4 翻译质量与词库进阶加固（2026-11-24，本地分支 `feat/q4-translation-quality-tier2`）
+
+- **方案与评审**：经主控初稿（v1）→ Codex（`apice/gpt-6.2-sol xhigh`）红队审改（v2）→ 独立 Neon（`gemini-4-neon xhigh`）二轮审改（v3）→ 主控拍板定稿（Final），完整设计见 [Q4 翻译质量与词库进阶加固设计方案](14-q4-translation-quality-and-glossary-tier2-design.md)。
+- **核心落地（4 路零重叠 Codex 并发 + 阶段 2 端到端接线 + 主控自审收口）**：
+  - **Q4a（校验、上下文与缓存）**：`PROMPT_VERSION = "v5"`、`VALIDATION_VERSION = 2`；新增确定性引文与数值上下标事实锚点校验（黑名单排除数组/容器索引、数学主语闭区间、含 `0` 区间与 4 位年份，同时严密保护 `as shown in [12]` 等高频句式）；局部 `<b>`/`<i>` 放宽合法拆合并增设整段误包守卫；支持 `</translations>` 缺省兼容结束标记与 4 条件竖线续行；章节切批以标题段为新批起点，支持同章相邻正文回指前文（上限 240 码点）；保留本文术语在 `system_prompt` 固定前缀，额外用户术语与公共参考词库按段号作用域注入；单段确定性 `cache_key` 扩展上下文与方言，缓存命中跳过不重发，单段补救通过后回写，语义降级不写共享缓存。
+  - **Q4b（术语仲裁、抽取与前端面板）**：`domain/text.py` 与前端 `shared/text/termKey.ts` 共用 `term-key.fixture.json` 规范键（`acr:`/`lit:`/`word:`）；`TermSelection` 取消全文档 `_phrase_targets`，改为段内 `user → paper → library` 原文 span 占用仲裁；`normalize_terms` 逐段统计；`frequent_candidates` 支持技术词（`off-policy`、`k-means`、`TCP/IP`、`H2O`、`AP@0.5`、`GNNs`）与二/三元词组、`extract_terms` 截断丢弃残缺末行并兼容门控括号附注；前端 `terms.ts` 修复 ASCII 词界、`TCP/IP` 斜杠保护与同段更长译法实例级遮蔽。
+  - **Q4c（跨块原子切分、导出截断提示与全链路接线）**：前后端同构 $O(N)$ 线性扫描器共用 `split.fixture.json`（扩充至 22 条夹具），保护公式、URL、数字引文与小数/版本号；导出仅统计真实丢行/空裁框译文页码，`EXPORT_CACHE_VERSION = 10` + 精简 `.meta.json` 原子提交、`POST /export/prepare` 返回 `overflow_pages` 与带 16 位 `snapshot` 的 `download_url`、`GET /export` 支持快照绑定与 Range/206、前端 `ExportDownloadLink.tsx` 同步覆盖三端溢出提示；管线、重翻与 CLI 统一接入按段术语、全文原序前文、并发策略与协议选择，`job_terms` 按规范键聚合并保持单行 `source` 唯一，OpenAPI 与 `schema.d.ts` 已同步再生。
+  - **Q4d（双协议降级、断词与撕裂公式）**：OpenAI / Anthropic 仅对明确指向本次已发送参数的 HTTP 400 做单次受控降级与实例级单调记忆，区分参数名替换（`use_max_completion_tokens` 正常复用缓存）与思考/采样语义降级（标 `compatibility_fallback = True` 禁写共享缓存）；同步更新设置页与段落编辑器精翻文案；跨行复合词采用全文行内证据优先 + 9 个超高置信非音节前缀兜底，序数回收补齐合法英文序数与算符守卫；撕裂公式合并扩展 4 对互补边界、局部字号间距、散文硬屏蔽、粗体单字母向量转 `\mathbf{x}` 与符号归一化。
+- **全量串行门禁实测（全绿）**：
+  - 后端：`ruff format --check`（158 文件）、`ruff check`（0 错误）、`pyright`（0 错误 0 警告）、`lint-imports`（3/3 kept，90 文件 257 依赖）、`pytest -q`（**1,042 passed, 6 skipped**，较 Q3c 净增 336 项，含 `test_openapi_sync` 与 Q3c 原样回归）。
+  - 前端（Node `v22.23.5`）：`npm run lint`、`npm run typecheck`、`npm test`（**40 files / 278 passed**，较基线净增 66 项）、`npm run build`（450ms）。
+  - `git diff --check` 通过。
+- **待确认**：本地分支 `feat/q4-translation-quality-tier2` 待用户确认后合入 `main`、推送远端，并按需重建 `app` + `web` 双镜像部署至 HW-SGP 与开展公开论文盲评。
+
 ### 部署：Q3 翻译质量与源文保真全包（Q3a + Q3b + Q3c）合入与上线（2026-11-24）
 
 - **范围与提交**：在 `main` 线性合入三批后端/全栈升级并全部部署至 HW-SGP：

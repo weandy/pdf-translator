@@ -73,7 +73,7 @@ def test_user_terms_win_over_library_and_extracted():
     source = "The attention mechanism and GA use a feature map."
     assert selection.match_user(source) == {"Attention Mechanism": "注意力机制", "GA": "遗传算法"}
     assert selection.match_library(source) == {"feature map": "特征图"}
-    assert selection.paper == {"attention mechanism": "注意力机制", "loss": "损失"}
+    assert selection.paper == {"attention mechanism": "注意力机制", "loss": "损失", "LOSS": "耗损"}
 
 
 def test_conflicting_library_subphrases_are_suppressed_by_paper_and_user():
@@ -85,13 +85,17 @@ def test_conflicting_library_subphrases_are_suppressed_by_paper_and_user():
     found = Extraction(terms={"local search operator": "局部搜索算子"}, use_library=True)
     selection = TermSelection(found, {"graph neural network": "图神经网络"}, lambda: library)
     assert selection.match_paper(source) == {"local search operator": "局部搜索算子"}
-    assert selection.match_library(source) == {"neural network": "神经网络", "saddle point": "鞍点"}
+    assert selection.match_library(source) == {"saddle point": "鞍点"}
+    assert selection.match_library(source + " An independent neural network is used.") == {
+        "saddle point": "鞍点",
+        "neural network": "神经网络",
+    }
 
     def forbidden() -> TermMatcher:
         raise AssertionError("停用公共词库时无需加载")
 
     selection = TermSelection(Extraction(), {"operator": "算子"}, forbidden)
-    assert selection.match_user(source) == {"operator": "算子"}
+    assert selection.match_user("An independent operator is used.") == {"operator": "算子"}
     assert selection.match_library(source) == {}
 
 

@@ -160,6 +160,7 @@ def export_container(tmp_path, monkeypatch):
         renders.append(True)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"%PDF-synthetic-export")
+        return []
 
     monkeypatch.setattr(usecases, "export_pdf_to_path", render)
     monkeypatch.setattr(usecases, "_raw_links", lambda *args: [])
@@ -224,6 +225,7 @@ def test_concurrent_exports_share_generation_and_cached_exports_bypass_local_slo
         assert release.wait(2)
         kwargs["out"].parent.mkdir(parents=True, exist_ok=True)
         kwargs["out"].write_bytes(b"%PDF-synthetic-export")
+        return []
 
     monkeypatch.setattr(usecases, "export_pdf_to_path", render)
 
@@ -295,6 +297,7 @@ def test_http_concurrent_exports_after_edit_use_distinct_snapshots(export_contai
         payload = f"%PDF {target}".encode()
         out.write_bytes(payload)
         rendered[target] = out
+        return []
 
     monkeypatch.setattr(usecases, "_lookup_export", observe_lookup)
     monkeypatch.setattr(usecases, "export_pdf_to_path", render)
@@ -314,6 +317,9 @@ def test_http_concurrent_exports_after_edit_use_distinct_snapshots(export_contai
         assert a.status_code == b.status_code == 200
         assert a.json()["size_bytes"] == len(b"%PDF First translation.")
         assert b.json()["size_bytes"] == len(b"%PDF Second translation.")
+        assert a.json()["download_url"] != b.json()["download_url"]
+        first_download = client.get(a.json()["download_url"])
+        assert first_download.status_code == 200 and first_download.content == b"%PDF First translation."
         download = client.get(b.json()["download_url"])
         assert download.status_code == 200 and download.content == b"%PDF Second translation."
     assert len(set(rendered.values())) == 2
@@ -334,6 +340,7 @@ def test_successful_export_survives_concurrent_retry_job(export_container, monke
         assert release.wait(3)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"%PDF completed export")
+        return []
 
     monkeypatch.setattr(usecases, "export_pdf_to_path", render)
     monkeypatch.setattr(pipeline, "submit", lambda *_: None)
@@ -363,6 +370,7 @@ def test_export_after_failure_generates_again_even_before_old_task_callback(expo
         renders.append(out)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"%PDF regenerated")
+        return []
 
     async def failed():
         raise OSError("synthetic export failure")
@@ -401,6 +409,7 @@ def test_pending_and_orphan_cleanup_defer_while_export_owns_artifacts(export_con
         assert folder.exists()
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"%PDF synthetic export")
+        return []
 
     monkeypatch.setattr(usecases, "export_pdf_to_path", render)
 

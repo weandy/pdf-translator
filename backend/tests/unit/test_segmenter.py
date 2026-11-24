@@ -75,6 +75,69 @@ def test_join_handles_line_end_hyphens():
     assert _join("", "x") == "x"
 
 
+@pytest.mark.parametrize(
+    ("prev", "nxt", "expected"),
+    [
+        ("<b>repre\u00ad</b>", "<b>sentation</b>", "<b>representation</b>"),
+        ("off\u00ad", "policy", "offpolicy"),
+        ("https://example.invalid/real-", "time", "https://example.invalid/real- time"),
+        ("term--", "end", "term-- end"),
+        ("term−", "end", "term− end"),
+        ("term–", "end", "term– end"),
+        ("term—", "end", "term— end"),
+        ("term-", "échelle", "term- échelle"),
+        ("Q-", "learning", "Q-learning"),
+        ("2-", "stage", "2-stage"),
+        ("3D-", "printed", "3D-printed"),
+        ("L1-", "norm", "L1-norm"),
+        ("off-", "policy", "off-policy"),
+        ("well-", "defined", "well-defined"),
+        ("quasi-", "static", "quasi-static"),
+        ("well-", "ness", "wellness"),
+        ("self-", "ish", "selfish"),
+        ("cross-", "ing", "crossing"),
+        ("pseudo-", "er", "pseudoer"),
+        ("non-", "linear", "nonlinear"),
+        ("multi-", "ple", "multiple"),
+        ("meta-", "bolic", "metabolic"),
+        ("real-", "ize", "realize"),
+        ("end-", "ure", "endure"),
+        ("fine-", "st", "finest"),
+        ("<i>model-</i>", "<m1/>", "<i>model-</i> <m1/>"),
+    ],
+)
+def test_join_compound_and_boundary_rules(prev, nxt, expected):
+    assert _join(prev, nxt) == expected
+
+
+def test_join_prefers_hyphen_evidence_and_respects_joined_evidence():
+    assert _join("non-", "linear", hyphenated={"non-linear"}, joined={"nonlinear"}) == "non-linear"
+    assert _join("off-", "policy", joined={"offpolicy"}) == "offpolicy"
+    assert _join("Q-", "learning", joined={"qlearning"}) == "Q-learning"
+
+
+def test_full_document_inline_evidence_for_visual_and_block_breaks():
+    head = _block("p0-b0", 0, BlockType.TEXT, [_text("Apply non-"), _text("linear and semi-", 1)])
+    tail = _block(
+        "p0-b1", 0, BlockType.FOOTNOTE, [_text("conductor methods")], continues_from=head.id, translatable=True
+    )
+    split = _block("p0-b2", 0, BlockType.TEXT, [_text("Avoid real-"), _text("time rates", 1)])
+    partial = _block("p0-b3", 0, BlockType.TEXT, [_text("Use real-time-"), _text("based methods", 1)])
+    evidence = _block("p1-b0", 1, BlockType.TEXT, [_text("NON-LINEAR semi-conductor nonlinear")])
+    doc = Document(
+        job_id="synthetic",
+        pages=[
+            Page(index=0, width=600, height=800, blocks=[head, tail, split, partial]),
+            Page(index=1, width=600, height=800, blocks=[evidence]),
+        ],
+    )
+    first, second, third = segment(doc, pages=[0])
+    assert first.source == "Apply non-linear and semi-conductor methods"
+    assert first.role is BlockType.TEXT and first.block_ids == [head.id, tail.id]
+    assert second.source == "Avoid realtime rates"
+    assert third.source == "Use real-time-based methods"
+
+
 def test_chain_merge_and_formula_renumbering():
     segs = segment(_doc())
     assert [s.block_ids for s in segs] == [["p0-b0"], ["p0-b1", "p1-b0"], ["p1-b1"]]
@@ -84,6 +147,7 @@ def test_chain_merge_and_formula_renumbering():
     assert [(p.block_id, p.chars > 0) for p in chain.parts] == [("p0-b1", True), ("p1-b0", True)]
     assert {k: r.page for k, r in chain.formula_refs.items()} == {"m1": 0, "m2": 1}
     assert chain.section == "1 Introduction"
+    assert segs[0].role is BlockType.TITLE and chain.role is BlockType.TEXT
     assert segs[0].section == ""  # 标题本身不带章节上下文
     assert segs[1].id == "0123456789abcdef-s1"
 
@@ -121,6 +185,39 @@ def test_ordinal_formulas_become_text():
     (seg,) = segment(doc)
     assert seg.source == "estimates of the 1st moment and <m1/>"
     assert seg.formulas == {"m1": r"\beta_1"}  # 序数不占公式编号
+
+
+@pytest.mark.parametrize(
+    ("latex", "expected"),
+    [
+        ("11^{th}", "11th"), ("112^{th}", "112th"), ("113^{th}", "113th"), ("121^{st}", "121st"),
+        ("22^{nd}", "22nd"), ("23^{rd}", "23rd"), ("20^{th}", "20th"),
+        ("2^{st}", None), ("1^{rd}", None), ("11^{st}", None), ("112^{nd}", None), ("113^{rd}", None),
+    ],
+)  # fmt: skip
+def test_ordinal_english_suffix_must_agree_with_digits(latex, expected):
+    assert textual_formula(latex) == expected
+
+
+@pytest.mark.parametrize("operator", "=+-*/<>≤≥≈×·")
+def test_ordinal_stays_math_next_to_an_operator_on_either_side(operator):
+    assert textual_formula("2^{nd}", before=f"<i>x {operator}</i> ") is None
+    assert textual_formula("2^{nd}", after=f" <b>{operator} x</b>") is None
+
+
+def test_following_operator_preserves_formula_in_segment():
+    spans = [_text("Use"), _formula("m1"), _text("<i> </i>"), _text("≤ x, then the"), _formula("m2"), _text("moment")]
+    block = _block(
+        "p0-b0",
+        0,
+        BlockType.TEXT,
+        spans,
+        formulas=[InlineFormula(key="m1", latex="2^{nd}", bbox=BOX), InlineFormula(key="m2", latex="3^{rd}", bbox=BOX)],
+    )
+    doc = Document(job_id="synthetic", pages=[Page(index=0, width=600, height=800, blocks=[block])])
+    (seg,) = segment(doc)
+    assert seg.source == "Use <m1/> <i> </i> ≤ x, then the 3rd moment"
+    assert seg.formulas == {"m1": "2^{nd}"}
 
 
 def test_front_matter_between_title_and_abstract_is_kept_original():

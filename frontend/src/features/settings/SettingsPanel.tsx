@@ -298,14 +298,14 @@ export function SettingsPanel({ onClose }: Props) {
             <input type="radio" checked={form.quality === "default"} onChange={() => set("quality", "default")} />
             <span>
               默认
-              <small>不开启思考，快且便宜。论文类内容推荐用这个。</small>
+              <small>思考设置依服务商和模型支持而定，费用按实际用量计。</small>
             </span>
           </label>
           <label className="choice">
             <input type="radio" checked={form.quality === "careful"} onChange={() => set("quality", "careful")} />
             <span>
               精翻
-              <small>开启低强度思考，费用约为默认的 4 倍。</small>
+              <small>在服务商和模型支持时尝试使用较高思考强度，费用按实际用量计。</small>
             </span>
           </label>
           <label className="choice">

@@ -114,6 +114,20 @@ def load_document(deps: PipelineDeps, job_id: str) -> Document:
     return Document.model_validate_json(deps.artifacts.path(job_id, "ir.json").read_text(encoding="utf-8"))
 
 
+def glossary_texts(doc: Document, segments: Sequence[Segment]) -> tuple[list[str], list[str]]:
+    """分开收集正文和标题，兼容还没保存段落角色的旧任务。"""
+    block_types = {block.id: block.type for block in doc.blocks()}
+    body_sources: list[str] = []
+    headings: list[str] = []
+    for seg in segments:
+        role = block_types.get(seg.block_ids[0], seg.role) if seg.block_ids else seg.role
+        if role is BlockType.TITLE:
+            headings.append(seg.source)
+        elif role is not BlockType.REFERENCE:
+            body_sources.append(seg.source)
+    return body_sources, headings
+
+
 def load_context(deps: PipelineDeps, job_id: str, user_terms: dict[str, str]) -> tuple[DocContext, TermSelection]:
     doc = load_document(deps, job_id)
     glossary_file = deps.artifacts.path(job_id, "glossary.json")
@@ -169,6 +183,8 @@ class ExportResult(NamedTuple):
     filename: str
     path: Path
     size_bytes: int
+    digest: str = ""
+    overflow_pages: tuple[int, ...] = ()
 
 
 class Pipeline:
@@ -425,18 +441,14 @@ class Pipeline:
         segs = self.deps.store.segments(job.id)
         if bad_source(segs):
             raise StageError(BAD_SOURCE_MESSAGE)
-        headings = [s.source for s in segs if (b := doc.block(s.block_ids[0])) and b.type is BlockType.TITLE]
-        candidate_sources = [
-            s.source for s in segs if not ((b := doc.block(s.block_ids[0])) and b.type is BlockType.REFERENCE)
-        ]
-        body = " ".join(s.source for s in segs)
+        body_sources, headings = glossary_texts(doc, segs)
         intro = next((s.source for s in segs if len(s.source.split()) >= 30 and s.source != doc.meta.abstract), "")
         async with chat_session(self.deps.chat_factory(secrets)) as chat:
             found = await extract_terms(chat, title=doc.meta.title, abstract=doc.meta.abstract,
                                         intro=intro, headings=headings,
-                                        candidates=frequent_candidates(candidate_sources))  # fmt: skip
+                                        candidates=frequent_candidates(body_sources))  # fmt: skip
             cost = add_cost(None, chat.model, found.usage)
-        terms = normalize_terms(found.terms, body, headings)
+        terms = normalize_terms(found.terms, body_sources, headings)
         if cost is not None:
             self._update(job, cost_cny=(job.cost_cny or 0) + cost)  # 术语抽取也计入任务花费
         found.terms = terms
@@ -446,7 +458,7 @@ class Pipeline:
         segs = self.deps.store.segments(job.id)
         if bad_source(segs):
             raise StageError(BAD_SOURCE_MESSAGE)
-        ctx, terms = await asyncio.to_thread(load_context, self.deps, job.id, job.options.user_terms)
+        ctx, selection = await asyncio.to_thread(load_context, self.deps, job.id, job.options.user_terms)
 
         def progress(done: int, total: int, note: str = "") -> None:
             message = f"翻译中 {done}/{total}" + (f"，{note}" if note else "")
@@ -455,8 +467,8 @@ class Pipeline:
         async with chat_session(self.deps.chat_factory(secrets)) as chat:
             out, report = await translate(
                 segs, chat=chat, cache=self.deps.cache, ctx=ctx,
-                lookup_terms=terms.match_library, lookup_user_terms=terms.match_user,
-                opts=TranslateOptions(quality=job.options.quality, concurrency=self._concurrency(secrets)),
+                lookup_term_hits=selection.match_segment, context_segments=segs,
+                opts=TranslateOptions(quality=job.options.quality, concurrency=self.llm_concurrency(secrets)),
                 on_progress=progress,
             )  # fmt: skip
             model = chat.model
@@ -471,7 +483,7 @@ class Pipeline:
                 f"{reasons}。已成功的译文已保留，点击重试只继续处理未完成段落"
             )
 
-    def _concurrency(self, secrets: Secrets) -> int:
+    def llm_concurrency(self, secrets: Secrets) -> int:
         return self.deps.llm_concurrency or default_concurrency(secrets.llm_base_url)
 
     async def _render(self, job: Job, _: Secrets) -> None:

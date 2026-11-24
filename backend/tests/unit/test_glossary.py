@@ -21,7 +21,7 @@ def test_parse_extraction():
 
 def test_normalize_terms():
     body = "We propose Adam. Adam uses moment estimates. RELATED WORK is not a term here."
-    terms = {"ADAM": "ADAM", "moment estimates": "矩估计", "Related Work": "相关工作", "missing term": "缺失"}
+    terms = {"Adam": "Adam", "moment estimates": "矩估计", "Related Work": "相关工作", "missing term": "缺失"}
     assert normalize_terms(terms, body, headings=["5 RELATED WORK"]) == {"Adam": "Adam", "moment estimates": "矩估计"}
 
 
@@ -140,29 +140,29 @@ def test_frequent_candidates_clean_and_merge_without_bridging_boundaries():
         "<b>Silver</b> <i>chamber</i>. Chambers. Box. Boxes. Colony. Colonies. Tile. Tiles. "
         "Paper study section figure table method result results proposed based using shown used however therefore thus "
         "be been being respectively moreover furthermore additionally "
-        "et al. The and A 48 q4. frost, ring; frost <m1/> ring; frost 2 ring. Glass casing."
+        "et al. The and A 48 10ms. frost, ring; frost <m1/> ring; frost 2 ring. Glass casing."
     )
     candidates = frequent_candidates([repeated] * 4 + ["silver chamber", "frost", "ring"])
     assert set(candidates) == {
-        "silver",
+        "Silver",
         "chamber",
-        "box",
-        "colony",
-        "tile",
+        "Box",
+        "Colony",
+        "Tile",
         "frost",
         "ring",
-        "silver chamber",
-        "glass casing",
+        "Silver chamber",
+        "Glass casing",
     }
     assert frequent_candidates(["glass casing"] * 2) == ()
     assert frequent_candidates(["glass casing"] * 3) == ("glass casing",)
     assert frequent_candidates(["glass"] * 5) == ("glass",)
 
 
-def test_frequent_candidates_cap_each_group_at_twenty_five():
+def test_frequent_candidates_cap_ordinary_words_and_phrases():
     words = [f"cell{chr(97 + i // 26)}{chr(97 + i % 26)}" for i in range(30)]
     candidates = frequent_candidates([f"shell {word}" for i, word in enumerate(words) for _ in range(i + 5)])
-    assert len(candidates) == len(set(candidates)) == 50
+    assert len(candidates) == len(set(candidates)) == 45
     assert "cellbd" in candidates and "shell cellbd" in candidates
     assert "cellaa" not in candidates and "shell cellaa" not in candidates
 

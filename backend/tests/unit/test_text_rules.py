@@ -1,7 +1,11 @@
+import json
+from pathlib import Path
+
 from pdftr.domain.chars import Char
 from pdftr.domain.geometry import Rect
-from pdftr.domain.ir import PageKind
-from pdftr.domain.text import is_bad_char
+from pdftr.domain.ir import BlockType, PageKind, Segment
+from pdftr.domain.llm import ChatResult
+from pdftr.domain.text import is_bad_char, normalize_term_key
 from pdftr.extraction.chars import _font_is_bold, _font_is_italic
 from pdftr.extraction.classify import classify
 from pdftr.fusion.align import align
@@ -151,3 +155,18 @@ def test_classify():
     assert classify([], image_coverage=0.0) is PageKind.NATIVE  # 空白页
     garbled = [_ch("", i * 6) for i in range(30)] + text[:10]
     assert classify(garbled, image_coverage=0.0) is PageKind.GARBLED
+
+
+def test_normalize_term_key_matches_shared_fixture():
+    fixture = Path(__file__).resolve().parents[3] / "frontend" / "src" / "shared" / "text" / "term-key.fixture.json"
+    cases = json.loads(fixture.read_text(encoding="utf-8"))
+    assert len(cases) >= 20
+    for case in cases:
+        assert normalize_term_key(case["term"]) == case["expected"], case
+
+
+def test_q4_shared_domain_defaults():
+    seg = Segment(id="s0", job_id="j1", block_ids=["p0-b0"], source="Hello")
+    assert seg.role is None
+    assert seg.model_copy(update={"role": BlockType.TITLE}).role is BlockType.TITLE
+    assert ChatResult(text="1|你好").compatibility_fallback is False

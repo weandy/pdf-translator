@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   findTerm,
+  findTermMatching,
   getTerms,
   planImport,
   removeTerm,
@@ -14,6 +15,34 @@ import {
   upsertTerms,
 } from "@/entities/glossary/model";
 import { readJSON } from "@/shared/storage/local";
+import fixture from "@/shared/text/term-key.fixture.json";
+import { normalizeTermKey } from "@/shared/text/termKey";
+
+describe("术语规范键", () => {
+  it.each(fixture)("与后端共用夹具一致 $term", ({ term, expected }) => {
+    expect(normalizeTermKey(term)).toBe(expected);
+  });
+
+  it("匹配 Unicode 大小写折叠与空白", () => {
+    expect(normalizeTermKey(" \u0085ẞ:Σ  ")).toBe("lit:ss:σ");
+    expect(normalizeTermKey("ქართული ı")).toBe("lit:ქართული ı");
+  });
+
+  it("面板查询优先同拼写，兼容复数和连字符", () => {
+    const entries = ["policy-gradient", "POLICY GRADIENTS", "SVM", "TCP/IP"].map((source) => ({
+      source,
+      target: source,
+      note: "",
+      updatedAt: "",
+    }));
+    expect(findTermMatching("policy gradients", entries)?.source).toBe("POLICY GRADIENTS");
+    expect(findTermMatching("policy gradient", entries)?.source).toBe("policy-gradient");
+    expect(findTermMatching("SVMs", entries)?.source).toBe("SVM");
+    expect(findTermMatching("svms", entries)).toBeUndefined();
+    expect(findTermMatching("TCP IP", entries)).toBeUndefined();
+    expect(findTerm("policy gradient", entries)).toBeUndefined();
+  });
+});
 
 describe("用户术语库", () => {
   it("按英文术语不分大小写覆盖，保存在浏览器里", () => {

@@ -42,6 +42,7 @@ class ChatResult(BaseModel):
     text: str
     finish_reason: str | None = None
     usage: ChatUsage = ChatUsage()
+    compatibility_fallback: bool = False  # 本次请求因思考/采样参数降级而偏离默认能力时为 True，不写入共享缓存
 
 
 class ChatError(RuntimeError):

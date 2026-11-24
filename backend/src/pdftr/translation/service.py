@@ -8,18 +8,24 @@
 import asyncio
 import hashlib
 import json
+import logging
+import re
 from collections.abc import Callable, Sequence
+from itertools import pairwise
 from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
-from pdftr.domain.ir import Segment, SegmentStatus
+from pdftr.domain.ir import BlockType, Segment, SegmentStatus
 from pdftr.domain.llm import ChatError, ChatModel, ChatOptions, ChatUsage
+from pdftr.domain.text import RICH_TAG, normalize_term_key
 from pdftr.translation.batching import (
     BATCH_TOKENS,
+    VALIDATION_VERSION,
     NumberedResponseError,
     bold_problems,
+    citation_problems,
     estimate_tokens,
     italic_problems,
     make_batches,
@@ -27,16 +33,27 @@ from pdftr.translation.batching import (
     parse_numbered,
     placeholder_problems,
     prose_problems,
+    rich_text_problems,
     script_problems,
+    script_value_problems,
 )
 from pdftr.translation.cost import add_cost
 from pdftr.translation.port import TranslationCache
-from pdftr.translation.prompt import PROMPT_VERSION, DocContext, expand_formulas, system_prompt, user_prompt
+from pdftr.translation.prompt import (
+    PROMPT_VERSION,
+    DocContext,
+    SegmentPromptMeta,
+    expand_formulas,
+    system_prompt,
+    user_prompt,
+)
 from pdftr.translation.segmenter import BAD_SOURCE_MESSAGE, bad_source
 
 Quality = Literal["default", "careful"]
 TermLookup = Callable[[str], dict[str, str]]
+TermHitsLookup = Callable[[str], tuple[dict[str, str], dict[str, str], dict[str, str]]]
 Progress = Callable[[int, int, str], None]  # （已完成, 总数, 补充说明；平常为空）
+log = logging.getLogger(__name__)
 
 
 def default_concurrency(base_url: str) -> int:
@@ -74,16 +91,65 @@ class TranslateReport(BaseModel):
 
 
 def _target_problems(source: str, target: str) -> list[str]:
+    if problems := placeholder_problems(source, target):
+        return ["公式占位符不一致：" + "；".join(problems)]
     errors: list[str] = []
     for label, check in (
-        ("公式占位符", placeholder_problems),
         ("粗体标记", bold_problems),
         ("斜体标记", italic_problems),
         ("上下标标记", script_problems),
     ):
         if problems := check(source, target):
             errors.append(f"{label}不一致：" + "；".join(problems))
-    return errors or prose_problems(source, target)
+    if structure := errors or rich_text_problems(target):
+        return structure
+    anchors = citation_problems(source, target) + script_value_problems(source, target)
+    return anchors or prose_problems(source, target)
+
+
+_BLOCK_PAGE = re.compile(r"p([0-9]{1,12})-b[0-9]+")
+_BACK_REFERENCE = re.compile(
+    r"^(?:This|These|That|Those|It|Its|They|Their|Such|"
+    r"The\s+(?:former|latter|above|aforementioned|same|following)|However,\s+(?:this|it|they))\b",
+    re.I,
+)
+_CONTEXT_FORMULA = re.compile(r"<m\d+/>")
+_SENTENCE_MARK = re.compile(
+    r"\b(?:e\.g\.|i\.e\.|et al\.|Fig\.|Eq\.|Sec\.|No\.|vs\.|Dr\.)(?=\s|$)|(?<=\d)\.(?=\d)|"
+    r"""(?P<end>[.!?]+["'”’）)」』]*(?:\s+|$)|[。！？]+["'”’）)」』]*\s*)""",
+    re.I,
+)
+
+
+def _last_sentence(source: str) -> str:
+    plain = RICH_TAG.sub("", _CONTEXT_FORMULA.sub("[公式]", source))
+    text = " ".join(plain.split())
+    start = 0
+    for mark in _SENTENCE_MARK.finditer(text):
+        if mark["end"] and mark.end() < len(text):
+            start = mark.end()
+    sentence = text[start:]
+    return f"…{sentence[-239:]}" if len(sentence) > 240 else sentence
+
+
+def _previous_context(segments: Sequence[Segment]) -> dict[str, str]:
+    contexts: dict[str, str] = {}
+    for previous, current in pairwise(segments):
+        if (
+            previous.role is not BlockType.TEXT
+            or current.role is not BlockType.TEXT
+            or not current.section
+            or current.section != previous.section
+            or not previous.block_ids
+            or not current.block_ids
+            or not _BACK_REFERENCE.match(RICH_TAG.sub("", current.source).lstrip())
+        ):
+            continue
+        before = _BLOCK_PAGE.fullmatch(previous.block_ids[-1])
+        after = _BLOCK_PAGE.fullmatch(current.block_ids[0])
+        if before and after and 0 <= int(after[1]) - int(before[1]) <= 1:
+            contexts[current.id] = _last_sentence(previous.source)
+    return contexts
 
 
 def cache_key(
@@ -96,6 +162,12 @@ def cache_key(
     domain: str = "",
     section: str = "",
     provider: str = "",
+    validation_version: int = VALIDATION_VERSION,
+    title: str = "",
+    abstract: str = "",
+    role: str = "",
+    prev_context: str = "",
+    user_terms: dict[str, str] | None = None,
 ) -> str:
     payload = json.dumps(
         [
@@ -109,6 +181,12 @@ def cache_key(
             domain,
             section,
             provider,
+            validation_version,
+            title,
+            abstract,
+            role,
+            prev_context,
+            sorted((user_terms or {}).items()),
         ],
         ensure_ascii=False,
         sort_keys=True,
@@ -121,7 +199,9 @@ class _Unit(BaseModel):
 
     source: str
     formulas: dict[str, str]
-    sections: list[str]
+    section: str
+    role: BlockType | None
+    prev_context: str
     seg_indexes: list[int]
     key: str
     user_terms: dict[str, str]
@@ -130,6 +210,11 @@ class _Unit(BaseModel):
     @property
     def expanded(self) -> str:
         return expand_formulas(self.source, self.formulas)
+
+    def meta(self, number: int) -> SegmentPromptMeta:
+        return SegmentPromptMeta(
+            number, self.section, self.role, self.prev_context, self.user_terms, self.reference_terms
+        )
 
 
 async def translate(
@@ -140,6 +225,8 @@ async def translate(
     ctx: DocContext,
     lookup_terms: TermLookup | None = None,
     lookup_user_terms: TermLookup | None = None,
+    lookup_term_hits: TermHitsLookup | None = None,
+    context_segments: Sequence[Segment] | None = None,
     opts: TranslateOptions | None = None,
     on_progress: Progress | None = None,
 ) -> tuple[list[Segment], TranslateReport]:
@@ -151,7 +238,9 @@ async def translate(
     out = [s.model_copy() for s in segments]
     report = TranslateReport(total=len(out), attempts={s.id: 0 for s in out})
 
-    doc_terms = {k.casefold(): v for k, v in ctx.terms.items()}
+    previous_context = _previous_context(context_segments if context_segments is not None else segments)
+    doc_terms = {(normalize_term_key(k), v) for k, v in ctx.terms.items()}
+    legacy_doc_keys = {k.casefold() for k in ctx.terms}
     provider = str(getattr(chat, "provider_id", ""))
     units: dict[str, _Unit] = {}
     for i, seg in enumerate(out):
@@ -160,21 +249,30 @@ async def translate(
         seg.quality = o.quality
         seg.translation_attempts = 0
         seg.failure_reason = ""
-        # 本段命中的词库与用户术语也算进缓存键：用户改了术语后不会拿到旧译文
-        mine = lookup_user_terms(seg.source) if lookup_user_terms else {}
-        references = lookup_terms(seg.source) if lookup_terms else {}
-        user_hits = {k: v for k, v in mine.items() if k.casefold() not in doc_terms}
-        locked = doc_terms | {k.casefold(): v for k, v in user_hits.items()}
-        reference_hits = {k: v for k, v in references.items() if k.casefold() not in locked}
+        if lookup_term_hits is not None:
+            mine, _, reference_hits = lookup_term_hits(seg.source)
+        else:
+            mine = lookup_user_terms(seg.source) if lookup_user_terms is not None else {}
+            references = lookup_terms(seg.source) if lookup_terms is not None else {}
+            locked = legacy_doc_keys | {k.casefold() for k in mine}
+            reference_hits = {k: v for k, v in references.items() if k.casefold() not in locked}
+        user_hits = {k: v for k, v in mine.items() if (normalize_term_key(k), v) not in doc_terms}
+        prev_context = previous_context.get(seg.id, "")
+        # 本文术语与额外用户术语的优先级不同，缓存指纹保留两套映射。
         key = cache_key(
             seg,
             chat.model,
-            ctx.terms | user_hits,
+            ctx.terms,
             o.quality,
             reference_terms=reference_hits,
             domain=ctx.domain,
             section=seg.section,
             provider=provider,
+            title=ctx.title,
+            abstract=ctx.abstract,
+            role=seg.role.value if seg.role is not None else "",
+            prev_context=prev_context,
+            user_terms=user_hits,
         )
         if o.use_cache and (hit := cache.get(key)) and not _target_problems(seg.source, hit):
             seg.target, seg.status = normalize_cjk_spacing(hit), SegmentStatus.DONE
@@ -185,7 +283,9 @@ async def translate(
             _Unit(
                 source=seg.source,
                 formulas=seg.formulas,
-                sections=[],
+                section=seg.section,
+                role=seg.role,
+                prev_context=prev_context,
                 seg_indexes=[],
                 key=key,
                 user_terms=user_hits,
@@ -193,8 +293,6 @@ async def translate(
             ),
         )
         unit.seg_indexes.append(i)
-        if seg.section and seg.section not in unit.sections:
-            unit.sections.append(seg.section)
 
     pending = list(units.values())
     done = 0
@@ -228,12 +326,14 @@ async def translate(
         deadline, exhausted = deadline_for(retry_deadline)
         if deadline is not None and (deadline in expired_deadlines or deadline <= loop.time()):
             return fail(batch, exhausted)
-        sections = list(dict.fromkeys(s for u in batch for s in u.sections))
-        mine = {k: v for u in batch for k, v in u.user_terms.items()}
-        extra = {k: v for u in batch for k, v in u.reference_terms.items()}
         hint = feedback.get(batch[0].key, "") if len(batch) == 1 else ""
+        numbered = list(enumerate(batch, start=1))
         user = user_prompt(
-            [(n + 1, u.expanded) for n, u in enumerate(batch)], sections, extra, mine, retry_feedback=hint
+            [(n, u.expanded) for n, u in numbered],
+            [],
+            {},
+            retry_feedback=hint,
+            scoped_meta=[u.meta(n) for n, u in numbered],
         )
         # 排队不计为模型尝试；有整次时限时，等待并发名额也必须受限。
         try:
@@ -253,6 +353,7 @@ async def translate(
                 for i in u.seg_indexes:
                     report.attempts[out[i].id] += 1
             report.requests += 1
+            log.debug("翻译请求段数=%d，估算输入 token=%d", len(batch), system_tokens + estimate_tokens(user))
             try:
                 result = await asyncio.wait_for(chat.complete(system, user, opts_), min(o.request_timeout_s, remaining))
             except TimeoutError:
@@ -276,7 +377,7 @@ async def translate(
             refused.extend(failed_batch)
             return []
         try:
-            got = parse_numbered(result.text, batch_size=len(batch))
+            got = parse_numbered(result.text, batch_size=len(batch), sources=[u.source for u in batch])
         except NumberedResponseError as e:
             return fail(batch, str(e), diagnostic=True)
         truncated = result.finish_reason in ("length", "max_tokens")
@@ -289,7 +390,7 @@ async def translate(
             errors = _target_problems(u.source, target) if target else []
             if target and not errors:
                 target = normalize_cjk_spacing(target)
-                if o.use_cache:
+                if o.use_cache and not result.compatibility_fallback:
                     cache.put(u.key, target)
                 for i in u.seg_indexes:
                     out[i].target, out[i].status = target, SegmentStatus.DONE
@@ -320,7 +421,14 @@ async def translate(
 
     if on_progress:
         on_progress(done, total_units, note)
-    batches = make_batches(pending, [estimate_tokens(u.expanded) for u in pending], o.batch_tokens)
+    system_tokens = estimate_tokens(system)
+    sizes = [
+        estimate_tokens(user_prompt([(n, u.expanded)], [], {}, scoped_meta=[u.meta(n)]))
+        for n, u in enumerate(pending, start=1)
+    ]
+    batches = make_batches(
+        pending, sizes, o.batch_tokens, sections=[u.section for u in pending], roles=[u.role for u in pending]
+    )
     failed = await run_all(batches, chat_opts)
     retry_deadline = loop.time() + o.retry_timeout_s
     for attempt in range(2, o.max_attempts + 1):

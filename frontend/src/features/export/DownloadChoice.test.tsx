@@ -103,6 +103,43 @@ describe("任务下载", () => {
     expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(2);
   });
 
+  it("用准备结果的快照链接下载，提示最多五个截断页码与总页数", async () => {
+    const downloadUrl = "/api/jobs/synthetic/export?mode=dual&side=right&snapshot=0123456789abcdef";
+    const withOverflow = { ...preparedPdf, download_url: downloadUrl, overflow_pages: [1, 2, 3, 4, 5, 7] };
+    vi.spyOn(api, "prepareExport").mockResolvedValue(withOverflow);
+    const click = vi.mocked(HTMLAnchorElement.prototype.click);
+    await render("overflow");
+    await download();
+    const status = host.querySelector('[role="status"]')!;
+    expect(status.textContent).toBe("已开始下载，第 1、2、3、4、5 页等共 6 页部分译文未写入 PDF");
+    expect(click).toHaveBeenCalledOnce();
+    expect((click.mock.contexts[0] as HTMLAnchorElement).getAttribute("href")).toBe(downloadUrl);
+
+    await select("mono");
+    expect(host.querySelector('[role="status"]')!.textContent).toBe("");
+  });
+
+  it("再次准备或失败时清除上次的截断提示", async () => {
+    let reject!: (reason: Error) => void;
+    const withOverflow = { ...preparedPdf, overflow_pages: [3, 7] };
+    vi.spyOn(api, "prepareExport")
+      .mockResolvedValueOnce(withOverflow)
+      .mockImplementationOnce(
+        () =>
+          new Promise((_, fail) => {
+            reject = fail;
+          }),
+      );
+    await render("overflow-retry");
+    const status = host.querySelector('[role="status"]')!;
+    await download();
+    expect(status.textContent).toBe("已开始下载，第 3、7 页部分译文未写入 PDF");
+    await act(async () => clickDownload());
+    expect(status.textContent).toBe("正在准备 PDF…");
+    await act(async () => reject(new Error("合成准备失败")));
+    expect(status.textContent).toBe("合成准备失败");
+  });
+
   it("返回任务列表后恢复所选格式，各卡片的格式独立", async () => {
     const prepare = vi.spyOn(api, "prepareExport").mockResolvedValue(preparedPdf);
     await render("saved-format");

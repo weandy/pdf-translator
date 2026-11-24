@@ -223,7 +223,7 @@ export function SegmentEditor({ segment, onChange, onClose, history, navigation 
           type="button"
           disabled={busy !== null}
           onClick={() => void run("careful")}
-          title="开启低强度思考重新翻译这一段，费用约为普通的 4 倍"
+          title="重新翻译这一段，思考强度依服务商和模型支持而定，费用按实际用量计"
         >
           {busy === "careful" ? "精修中…" : "精修"}
         </button>

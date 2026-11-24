@@ -371,8 +371,9 @@ def test_user_terms_reach_the_prompt_and_glossary_upload(client: TestClient):
         job = _wait(client, r.json()["id"])
         assert job["options"]["user_terms"]["function"] == "映射"
         prompts = "\n".join(seen)
-        # 自动抽取出的 function=函数 被用户的译法覆盖；用户术语按命中放进本批
-        assert "function=映射" in prompts and "function=函数" not in prompts and "next page=下一页" in prompts
+        # 自动抽取出的 function=函数 被用户的译法覆盖，额外术语绑定到命中的段号。
+        assert "function=映射" in prompts and "function=函数" not in prompts
+        assert re.search(r"^第\d+段用户术语（统一使用）：next page=下一页$", prompts, re.M)
 
         # 重翻时用浏览器里最新的术语库
         seg = client.get(f"/api/jobs/{job['id']}/document").json()["segments"][1]
@@ -572,25 +573,47 @@ def test_manual_edit_must_keep_every_formula(client: TestClient):
 def test_export_is_cached_resumable_and_refreshed_after_edits(client: TestClient):
     job = _wait(client, _upload(client).json()["id"])
     url = f"/api/jobs/{job['id']}/export"
-    prepared = client.post(f"/api/jobs/{job['id']}/export/prepare", params={"mode": "mono"})
+    mode = {"mode": "mono"}
+    prepared = client.post(f"{url}/prepare", params=mode)
     assert prepared.status_code == 200
     prepared_body = prepared.json()
-    assert prepared_body["download_url"].startswith(url) and prepared_body["size_bytes"] > 0
-    full = client.get(url, params={"mode": "mono"})
+    snapshot_url = prepared_body["download_url"]
+    assert re.fullmatch(rf"{re.escape(url)}\?mode=mono&side=right&snapshot=[0-9a-f]{{16}}", snapshot_url)
+    assert prepared_body["overflow_pages"] == []
+    full = client.get(snapshot_url)
     assert full.status_code == 200 and full.headers["accept-ranges"] == "bytes"
-    part = client.get(url, params={"mode": "mono"}, headers={"Range": "bytes=0-99"})
-    assert part.status_code == 206 and part.content == full.content[:100]  # 分段下载、续传
+    assert len(full.content) == prepared_body["size_bytes"] and full.content.startswith(b"%PDF")
+    part = client.get(snapshot_url, headers={"Range": "bytes=0-99"})
+    assert part.status_code == 206 and part.content == full.content[:100]
+    assert part.headers["content-range"] == f"bytes 0-99/{len(full.content)}"
+    assert client.get(url, params=mode).content == full.content
+    assert client.get(url, params={**mode, "snapshot": "0" * 16}).status_code == 404
     exports = client.app.state.container.pipeline.deps.artifacts.job_dir(job["id"]) / "exports"  # type: ignore[attr-defined]
     (previous,) = exports.glob("mono-right-*.pdf")
-    old_time = time.time() - 120
-    os.utime(previous, (old_time, old_time))
 
-    seg = next(s for s in client.get(f"/api/jobs/{job['id']}/document").json()["segments"] if not s["formulas"])
-    client.patch(f"/api/segments/{seg['id']}", json={"target": "导出缓存要更新"})
-    with pymupdf.open(stream=client.get(url, params={"mode": "mono"}).content, filetype="pdf") as pdf:
-        assert "导出缓存要更新" in "".join(str(p.get_text()) for p in pdf).replace("\n", "")
+    segs = client.get(f"/api/jobs/{job['id']}/document").json()["segments"]
+    seg = next(s for s in segs if s["source"] == "Figure 1: A caption.")
+    # 图注下方紧邻正文，长译文用完可借的空白后必须截断。
+    edited = client.patch(
+        f"/api/segments/{seg['id']}", json={"target": "导出缓存要更新" + "新增译文" * 200 + "截断末尾"}
+    )
+    assert edited.status_code == 200
+    assert client.get(snapshot_url).content == full.content
+    old_time = time.time() - 120
+    for path in (previous, previous.with_suffix(".meta.json")):
+        os.utime(path, (old_time, old_time))
+    updated = client.post(f"{url}/prepare", params=mode)
+    assert updated.status_code == 200
+    updated_body = updated.json()
+    assert updated_body["download_url"] != snapshot_url and updated_body["overflow_pages"] == [1]
+    assert client.post(f"{url}/prepare", params=mode).json() == updated_body
+    latest = client.get(updated_body["download_url"])
+    assert latest.status_code == 200 and latest.content != full.content
+    with pymupdf.open(stream=latest.content, filetype="pdf") as pdf:
+        text = str(pdf[0].get_text()).replace("\n", "")
+    assert "导出缓存要更新" in text and "截断末尾" not in text
     assert len(list(exports.glob("mono-right-*.pdf"))) == 1
-    assert not previous.exists()  # 超过保护期的旧缓存已清理
+    assert client.get(snapshot_url).status_code == 404
 
 
 def test_job_terms_and_batch_retranslate(client: TestClient):
@@ -670,7 +693,11 @@ def test_glossary_selection_matches_runner_retranslation_panel_and_cli(tmp_path,
         job_id = upload.json()["id"]
         job = _wait(client, job_id)
         assert job["status"] == "done", job
-        assert any("本批用户术语（统一使用）：next page=续页" in u for _, u in seen)
+        assert any(
+            (scope := re.search(r"^第(\d+)段用户术语（统一使用）：next page=续页$", user, re.M))
+            and f"{scope[1]}|Let " in user
+            for _, user in seen
+        )
         check_prompts("映射")
         artifact = container.pipeline.deps.artifacts.path(job_id, "glossary.json")
         assert json.loads(artifact.read_text(encoding="utf-8"))["use_library"] is use_library
@@ -683,7 +710,7 @@ def test_glossary_selection_matches_runner_retranslation_panel_and_cli(tmp_path,
         segment_ids = by_source["function"]["segment_ids"] + by_source["normal paragraph"]["segment_ids"]
         returned = client.post(
             f"/api/jobs/{job_id}/retranslate",
-            json={"segment_ids": segment_ids, "user_terms": {"FUNCTION": "函数对象"}},
+            json={"segment_ids": segment_ids, "user_terms": {"Function": "函数对象"}},
             headers=HEADERS,
         )
         assert returned.status_code == 200
@@ -706,7 +733,9 @@ def test_glossary_selection_matches_runner_retranslation_panel_and_cli(tmp_path,
 
     pdf = tmp_path / "paper.pdf"
     pdf.write_bytes(make_pdf())
-    monkeypatch.setattr(cli, "Settings", lambda: Settings(data_dir=tmp_path, glossary_sources=""))
+    monkeypatch.setattr(
+        cli, "Settings", lambda: Settings(data_dir=tmp_path, glossary_sources="", llm_protocol="openai")
+    )
     monkeypatch.setattr(cli, "OpenAICompatChat", lambda **_: TermChat())
     loaded = []
 

@@ -8,7 +8,11 @@ from collections import Counter
 from collections.abc import Sequence
 from difflib import SequenceMatcher
 
+from pdftr.domain.ir import BlockType
+from pdftr.domain.text import RICH_TAG
+
 BATCH_TOKENS = 1500
+VALIDATION_VERSION = 2
 _PLACEHOLDER = re.compile(r"<m\d+/>")
 _RICH_TAG = re.compile(r"<(/?)(b|i|sup|sub)>")
 
@@ -33,16 +37,33 @@ def estimate_tokens(text: str) -> int:
     return cjk + (len(text) - cjk) // 4 + 1
 
 
-def make_batches[T](items: Sequence[T], sizes: Sequence[int], limit: int = BATCH_TOKENS) -> list[list[T]]:
+def make_batches[T](
+    items: Sequence[T],
+    sizes: Sequence[int],
+    limit: int = BATCH_TOKENS,
+    *,
+    sections: Sequence[str] | None = None,
+    roles: Sequence[BlockType | None] | None = None,
+) -> list[list[T]]:
     batches: list[list[T]] = []
     cur: list[T] = []
     total = 0
-    for item, size in zip(items, sizes, strict=True):
-        if cur and total + size > limit:
+    cur_section = ""
+    for item, size, section, role in zip(
+        items,
+        sizes,
+        sections if sections is not None else ("",) * len(items),
+        roles if roles is not None else (None,) * len(items),
+        strict=True,
+    ):
+        new_section = role is BlockType.TITLE or (cur_section and section and section != cur_section)
+        if cur and (total + size > limit or new_section):
             batches.append(cur)
             cur, total = [], 0
+            cur_section = ""
         cur.append(item)
         total += size
+        cur_section = section or cur_section
     if cur:
         batches.append(cur)
     return batches
@@ -52,30 +73,46 @@ class NumberedResponseError(ValueError):
     """模型返回的编号无法可靠地匹配输入。"""
 
 
-def parse_numbered(text: str, *, batch_size: int | None = None) -> dict[int, str]:
+_NUMBERED = re.compile(r"^(\d+)\s*[|｜]\s*(.*)$")
+_PIPE_CONTINUATION = re.compile(r"^\d+\s+[|｜]\s+")
+
+
+def parse_numbered(text: str, *, batch_size: int | None = None, sources: Sequence[str] | None = None) -> dict[int, str]:
     """解析「编号|译文」。没有编号的行视为上一行的续行（模型偶尔会在段内换行）。"""
     out: dict[int, str] = {}
     last: int | None = None
     for raw in text.splitlines():
         line = raw.strip()
+        if line == "</translations>":
+            break
         if not line or line.startswith("```"):
             continue
-        m = re.match(r"^(\d+)\s*[|｜]\s*(.*)$", line)
-        if m:
-            digits = m.group(1)
+        match = _NUMBERED.match(line)
+        if match:
+            digits = match[1]
             # 防止极长的数字触发 Python 的整数转换限制。
             if len(digits) > 12:
                 raise NumberedResponseError("编号越界")
             number = int(digits)
-            if number < 1 or (batch_size is not None and number > batch_size):
-                raise NumberedResponseError(f"编号 {number} 越界")
-            if number in out:
-                raise NumberedResponseError(f"编号 {number} 重复")
-            if last is not None and number < last:
-                raise NumberedResponseError(f"编号 {number} 乱序")
-            last = number
-            out[last] = m.group(2).strip()
-        elif last is not None:
+            out_of_bounds = number < 1 or (batch_size is not None and number > batch_size)
+            if not (
+                last is not None
+                and (number <= last or out_of_bounds)
+                and _PIPE_CONTINUATION.match(line)
+                and sources is not None
+                and last <= len(sources)
+                and ("|" in sources[last - 1] or "｜" in sources[last - 1])
+            ):
+                if out_of_bounds:
+                    raise NumberedResponseError(f"编号 {number} 越界")
+                if number in out:
+                    raise NumberedResponseError(f"编号 {number} 重复")
+                if last is not None and number < last:
+                    raise NumberedResponseError(f"编号 {number} 乱序")
+                last = number
+                out[last] = match[2].strip()
+                continue
+        if last is not None:
             previous = out[last]
             space = " " if re.search(r"[A-Za-z0-9]$", previous) and re.match(r"[A-Za-z0-9]", line) else ""
             out[last] = f"{previous}{space}{line}"
@@ -100,26 +137,58 @@ def placeholder_problems(source: str, target: str) -> list[str]:
 
 
 def _emphasis_problems(source: str, target: str, *, tag: str, label: str) -> list[str]:
-    """校验一种富文本强调标签的数量、配对、嵌套和非空内容。"""
+    """上下标固定对数，局部粗斜体允许调整跨度。"""
     expected = source.count(f"<{tag}>")
+    opened, closed = target.count(f"<{tag}>"), target.count(f"</{tag}>")
     if not expected:
-        opened, closed = target.count(f"<{tag}>"), target.count(f"</{tag}>")
         if opened or closed:
             if opened != closed:
                 return [f"译文新增{label}标记且未完整配对"]
             return [f"译文新增{label}标记：原文没有{label}，实际 {opened} 对"]
         return []
-    opened, closed = target.count(f"<{tag}>"), target.count(f"</{tag}>")
     if opened != closed:
         return [f"{label}标记未完整配对"]
-    if opened < expected:
-        return [f"{label}标记丢失：需要 {expected} 对，实际 {opened} 对"]
-    if opened > expected:
+    script = tag in ("sup", "sub")
+    required = expected if script else 1
+    if opened < required:
+        return [f"{label}标记丢失：至少需要 {required} 对，实际 {opened} 对"]
+    if script and opened > expected:
         return [f"{label}标记多出：需要 {expected} 对，实际 {opened} 对"]
-    return rich_text_problems(target, tag=tag)
+    if problems := rich_text_problems(target, tag=tag):
+        return problems
+    if not script:
+        outside = _outside_emphasis(source, tag)
+        words = re.findall(r"[A-Za-z]{2,}", _PLACEHOLDER.sub(" ", outside))
+        outside_words = sum(w.lower() not in _EMPHASIS_STOP_WORDS for w in words) + len(_PLACEHOLDER.findall(outside))
+        if outside_words >= 2 and not _EMPHASIS_PUNCTUATION.sub("", _outside_emphasis(target, tag)):
+            return [f"{label}覆盖了整段正文"]
+    return []
 
 
 _TAG_LABELS = {"b": "粗体", "i": "斜体", "sup": "上标", "sub": "下标"}
+_EMPHASIS_STOP_WORDS = {
+    "a", "an", "the", "in", "on", "of", "to", "for", "and", "or", "is", "are", "was", "were", "be", "by", "at", "as",
+}  # fmt: skip
+_EMPHASIS_PUNCTUATION = re.compile(r"""[\s，。、；：？！（）()\[\]「」『』“”"'—–,.;:?!-]""")
+
+
+def _outside_emphasis(text: str, tag: str) -> str:
+    outside = []
+    depth = cursor = 0
+    for match in _RICH_TAG.finditer(text):
+        if match[2] != tag:
+            continue
+        if not match[1]:
+            if depth == 0:
+                outside.append(text[cursor : match.start()])
+            depth += 1
+        elif depth:
+            depth -= 1
+            if depth == 0:
+                cursor = match.end()
+    if depth == 0:
+        outside.append(text[cursor:])
+    return " ".join(RICH_TAG.sub("", part) for part in outside)
 
 
 def rich_text_problems(target: str, *, tag: str | None = None) -> list[str]:
@@ -128,6 +197,8 @@ def rich_text_problems(target: str, *, tag: str | None = None) -> list[str]:
     for match in _RICH_TAG.finditer(target):
         closing, current = match.group(1), match.group(2)
         if not closing:
+            if tag == current and tag in ("b", "i") and any(t == tag for t, _ in stack):
+                return [f"{_TAG_LABELS[current]}标记不能自我嵌套"]
             stack.append((current, match.end()))
             continue
         if stack and stack[-1][0] == current:
@@ -145,17 +216,12 @@ def rich_text_problems(target: str, *, tag: str | None = None) -> list[str]:
 
 
 def bold_problems(source: str, target: str) -> list[str]:
-    """原文含局部粗体时，译文必须保留同样数量、成对且正确嵌套的非空强调。
-
-    原文没有粗体时，译文也不能凭空新增粗体。整块粗体正文在进入翻译
-    时不会生成 ``<b>`` 标签，模型若重新包住整段会让译文错误地变成粗体。
-    这里只能保证标记结构，强调内容的语义对应仍由翻译模型负责。
-    """
+    """校验局部粗体的拆合、配对及整段覆盖。"""
     return _emphasis_problems(source, target, tag="b", label="粗体")
 
 
 def italic_problems(source: str, target: str) -> list[str]:
-    """原文含局部斜体时，译文必须保留同样数量、成对且正确嵌套的非空强调。"""
+    """校验局部斜体的拆合、配对及整段覆盖。"""
     return _emphasis_problems(source, target, tag="i", label="斜体")
 
 
@@ -163,6 +229,186 @@ def script_problems(source: str, target: str) -> list[str]:
     return _emphasis_problems(source, target, tag="sup", label="上标") + _emphasis_problems(
         source, target, tag="sub", label="下标"
     )
+
+
+_FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
+_URL = r"(?i:https?://|www\.)\S+"
+_CITATION_BOUNDARY = re.compile(rf"{_URL}|{_PLACEHOLDER.pattern}")
+_SOURCE_BRACKETS = re.compile(r"\[([0-9０-９\s,;\-–—]{1,60})\]")
+_TARGET_BRACKETS = re.compile(r"\[([0-9０-９\s,;，、；\-–—]{1,60})\]|［([0-9０-９\s,;，、；\-–—]{1,60})］")
+_CITATION_SEPARATORS = re.compile(r"[,;，、；]")
+_CITATION_ITEM = re.compile(r"\s*([0-9]{1,4})(?:\s*[-–—]\s*([0-9]{1,4}))?\s*")
+_CITATION_PREFIX = re.compile(r"(?:(?<![A-Za-z])(?:Refs?\.|Citation)|参考文献|文献)$", re.I)
+_INDEX_NAMES = {
+    "arr", "vec", "mat", "seq", "idx", "dim", "buf", "mem", "ptr", "reg", "tab", "row", "col", "node", "edge", "tensor",
+    "layer",
+}  # fmt: skip
+_DATA_NAMES = {
+    "interval", "range", "vector", "list", "array", "matrix", "tuple", "shape", "size", "dims", "kernel", "stride",
+}  # fmt: skip
+_MATH_IN_SUBJECTS = {"value", "values", "lie", "lies", "lying", "fall", "falls", "falling", "sampled", "uniform"}
+_DATA_NAMES_ZH = ("区间", "范围", "数组", "向量", "矩阵")
+_ASCII_IDENTIFIER = re.compile(r"[A-Za-z0-9_]")
+
+type _Citation = int | tuple[int, int]
+
+
+def _citation_numbers(content: str) -> list[tuple[int, int | None]]:
+    parsed = []
+    for part in _CITATION_SEPARATORS.split(content.translate(_FULLWIDTH_DIGITS)):
+        item = _CITATION_ITEM.fullmatch(part)
+        if not item:
+            return []
+        start, end = int(item[1]), int(item[2]) if item[2] else None
+        if end is not None and end <= start:
+            return []
+        parsed.append((start, end))
+    return parsed
+
+
+def _citation_context(
+    text: str, start: int, end: int, *, target: bool, interval_like: bool = False
+) -> tuple[bool, int]:
+    left, right = start, end
+    while left and text[left - 1].isspace():
+        left -= 1
+    while right < len(text) and text[right].isspace():
+        right += 1
+    first, last = text[right : right + 1], text[left - 1 : left] if left else ""
+    word_start = left
+    while word_start and _ASCII_IDENTIFIER.fullmatch(text[word_start - 1]):
+        word_start -= 1
+    word = text[word_start:left]
+    name = word.lower()
+    index = (
+        bool(word and not word[0].isdigit())
+        and (len(word) == 1 or "_" in word or (left == start and any(c.isdigit() for c in word)))
+    ) or (left == start and (name in _INDEX_NAMES or last == ")"))
+    math_in = False
+    if name == "in" and interval_like:
+        prev_end = word_start
+        while prev_end and text[prev_end - 1].isspace():
+            prev_end -= 1
+        if prev_end and text[prev_end - 1] == "\x00":
+            math_in = True
+        else:
+            prev_start = prev_end
+            while prev_start and _ASCII_IDENTIFIER.fullmatch(text[prev_start - 1]):
+                prev_start -= 1
+            prev_word = text[prev_start:prev_end]
+            math_in = bool(prev_word and not prev_word[0].isdigit()) and (
+                len(prev_word) == 1 or "_" in prev_word or prev_word.lower() in _MATH_IN_SUBJECTS
+            )
+    data_context = name in _DATA_NAMES or math_in or (target and text.endswith(_DATA_NAMES_ZH, 0, left))
+    # 左括号也会排除替换 URL 后留下的 Markdown 链接目标。
+    excluded = (
+        index or data_context or first in ("=", "[", "［", "(") or last in ("=", "+", "-", "*", "/", "∈", "⊂", "⊆")
+    )
+    explicit = _CITATION_PREFIX.search(text, max(0, left - 12), left) is not None
+    return excluded, 9999 if explicit else 999
+
+
+def _citation_anchors(text: str, *, target: bool = False) -> tuple[Counter[_Citation], set[_Citation]]:
+    view = _CITATION_BOUNDARY.sub("\x00", RICH_TAG.sub("", text))
+    pattern = _TARGET_BRACKETS if target else _SOURCE_BRACKETS
+    groups = [(m.start(), m.end(), _citation_numbers(m[1] or m[2])) for m in pattern.finditer(view)]
+    confirmed: Counter[_Citation] = Counter()
+    excluded: set[_Citation] = set()
+    i = 0
+    while i < len(groups):
+        start, end, numbers = groups[i]
+        i += 1
+        if not numbers:
+            continue
+        # 相邻数字括号可表示多条引文，先合看两侧以区分多维索引和 [1][2]。
+        chain = [numbers]
+        while i < len(groups) and groups[i][0] == end and groups[i][2]:
+            _, end, numbers = groups[i]
+            chain.append(numbers)
+            i += 1
+        interval_like = (
+            len(chain) == 1
+            and len(chain[0]) == 2
+            and chain[0][0][1] is None
+            and chain[0][1][1] is None
+            and chain[0][0][0] < chain[0][1][0]
+        )
+        blocked, upper = _citation_context(view, start, end, target=target, interval_like=interval_like)
+        for numbers in chain:
+            valid = not blocked and all(1 <= a <= (b if b is not None else a) <= upper for a, b in numbers)
+            for a, b in numbers:
+                if b is None:
+                    anchors: Sequence[_Citation] = (a,)
+                elif b - a <= 30:
+                    anchors = range(a, b + 1)
+                else:
+                    anchors = ((a, b),)
+                if valid:
+                    confirmed.update(anchors)
+                else:
+                    excluded.update(anchors)
+    return confirmed, excluded
+
+
+def citation_problems(source: str, target: str) -> list[str]:
+    """只比对原文可确认引文的编号多重集，排除与数学或代码共用的歧义编号。"""
+    want, ambiguous = _citation_anchors(source)
+    if not want:
+        return []
+    got, _ = _citation_anchors(target, target=True)
+    for anchor in ambiguous & want.keys():
+        del want[anchor]
+        got.pop(anchor, None)
+    problems = []
+    for counts, detail in ((want - got, "缺少"), (got - want, "多出")):
+        for anchor, count in counts.items():
+            label = f"{anchor[0]}–{anchor[1]}" if isinstance(anchor, tuple) else str(anchor)
+            problems.append(f"{detail}引文 [{label}]（{count} 次）")
+    return problems
+
+
+_SCRIPT_STYLES = re.compile(r"</?[bi]>")
+_SCRIPT = re.compile(r"<(sup|sub)>([^<>]*)</\1>")
+_SCRIPT_TRANSLATION = _FULLWIDTH_DIGITS | str.maketrans("−–—－", "----")
+_SCRIPT_VALUE = re.compile(r"[+-]?[0-9]+(?:\.[0-9]+)?")
+_SUB_BASE = re.compile(r"(?<![A-Za-z])[A-Za-z]{1,2}$")
+_SUP_BASE = re.compile(r"(?<![A-Za-z])(?:m|cm|mm|km|s|ms|ns|Hz|kHz|MHz|GHz|kg|g|mg|K|Pa|R)$|[0-9]$")
+_YEAR_END = re.compile(r"(?:19|20)[0-9]{2}$")
+
+type _ScriptValue = tuple[str, str | None, str]
+
+
+def _script_values(text: str) -> Counter[_ScriptValue]:
+    view = _SCRIPT_STYLES.sub("", text).translate(_SCRIPT_TRANSLATION)
+    values: Counter[_ScriptValue] = Counter()
+    for match in _SCRIPT.finditer(view):
+        tag, payload = match[1], "".join(match[2].split())
+        if not _SCRIPT_VALUE.fullmatch(payload):
+            continue
+        end = match.start()
+        start = max(0, end - 5)
+        value = payload.removeprefix("+")
+        if tag == "sub":
+            base = _SUB_BASE.search(view, start, end)
+            values[tag, base[0] if base else None, value] += 1
+        elif payload.startswith(("+", "-")) or (
+            any(c in "123456789" for c in payload)
+            and _SUP_BASE.search(view, start, end)
+            and not _YEAR_END.search(view, start, end)
+        ):
+            values[tag, None, value] += 1
+    return values
+
+
+def script_value_problems(source: str, target: str) -> list[str]:
+    """结构校验通过后，比对具有明确定量语义的上下标。"""
+    want, got = _script_values(source), _script_values(target)
+    problems = []
+    for counts, detail in ((want - got, "缺少"), (got - want, "多出")):
+        for (tag, base, value), count in counts.items():
+            anchor = f"{base or ''}<{tag}>{value}</{tag}>"
+            problems.append(f"{detail}{_TAG_LABELS[tag]}数值 {anchor}（{count} 次）")
+    return problems
 
 
 _ENGLISH_WORD = re.compile(r"[A-Za-z]{2,}(?:'[A-Za-z]+)?")

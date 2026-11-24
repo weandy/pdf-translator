@@ -22,14 +22,24 @@ USAGE_DEEPSEEK = {
 
 
 def _chat(
-    dialect, status: int = 200, error: dict | None = None, *, finish_reason: str = "stop"
+    dialect,
+    status: int = 200,
+    error: dict | None = None,
+    *,
+    finish_reason: str = "stop",
+    replies: tuple[tuple[int, dict | None], ...] = (),
+    model: str = "m",
 ) -> tuple[OpenAICompatChat, list[dict]]:
     seen: list[dict] = []
+    pending = iter(replies)
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         seen.append(json.loads(request.content))
-        if status != 200:
-            return httpx2.Response(status, json={"error": error or {"message": "x"}}, headers={"retry-after-ms": "1"})
+        reply_status, reply_error = next(pending, (status, error))
+        if reply_status != 200:
+            return httpx2.Response(
+                reply_status, json={"error": reply_error or {"message": "x"}}, headers={"retry-after-ms": "1"}
+            )
         return httpx2.Response(200, json={
             "id": "c1", "object": "chat.completion", "created": 0, "model": "m",
             "choices": [
@@ -43,7 +53,7 @@ def _chat(
         http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
     )  # fmt: skip
     return OpenAICompatChat(
-        base_url="https://api.example/v1", api_key="k", model="m", dialect=dialect, client=client
+        base_url="https://api.example/v1/", api_key="k", model=model, dialect=dialect, client=client
     ), seen
 
 
@@ -74,6 +84,88 @@ def test_request_body(dialect, thinking, expect, absent):
     assert result.text == "1|译文"
     assert result.usage.cache_hit_tokens == 512 and result.usage.cache_miss_tokens == 1028
     assert result.usage.reasoning_tokens == 900
+
+
+def test_provider_fingerprint_and_generic_model_name():
+    chat, seen = _chat("generic", model="deepseek-reasoner")
+    official, _ = _chat("deepseek", model=chat.model)
+    assert chat.provider_id == "openai:generic:https://api.example/v1"
+    assert official.provider_id == "openai:deepseek:https://api.example/v1"
+    result = asyncio.run(chat.complete("s", "u", ChatOptions(thinking="low")))
+    assert not ({"reasoning_effort", "thinking"} & seen[0].keys())
+    assert seen[0]["temperature"] == 0.3 and not result.compatibility_fallback
+
+
+@pytest.mark.parametrize(
+    ("error", "removed", "semantic"),
+    [
+        ({"message": "Use max_completion_tokens instead of max_tokens"}, {"max_tokens"}, False),
+        ({"param": "reasoning_effort"}, {"reasoning_effort"}, True),
+        ({"message": "Unknown extra_body.thinking"}, {"thinking", "reasoning_effort"}, True),
+    ],
+)
+def test_confirmed_400_fallback_is_remembered(error, removed, semantic):
+    chat, seen = _chat("deepseek", replies=((400, error),))
+    opts = ChatOptions(thinking="low")
+
+    async def call_twice():
+        return [await chat.complete("s", "u", opts) for _ in range(2)]
+
+    results = asyncio.run(call_twice())
+    assert len(seen) == 3 and seen[1] == seen[2]
+    assert seen[0].keys() - seen[1].keys() == removed
+    assert all(result.compatibility_fallback is semantic for result in results)
+    if not semantic:
+        assert seen[1]["max_completion_tokens"] == seen[0]["max_tokens"]
+
+
+def test_sampling_fallback_only_marks_calls_that_would_send_temperature(caplog):
+    error = {"message": "Unsupported temperature. synthetic-remote-detail"}
+    chat, seen = _chat("deepseek", replies=((400, error),))
+
+    async def call_both():
+        return [await chat.complete("s", "u", ChatOptions(thinking=thinking)) for thinking in ("off", "low", "off")]
+
+    with caplog.at_level("INFO", logger="pdftr.translation.openai_compat"):
+        results = asyncio.run(call_both())
+    assert [r.compatibility_fallback for r in results] == [True, False, True]
+    assert len(seen) == 4 and all("temperature" not in body for body in seen[1:])
+    assert "protocol=openai flags=drop_temperature status=400" in caplog.text
+    assert "synthetic-remote-detail" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        {"param": "thinking", "message": "unknown field thinking"},
+        {"param": "temperature", "code": "context_length_exceeded"},
+        {"message": "prompt is too long; invalid max_tokens"},
+        {"message": "unexpected max_tokens_extra"},
+        {"message": "unknown unsupported max_completion_tokens"},
+        {"message": "info about temperature"},
+    ],
+)
+def test_400_ignores_unsent_fields_context_limits_and_inexact_signals(error):
+    chat, seen = _chat("generic", status=400, error=error)
+    opts = ChatOptions()
+    with pytest.raises(ChatError, match="HTTP 400") as caught:
+        asyncio.run(chat.complete("s", "u", opts))
+    assert not caught.value.retryable and len(seen) == 1
+    assert chat.request_kwargs(opts) == {"model": "m", "max_tokens": opts.max_tokens, "temperature": opts.temperature}
+
+
+@pytest.mark.parametrize("status", [400, 503])
+def test_fallback_request_has_no_sdk_retries_or_second_downgrade(status):
+    chat, seen = _chat(
+        "deepseek",
+        status=status,
+        error={"param": "temperature"},
+        replies=((400, {"param": "thinking"}),),
+    )
+    with pytest.raises(ChatError, match=f"HTTP {status}"):
+        asyncio.run(chat.complete("s", "u", ChatOptions()))
+    assert len(seen) == 2
+    assert "thinking" not in seen[1] and "temperature" in chat.request_kwargs(ChatOptions())
 
 
 @pytest.mark.parametrize(("status", "message"), [(401, "API Key 无效"), (429, "余额不足"), (500, "HTTP 500")])

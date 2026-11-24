@@ -691,6 +691,8 @@ export interface components {
             download_url: string;
             /** Size Bytes */
             size_bytes: number;
+            /** Overflow Pages */
+            overflow_pages?: number[];
         };
         /**
          * FormulaOut
@@ -1686,6 +1688,7 @@ export interface operations {
             query?: {
                 mode?: "mono" | "dual";
                 side?: "left" | "right";
+                snapshot?: string | null;
             };
             header?: never;
             path: {

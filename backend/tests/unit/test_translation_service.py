@@ -75,12 +75,13 @@ def test_translate_dedup_retry_and_cache():
     assert out[0].target == "译:Let <m1/> be a function."  # 第一次丢了占位符，重试后通过
     assert out[1].target == out[2].target  # 相同原文只翻一次
     assert report.translated == 4 and report.failed == 0 and report.cached == 0
-    assert report.requests == 2  # 一批 + 一次单段重试
+    assert report.requests == 3  # 两章各翻一批，另有一次单段补救
     first_user = chat.calls[0][0]
     assert "<m1>f(x)</m1>" in first_user  # 模型能看到公式内容
-    assert "本批段落所在章节：2 Method；3 Results" in first_user
+    assert "第1段章节：2 Method" in first_user and "3 Results" not in first_user
+    assert "本批所在章节：3 Results" in chat.calls[1][0]
     assert first_user.count("A repeated sentence here.") == 1
-    assert report.cost_cny is not None and report.usage.prompt_tokens == 200
+    assert report.cost_cny is not None and report.usage.prompt_tokens == 300
 
     # 第二次：全部命中缓存，不再调用模型
     chat2 = FakeChat()
@@ -551,8 +552,8 @@ PROSE_TRANSLATION = "当空气冷却时，仪器记录随时间发生的变化�
         ("Use <b>X<sub>1</sub></b>.", "使用 <b>X<sub>1</b></sub>。", "使用 <b>X<sub>1</sub></b>。", "嵌套"),
         (
             PROSE + " [12] (Author et al., 2020) https://example.test/test /tmp/example",
-            PROSE,
-            "仪器记录降温过程的变化，以便与试验前的测量值比较。",
+            PROSE + " [12]",
+            "仪器记录降温过程的变化，以便与试验前的测量值比较[12]。",
             "照抄",
         ),
         (PROSE, "温度。", "记录降温变化并与试验前的测量值比较。", "缩水"),

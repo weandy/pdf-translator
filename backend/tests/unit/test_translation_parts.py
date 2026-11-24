@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
 from pdftr.domain.llm import ChatUsage
-from pdftr.pipeline.usecases import EXPORT_CACHE_VERSION
 from pdftr.rendering.typeset import normalize_cjk_spacing as normalize_export_spacing
 from pdftr.translation.batching import (
     bold_problems,
@@ -45,7 +44,7 @@ def test_bold_structure_rejects_added_emphasis_and_checks_source_emphasis():
     assert bold_problems(source, "一个<b><sup>重要</sup></b>细节。") == []
     assert "丢失" in bold_problems(source, "一个重要细节。")[0]
     assert "配对" in bold_problems(source, "一个<b>重要细节。")[0]
-    assert "多出" in bold_problems(source, "一个<b>重要</b><b>细节</b>。")[0]
+    assert bold_problems(source, "一个<b>重要</b><b>细节</b>。") == []
     assert "嵌套" in bold_problems(source, "一个</b>重要<b>细节。")[0]
     assert "嵌套" in bold_problems(source, "一个<b><sup>重要</b></sup>细节。")[0]
     assert "没有内容" in bold_problems(source, "<b> </b>一个重要细节。")[0]
@@ -69,7 +68,7 @@ def test_prompts():
     sys_p = system_prompt(DocContext(title="T", domain="NLP", abstract="A", terms={"encoder": "编码器"}))
     assert "论文标题：T" in sys_p and "encoder=编码器" in sys_p and "<m1>O(1)</m1>" in sys_p
     user = user_prompt([(1, "x"), (2, "y")], ["3 Model"], {"attention": "注意力"})
-    assert PROMPT_VERSION == "v4" and EXPORT_CACHE_VERSION == 9
+    assert PROMPT_VERSION == "v5"
     assert "本文术语表（全文统一使用）" in sys_p
     assert "Problem statement" in sys_p and "Available online" in sys_p and "「等」" in sys_p
     assert user.splitlines() == [

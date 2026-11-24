@@ -7,7 +7,7 @@
 """
 
 import re
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 
 from pdftr.domain.document_name import paper_title_blocks
 from pdftr.domain.ids import segment_id
@@ -17,10 +17,22 @@ from pdftr.domain.text import INLINE_ABSTRACT, PUBLICATION_DATE, RICH_TAG, SECTI
 # MinerU 会把序数词的上标（如 1^{st}、2^{nd}）识别成公式；模型会正确地把它译成“一阶”“二阶”，
 # 占位符随之“消失”导致校验失败（M3 实测）。这类公式还原成普通文字再翻译。
 _ORDINAL = re.compile(r"^(\d+)(st|nd|rd|th)$")
+_ORDINAL_OPERATORS = tuple("=+-*/<>≤≥≈×·")
 
 MIN_WORDS = 1  # 没有英文单词（纯数字、符号）的块不翻译；单词标题如 “Introduction” 要翻
 _FORMAT = RICH_TAG
 _PLACEHOLDER = re.compile(r"<m\d+/>")
+_WORD = r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*"
+_INLINE_WORD = re.compile(rf"(?<![\w\u00ad-]){_WORD}(?![\w\u00ad-])")
+_BREAK_LEFT = re.compile(rf"(?<![\w\u00ad-])({_WORD})([-\u00ad])\Z")
+_BREAK_RIGHT = re.compile(rf"(?=[a-z]){_WORD}")
+_BREAK_MARK = re.compile(r"[-\u00ad]((?:</(?:b|i|sup|sub)>)*\Z)")
+_URL_HINT = re.compile(r"[/@]|\bwww\.|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[-?#]|$)", re.I)
+_COMPOUND_PREFIXES = frozenset({"self", "off", "cross", "zero", "few", "well", "half", "quasi", "pseudo"})
+_WORD_SUFFIXES = frozenset(
+    {"ing", "ed", "er", "est", "es", "ly", "ish", "al", "ize", "ism", "ness", "ment", "tion", "sion", "ity",
+     "ers", "ings", "ies", "ful", "less"}
+)  # fmt: skip
 _FRONT_HEADINGS = {"highlights", "articleinfo", "abstract", "keywords", "introduction"}
 _CAPTION_PREFIX = re.compile(r"^(?:fig(?:ure)?|table|algorithm|scheme)\b", re.I)
 _SPACED_TITLE = re.compile(r"[A-Za-z](?:[ \t]+[A-Za-z]){3,}")
@@ -63,21 +75,68 @@ def _merge_emphasis(text: str) -> str:
     return _merge_italic(_merge_bold(text))
 
 
-def _join(prev: str, nxt: str) -> str:
+def _break_parts(prev: str, nxt: str) -> tuple[str, str, str] | None:
+    left = _BREAK_LEFT.search(prev)
+    right = _BREAK_RIGHT.match(nxt)
+    if left is None or right is None:
+        return None
+    if _URL_HINT.search(_PLACEHOLDER.sub(" ", prev).split()[-1]):
+        return None
+    return left[1], left[2], right[0]
+
+
+def _join(prev: str, nxt: str, *, hyphenated: Collection[str] = (), joined: Collection[str] = ()) -> str:
     """拼接两行文字，处理行尾断词。"""
     if not prev:
         return nxt
     if not nxt:
         return prev
     plain_prev, plain_next = _FORMAT.sub("", prev), _FORMAT.sub("", nxt)
-    m = re.search(r"([A-Za-z][\w-]*)-$", plain_prev)
-    if m and plain_next and plain_next[0].islower():
-        word = m.group(1)
-        if "-" in word:  # 复合词在连字符处换行：保留连字符
+    parts = _break_parts(plain_prev, plain_next)
+    if parts is None:
+        return _merge_emphasis(f"{prev} {nxt}")
+    left, mark, right = parts
+    if mark == "-":
+        if "-" in left or len(left) == 1 or any(c.isdigit() for c in left):
             return _merge_emphasis(prev + nxt)
-        # 粗体结束标签可能位于断词连字符后面，删字符时保留样式标签。
-        return _merge_emphasis(re.sub(r"-((?:</(?:b|i|sup|sub)>)*$)", r"\1", prev) + nxt)
-    return _merge_emphasis(f"{prev} {nxt}")
+        left, right = left.lower(), right.lower()
+        if f"{left}-{right}" in hyphenated or (
+            f"{left}{right}" not in joined
+            and left in _COMPOUND_PREFIXES
+            and len(right) >= 3
+            and right not in _WORD_SUFFIXES
+        ):
+            return _merge_emphasis(prev + nxt)
+    # 样式标签可能位于断词字符后面，删除时保留这些闭合标签。
+    return _merge_emphasis(_BREAK_MARK.sub(r"\1", prev) + nxt)
+
+
+def _inline_words(blocks: Iterable[Block]) -> tuple[set[str], set[str]]:
+    hyphenated: set[str] = set()
+    joined: set[str] = set()
+    last_lines: dict[str, str] = {}
+    for block in blocks:
+        lines: dict[int, list[str]] = {}
+        for span in block.spans:
+            piece = _FORMAT.sub("", span.text).strip() if span.kind == "text" else "<m0/>"
+            if piece:
+                lines.setdefault(span.line, []).append(piece)
+        prev = last_lines.get(block.continues_from, "") if block.continues_from else ""
+        for line in sorted(lines):
+            text = " ".join(lines[line])
+            # 换行后的首段可能属于上一行的断词，证据只取完整的行内词形。
+            parts = _break_parts(prev, text)
+            start = len(parts[2]) if parts else 0
+            for token in text[start:].split():
+                if _URL_HINT.search(token) or _PLACEHOLDER.fullmatch(token):
+                    continue
+                for match in _INLINE_WORD.finditer(token):
+                    word = match[0].lower()
+                    (hyphenated if "-" in word else joined).add(word)
+            prev = text
+        if lines and _BREAK_LEFT.search(prev):
+            last_lines[block.id] = prev
+    return hyphenated, joined
 
 
 def _span_source(span: Span, *, inline_bold: bool, inline_italic: bool) -> str:
@@ -125,12 +184,20 @@ def _span_source(span: Span, *, inline_bold: bool, inline_italic: bool) -> str:
     return "".join(pieces)
 
 
-def textual_formula(latex: str, before: str = "") -> str | None:
+def textual_formula(latex: str, before: str = "", after: str = "") -> str | None:
     """回收有明确文本语法的误标，正体或粗体单位还要求前面有数值。"""
     compact = "".join(latex.split())
     plain = re.sub(r"\\(mathrm|text|textrm)|[{}^]", "", compact)
-    if _ORDINAL.fullmatch(plain):
-        return plain
+    if ordinal := _ORDINAL.fullmatch(plain):
+        # 仅需末两位。保留算式中的幂和与数字不配对的后缀。
+        last_two = int(ordinal[1][-2:])
+        suffix = "th" if 11 <= last_two <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(last_two % 10, "th")
+        if (
+            ordinal[2] == suffix
+            and not _FORMAT.sub("", before).rstrip().endswith(_ORDINAL_OPERATORS)
+            and not _FORMAT.sub("", after).lstrip().startswith(_ORDINAL_OPERATORS)
+        ):
+            return plain
     if number := _NUMBER_MARK.fullmatch(compact):
         return number.group(1) or number.group(2)
     reference = _REFERENCE_DELIMITERS.sub("", _TEXT_MACRO.sub(r"\1", compact))
@@ -145,15 +212,26 @@ def textual_formula(latex: str, before: str = "") -> str | None:
 
 
 def _textual_formulas(block: Block) -> dict[str, str]:
+    if not block.formulas:
+        return {}
     latex = {f.key: f.latex for f in block.formulas}
     recovered: dict[str, str] = {}
+    following = ""
+    after: dict[int, str] = {}
+    for i in range(len(block.spans) - 1, -1, -1):
+        span = block.spans[i]
+        if span.kind == "formula":
+            after[i] = following
+            following = ""
+        elif _FORMAT.sub("", span.text).strip():
+            following = span.text
     before = ""
-    for span in block.spans:
+    for i, span in enumerate(block.spans):
         if span.kind == "formula" and span.formula:
-            if (text := textual_formula(latex.get(span.formula, ""), before)) is not None:
+            if (text := textual_formula(latex.get(span.formula, ""), before, after[i])) is not None:
                 recovered[span.formula] = text
             before = ""
-        elif span.text.strip():
+        elif _FORMAT.sub("", span.text).strip():
             before = span.text
     return recovered
 
@@ -168,7 +246,14 @@ def _restore_title(text: str) -> str:
     return restored
 
 
-def block_source(block: Block, key_map: dict[str, str], recovered: dict[str, str] | None = None) -> str:
+def block_source(
+    block: Block,
+    key_map: dict[str, str],
+    recovered: dict[str, str] | None = None,
+    *,
+    hyphenated: Collection[str] = (),
+    joined: Collection[str] = (),
+) -> str:
     """块内片段按行拼成一段文字；行内公式换成重排后的占位符（能写成文字的直接写文字）。"""
     if recovered is None:
         recovered = _textual_formulas(block)
@@ -185,7 +270,7 @@ def block_source(block: Block, key_map: dict[str, str], recovered: dict[str, str
             lines.setdefault(s.line, []).append(piece)
     text = ""
     for li in sorted(lines):
-        text = _join(text, _merge_emphasis(" ".join(lines[li])))
+        text = _join(text, _merge_emphasis(" ".join(lines[li])), hyphenated=hyphenated, joined=joined)
     text = re.sub(r" +(?=(?:[,;:.)](?:\s|$)|['’]s\b))|(?<=[(\[]) +(?=<m\d+/>)", "", text)
     title = _restore_title(text.strip()) if block.type is BlockType.TITLE else text
     return re.sub(r"\s+", " ", title).strip()
@@ -278,13 +363,9 @@ def segment(
     page_set = set(pages) if pages is not None else None
     blocks = doc.blocks()
     skip = front_matter_ids(doc)
-    selected = {
-        b.id
-        for b in blocks
-        if (page_set is None or b.page in page_set)
-        and b.id not in skip
-        and _wanted(b, include_references, include_figures)
-    }
+    candidates = [b for b in blocks if b.id not in skip and _wanted(b, include_references, include_figures)]
+    inline_hyphenated, inline_joined = _inline_words(candidates)
+    selected = {b.id for b in candidates if page_set is None or b.page in page_set}
     next_of = {
         b.continues_from: b
         for b in blocks
@@ -295,8 +376,16 @@ def segment(
     for block in blocks:
         if block.type is BlockType.TITLE:
             recovered = _textual_formulas(block)
-            section = block_source(block, {f.key: f.key for f in block.formulas if f.key not in recovered},
-                                   recovered) or section  # fmt: skip
+            section = (
+                block_source(
+                    block,
+                    {f.key: f.key for f in block.formulas if f.key not in recovered},
+                    recovered,
+                    hyphenated=inline_hyphenated,
+                    joined=inline_joined,
+                )
+                or section
+            )
         if block.id not in selected or block.continues_from in selected:
             continue  # 续接块随链头一起处理
         chain = _chain(block, next_of)
@@ -315,9 +404,9 @@ def segment(
                 formulas[key] = f.latex
                 if f.located:  # 扫描页的公式没有精确位置，KaTeX 渲染失败时不裁原图
                     refs[key] = FormulaRef(page=b.page, bbox=f.bbox)
-            piece = block_source(b, key_map, recovered)
+            piece = block_source(b, key_map, recovered, hyphenated=inline_hyphenated, joined=inline_joined)
             parts.append(SegmentPart(block_id=b.id, chars=visible_length(piece)))
-            text = _join(text, piece)
+            text = _join(text, piece, hyphenated=inline_hyphenated, joined=inline_joined)
         if len(re.findall(r"[A-Za-z]{2,}", _PLACEHOLDER.sub(" ", _FORMAT.sub("", text)))) < MIN_WORDS:
             continue
         segments.append(
@@ -330,6 +419,7 @@ def segment(
                 formula_refs=refs,
                 parts=parts,
                 section=section if block.type is not BlockType.TITLE else "",
+                role=block.type,
             )
         )
     return segments

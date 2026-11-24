@@ -65,7 +65,10 @@ export function ExportDownloadLink({
       link.href = prepared.download_url;
       link.download = prepared.filename;
       link.click();
-      report("started");
+      const pages = prepared.overflow_pages ?? [];
+      const firstPages = pages.slice(0, 5).join("、");
+      const pageSummary = pages.length > 5 ? `第 ${firstPages} 页等共 ${pages.length} 页` : `第 ${firstPages} 页`;
+      report("started", pages.length ? `已开始下载，${pageSummary}部分译文未写入 PDF` : "");
     } catch (cause) {
       report("error", cause instanceof Error ? cause.message : "PDF 准备失败，请重试");
     } finally {
@@ -104,7 +107,7 @@ export function ExportDownloadStatus({
   const statusText = {
     idle: "",
     preparing: "正在准备 PDF…",
-    started: "已开始下载",
+    started: message || "已开始下载",
     error: message || "下载失败，请重试",
   }[state];
 

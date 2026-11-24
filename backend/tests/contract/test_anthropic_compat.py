@@ -12,16 +12,23 @@ from pdftr.translation.anthropic_compat import AnthropicChat
 
 
 def _chat(
-    model: str, status: int = 200, error: dict | None = None, *, stop_reason: str = "end_turn"
+    model: str,
+    status: int = 200,
+    error: dict | None = None,
+    *,
+    stop_reason: str = "end_turn",
+    replies: tuple[tuple[int, dict | None], ...] = (),
 ) -> tuple[AnthropicChat, list[httpx2.Request]]:
     seen: list[httpx2.Request] = []
+    pending = iter(replies)
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         seen.append(request)
-        if status != 200:
+        reply_status, reply_error = next(pending, (status, error))
+        if reply_status != 200:
             return httpx2.Response(
-                status,
-                json={"type": "error", "error": error or {"type": "x", "message": "x"}},
+                reply_status,
+                json={"type": "error", "error": reply_error or {"type": "x", "message": "x"}},
                 headers={"retry-after-ms": "1"},
             )
         if request.url.path.endswith("/models"):
@@ -50,9 +57,13 @@ def _chat(
     [
         ("claude-opus-5-5", "off", {"output_config": {"effort": "low"}}, ["thinking", "temperature"]),
         ("claude-sonnet-4-6", "low", {"thinking": {"type": "adaptive"}, "output_config": {"effort": "medium"}}, []),
+        ("claude-sonnet-4.6-20260217", "off", {"output_config": {"effort": "low"}}, ["thinking"]),
         # 认不出的模型（第三方兼容接口、旧模型）不发送思考参数
         ("deepseek-flash", "low", {}, ["thinking", "output_config", "temperature"]),
         ("claude-haiku-4-5", "low", {}, ["thinking", "output_config"]),
+        ("claude-opus-50", "low", {}, ["thinking", "output_config"]),
+        ("claude-sonnet-4-61", "low", {}, ["thinking", "output_config"]),
+        ("claude-unknown-5", "low", {}, ["thinking", "output_config"]),
     ],
 )
 def test_request_body(model, thinking, expect, absent):
@@ -66,6 +77,61 @@ def test_request_body(model, thinking, expect, absent):
     # 只取正文，跳过思考块；输入 token = 未缓存 + 缓存命中 + 写入缓存
     assert r.text == "1|译文"
     assert (r.usage.prompt_tokens, r.usage.cache_hit_tokens, r.usage.completion_tokens) == (550, 400, 30)
+
+
+@pytest.mark.parametrize(
+    ("error", "removed"),
+    [
+        ({"message": "Effort is not supported"}, "output_config"),
+        ({"param": "output_config"}, "output_config"),
+        ({"message": "Invalid thinking configuration"}, "thinking"),
+    ],
+)
+def test_400_fallback_only_marks_effective_downgrades(error, removed):
+    chat, seen = _chat("claude-sonnet-4-6", replies=((400, error),))
+
+    async def call_both():
+        return [await chat.complete("s", "u", ChatOptions(thinking=thinking)) for thinking in ("low", "low", "off")]
+
+    results = asyncio.run(call_both())
+    bodies = [json.loads(request.content) for request in seen]
+    assert len(bodies) == 4 and bodies[1] == bodies[2]
+    assert bodies[0].keys() - bodies[1].keys() == {removed}
+    assert [r.compatibility_fallback for r in results] == [True, True, removed == "output_config"]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        {"param": "thinking", "message": "unsupported thinking"},
+        {"param": "output_config", "type": "context_length_exceeded"},
+        {"message": "maximum context length reached; invalid output_config"},
+        {"message": "invalid output_config_backup and high_effort"},
+        {"message": "effort must be measured"},
+    ],
+)
+def test_400_does_not_retry_unsent_fields_context_limits_or_inexact_signals(error):
+    chat, seen = _chat("claude-opus-5-5", status=400, error=error)
+    opts = ChatOptions()
+    with pytest.raises(ChatError, match="HTTP 400") as caught:
+        asyncio.run(chat.complete("s", "u", opts))
+    assert not caught.value.retryable and len(seen) == 1
+    assert chat.request_kwargs(opts)["output_config"] == {"effort": "low"}
+
+
+@pytest.mark.parametrize("status", [400, 529])
+def test_fallback_request_has_no_sdk_retries_or_second_downgrade(status):
+    chat, seen = _chat(
+        "claude-sonnet-4-6",
+        status=status,
+        error={"param": "output_config"},
+        replies=((400, {"param": "thinking"}),),
+    )
+    opts = ChatOptions(thinking="low")
+    with pytest.raises(ChatError, match=f"HTTP {status}"):
+        asyncio.run(chat.complete("s", "u", opts))
+    assert len(seen) == 2
+    assert "thinking" not in json.loads(seen[1].content) and "output_config" in chat.request_kwargs(opts)
 
 
 def test_list_models_and_errors():

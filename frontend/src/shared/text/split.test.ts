@@ -14,6 +14,15 @@ describe("splitByParts", () => {
     expect(splitByParts("全部译文", [10])).toEqual(["全部译文"]);
   });
 
+  it("长整数仍按单码点切分，紧邻的小数保留完整", () => {
+    const digits = "7".repeat(12000);
+    expect(splitByParts(digits + " 3.14", [1, 1, 1])).toEqual([
+      digits.slice(0, 4002),
+      digits.slice(4002, 8003),
+      digits.slice(8003) + " 3.14",
+    ]);
+  });
+
   it("按原文长度比例在标点处拆开，拼回后与原文一致", () => {
     const text = "第一部分的内容比较长，一直写到这里。第二部分短。";
     const parts = splitByParts(text, [30, 10]);

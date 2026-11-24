@@ -24,6 +24,11 @@ def test_single_part_not_split():
     assert split_by_parts("全部译文", [10]) == ["全部译文"]
 
 
+def test_long_integer_stays_splittable_next_to_decimal():
+    digits = "7" * 12000
+    assert split_by_parts(digits + " 3.14", [1, 1, 1]) == [digits[:4002], digits[4002:8003], digits[8003:] + " 3.14"]
+
+
 def test_split_at_punctuation_by_source_ratio():
     text = "第一部分的内容比较长，一直写到这里。第二部分短。"
     parts = split_by_parts(text, [30, 10])
