@@ -1,0 +1,27 @@
+.expansion-form fieldset {
+  display: grid;
+  gap: .65rem;
+  margin: 0;
+  padding: .65rem 0;
+  border: 0;
+}
+.expansion-form fieldset label { display: block; }
+.expansion-form input:not([type="radio"]) {
+  display: block;
+  width: 100%;
+  margin-top: .3rem;
+}
+.expansion-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .4rem .8rem;
+  padding: .55rem 1rem;
+  border-bottom: 1px solid var(--rule);
+  background: var(--desk);
+  font-size: .85rem;
+}
+.expansion-banner [role="status"] { flex: 1 1 17rem; }
+.expansion-banner strong { display: block; }
+.expansion-banner progress { flex: 1 1 5rem; max-width: 12rem; }
+.expansion-banner button { white-space: nowrap; }

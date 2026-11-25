@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState, type MouseEvent, type ReactNode } from "react";
 
-import { api, exportUrl, type ExportMode } from "@/shared/api/client";
+import { exportUrl, type ExportMode } from "@/shared/api/client";
+
+import { downloadNative, preparePdfExport } from "./prepareExport";
 
 export type ExportDownloadState = "idle" | "preparing" | "started" | "error";
 
@@ -13,12 +15,17 @@ interface Props {
   className?: string;
   disabled?: boolean;
   showStatus?: boolean;
-  onStateChange?: (state: ExportDownloadState, message: string) => void;
+  onStateChange?: (state: ExportDownloadState, message: string, pages: number[]) => void;
+  renderOverflowPage?: (page: number) => ReactNode;
   onPreparingChange?: (preparing: boolean) => void;
 }
 
 /** 先准备服务端 PDF，再启动浏览器下载，避免慢生成时用户重复点击。 */
-export function ExportDownloadLink({
+export function ExportDownloadLink(props: Props) {
+  return <DownloadLink key={`${props.jobId}:${props.mode}:${props.side ?? "right"}`} {...props} />;
+}
+
+function DownloadLink({
   jobId,
   mode,
   side = "right",
@@ -29,21 +36,27 @@ export function ExportDownloadLink({
   showStatus = true,
   onStateChange,
   onPreparingChange,
+  renderOverflowPage,
 }: Props) {
   const statusId = useId();
-  const [feedback, setFeedback] = useState<{ state: ExportDownloadState; message: string }>({
+  const [feedback, setFeedback] = useState<{ state: ExportDownloadState; message: string; pages: number[] }>({
     state: "idle",
     message: "",
+    pages: [],
   });
+  const active = useRef<AbortController | null>(null);
   const releasePreparing = useRef<(() => void) | null>(null);
   const preparing = feedback.state === "preparing";
   const blocked = disabled || preparing;
 
-  useEffect(() => () => releasePreparing.current?.(), []);
+  useEffect(() => () => {
+    active.current?.abort();
+    releasePreparing.current?.();
+  }, []);
 
-  const report = (state: ExportDownloadState, message = "") => {
-    setFeedback({ state, message });
-    onStateChange?.(state, message);
+  const report = (state: ExportDownloadState, message = "", pages: number[] = []) => {
+    setFeedback({ state, message, pages });
+    onStateChange?.(state, message, pages);
   };
 
   const start = async (event: MouseEvent<HTMLAnchorElement>) => {
@@ -51,26 +64,25 @@ export function ExportDownloadLink({
     if (blocked || releasePreparing.current) return;
 
     // 同步加锁，避免界面重新渲染前的点击重复提交；卸载时释放上层格式选择。
+    const controller = new AbortController();
+    active.current = controller;
     const release = () => {
       if (releasePreparing.current !== release) return;
       releasePreparing.current = null;
+      active.current = null;
       onPreparingChange?.(false);
+      if (controller.signal.aborted) onStateChange?.("idle", "", []);
     };
     releasePreparing.current = release;
     onPreparingChange?.(true);
     report("preparing");
     try {
-      const prepared = await api.prepareExport(jobId, mode, side);
-      const link = document.createElement("a");
-      link.href = prepared.download_url;
-      link.download = prepared.filename;
-      link.click();
-      const pages = prepared.overflow_pages ?? [];
-      const firstPages = pages.slice(0, 5).join("、");
-      const pageSummary = pages.length > 5 ? `第 ${firstPages} 页等共 ${pages.length} 页` : `第 ${firstPages} 页`;
-      report("started", pages.length ? `已开始下载，${pageSummary}部分译文未写入 PDF` : "");
+      const prepared = await preparePdfExport({ jobId, mode, side }, controller.signal);
+      controller.signal.throwIfAborted();
+      downloadNative(prepared.download_url, prepared.filename);
+      report("started", "", prepared.overflow_pages ?? []);
     } catch (cause) {
-      report("error", cause instanceof Error ? cause.message : "PDF 准备失败，请重试");
+      if (!controller.signal.aborted) report("error", cause instanceof Error ? cause.message : "PDF 准备失败，请重试");
     } finally {
       release();
     }
@@ -90,7 +102,7 @@ export function ExportDownloadLink({
       >
         {children}
       </a>
-      {showStatus && <ExportDownloadStatus id={statusId} {...feedback} />}
+      {showStatus && <ExportDownloadStatus id={statusId} {...feedback} renderOverflowPage={renderOverflowPage} />}
     </>
   );
 }
@@ -99,10 +111,14 @@ export function ExportDownloadStatus({
   id,
   state,
   message,
+  pages = [],
+  renderOverflowPage,
 }: {
   id: string;
   state: ExportDownloadState;
   message: string;
+  pages?: number[];
+  renderOverflowPage?: (page: number) => ReactNode;
 }) {
   const statusText = {
     idle: "",
@@ -119,6 +135,13 @@ export function ExportDownloadStatus({
       aria-atomic="true"
     >
       {statusText}
+      {state === "started" && pages.length > 0 && (
+        <span>
+          ，第 {pages.slice(0, 8).map((page, index) => (
+            <span key={page}>{index > 0 && "、"}{renderOverflowPage?.(page) ?? page}</span>
+          ))} 页{pages.length > 8 && `等共 ${pages.length} 页`}部分译文未写入 PDF
+        </span>
+      )}
     </small>
   );
 }

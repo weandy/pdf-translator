@@ -6,7 +6,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { JobPage } from "@/pages/JobPage";
 import type { ReaderView } from "@/features/reader/ReaderView";
-import { api, type DocumentData, type Job, type SegmentData } from "@/shared/api/client";
+import { api, type DocumentData, type Expansion, type Job, type SegmentData } from "@/shared/api/client";
+
+import { ToastProvider } from "@/shared/feedback/Toast";
 
 const job: Job = {
   id: "synthetic",
@@ -16,6 +18,7 @@ const job: Job = {
   progress: 1,
   message: "",
   error: "",
+  content_version: 1,
   page_count: 1,
   model: "synthetic",
   cost_cny: null,
@@ -33,18 +36,21 @@ const job: Job = {
   },
 };
 
+let currentJob = job;
+const refresh = vi.fn();
+
 vi.mock("@/entities/job/model", () => ({
   useJob: () => ({
-    job,
+    job: currentJob,
     error: null,
-    refresh: vi.fn(),
+    refresh,
   }),
   STAGE_LABELS: {},
 }));
 vi.mock("@/entities/settings/model", () => ({ useSettings: () => ({ translationSide: "left" }) }));
 vi.mock("@/features/reader/ReaderView", () => ({
-  ReaderView: ({ heading, actions, spot }: ComponentProps<typeof ReaderView>) => (
-    <div data-spot={spot?.id} data-spot-count={spot?.n}>
+  ReaderView: ({ heading, actions, spot, backgroundUrl, onSelectSegment }: ComponentProps<typeof ReaderView>) => (
+    <div data-spot={spot?.id} data-spot-count={spot?.n} data-pdf={backgroundUrl} data-editable={Boolean(onSelectSegment)}>
       {heading}
       <p>阅读器</p>
       {actions}
@@ -83,6 +89,7 @@ describe("任务完成后的阅读数据等待", () => {
   afterAll(() => Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT"));
   beforeEach(() => {
     vi.useFakeTimers();
+    currentJob = job;
     host = document.createElement("div");
     root = createRoot(host);
     // 即使全局允许重试，此页面也必须关闭自动重试。
@@ -100,15 +107,61 @@ describe("任务完成后的阅读数据等待", () => {
     await act(async () =>
       root.render(
         <QueryClientProvider client={client}>
-          <MemoryRouter initialEntries={["/jobs/synthetic"]}>
-            <Routes>
-              <Route path="/jobs/:id" element={<JobPage />} />
-            </Routes>
-          </MemoryRouter>
+          <ToastProvider>
+            <MemoryRouter initialEntries={["/jobs/synthetic"]}>
+              <Routes>
+                <Route path="/jobs/:id" element={<JobPage />} />
+              </Routes>
+            </MemoryRouter>
+          </ToastProvider>
         </QueryClientProvider>,
       ),
     );
   }
+
+  it("保留阅读器挂载并在发布后切换阅读数据、背景和导出版本", async () => {
+    const prior = { ...job, page_count: 3, options: { ...job.options, pages: [0] }, content_version: 1 };
+    const op: Expansion = {
+      id: "operation", job_id: job.id, status: "running", stage: "translate", progress: 0.5,
+      requested_pages: [1, 2], merged_pages: [0, 1, 2], base_version: 1, target_version: 2,
+      message: "补翻中", error: "", cost_cny: null, fallback_used: false,
+      created_at: job.created_at, updated_at: job.created_at,
+    };
+    currentJob = prior;
+    client.setQueryData(["document", job.id, 1], { ...failedDoc(), job: prior });
+    const finalJob = { ...prior, content_version: 2, published_pages: [0, 1, 2], options: { ...job.options, pages: null } };
+    let resolveDocument: (doc: DocumentData) => void = () => undefined;
+    vi.spyOn(api, "expansionStatus").mockResolvedValue({ ...op, status: "done", stage: "done" });
+    const documentRequest = vi.spyOn(api, "document").mockResolvedValueOnce({ ...failedDoc(), job: prior })
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveDocument = resolve; }));
+    await render();
+    const reader = host.querySelector("[data-pdf]");
+    expect(reader?.getAttribute("data-pdf")).toContain("?v=1");
+    expect(host.textContent).toContain("仅翻译了 1/3 页");
+    await click("下载 PDF");
+    expect(document.querySelector(".download-menu[role=menu]")).not.toBeNull();
+    currentJob = { ...prior, active_expansion: op };
+    await render();
+    expect(host.querySelector("[data-pdf]")).toBe(reader);
+    expect(reader?.getAttribute("data-editable")).toBe("false");
+    expect(host.textContent).toContain("正在补翻 2 页");
+    expect(document.querySelector(".download-menu[role=menu]")).not.toBeNull();
+    currentJob = finalJob;
+    await render();
+    expect(host.querySelector("[data-pdf]")).toBe(reader);
+    expect(reader?.getAttribute("data-pdf")).toContain("?v=1");
+    expect(document.querySelector(".download-menu[role=menu]")).toBeNull();
+    await act(async () => {
+      resolveDocument({ ...failedDoc(), job: finalJob });
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(documentRequest).toHaveBeenCalledTimes(2);
+    expect(host.querySelector("[data-pdf]")).toBe(reader);
+    expect(reader?.getAttribute("data-pdf")).toContain("?v=2");
+    expect(reader?.getAttribute("data-editable")).toBe("true");
+    expect(document.querySelector(".toast-stack")?.textContent).toContain("补翻完成，已更新为 3/3 页译文");
+    expect(client.getQueryData(["revisions", job.id, 2])).toEqual([]);
+  });
 
   function checkDownloads() {
     expect(host.querySelector('a[href="/api/jobs/synthetic/export?mode=mono"]')).not.toBeNull();
@@ -124,7 +177,7 @@ describe("任务完成后的阅读数据等待", () => {
 
   async function renderFailed() {
     const doc = failedDoc();
-    client.setQueryData(["document", "synthetic"], doc);
+    client.setQueryData(["document", "synthetic", 1], doc);
     vi.spyOn(api, "document").mockResolvedValue(doc);
     await render();
     return doc;
@@ -158,7 +211,7 @@ describe("任务完成后的阅读数据等待", () => {
 
   it("阅读数据就绪后直接展示阅读器，仅保留工具栏中的下载入口", async () => {
     const doc: DocumentData = { job, title: "合成文档", pages: [], segments: [], links: [], outline: [] };
-    client.setQueryData(["document", "synthetic"], doc);
+    client.setQueryData(["document", "synthetic", 1], doc);
     vi.spyOn(api, "document").mockResolvedValue(doc);
     await render();
     expect(host.textContent).toContain("阅读器");
@@ -186,7 +239,7 @@ describe("任务完成后的阅读数据等待", () => {
 
   it("中间段重翻成功后更新数量，保留当前译文，继续检查时不跳过后一段", async () => {
     const doc = await renderFailed();
-    vi.spyOn(api, "retranslate").mockResolvedValue({ ...doc.segments[1]!, target: "合成译文", status: "done" });
+    vi.spyOn(api, "retranslate").mockResolvedValue({ ...doc.segments[1]!, target: "合成译文", status: "done", applied: true, notice: "" });
     await click("3 段未完成翻译 · 点击定位");
     await click("下一处");
     await click("重翻");
@@ -202,7 +255,7 @@ describe("任务完成后的阅读数据等待", () => {
   it("最后一段修好后移除问题入口；重翻失败保留原段及待处理数量", async () => {
     const doc = failedDoc();
     doc.segments = doc.segments.slice(0, 1);
-    client.setQueryData(["document", "synthetic"], doc);
+    client.setQueryData(["document", "synthetic", 1], doc);
     vi.spyOn(api, "document").mockResolvedValue(doc);
     const retranslate = vi.spyOn(api, "retranslate").mockRejectedValueOnce(new Error("合成服务失败"));
     await render();
@@ -211,7 +264,7 @@ describe("任务完成后的阅读数据等待", () => {
     await click("重翻");
     expect(host.textContent).toContain("合成服务失败");
     expect(host.textContent).toContain("待处理 1 / 1");
-    retranslate.mockResolvedValue({ ...doc.segments[0]!, target: "合成译文", status: "done" });
+    retranslate.mockResolvedValue({ ...doc.segments[0]!, target: "合成译文", status: "done", applied: true, notice: "" });
     await click("重翻");
     await act(async () => vi.advanceTimersByTimeAsync(1));
     expect(host.textContent).not.toContain("未完成翻译");

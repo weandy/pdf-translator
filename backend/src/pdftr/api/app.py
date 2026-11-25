@@ -21,6 +21,8 @@ from pdftr.api import (
     routes_admin,
     routes_admin_config,
     routes_admin_submissions,
+    routes_expansions,
+    routes_exports,
     routes_jobs,
     routes_meta,
     routes_segments,
@@ -29,7 +31,7 @@ from pdftr.api import (
 from pdftr.api.admin_deps import AdminSecurityMiddleware
 from pdftr.container import Container, build_container
 from pdftr.domain.llm import ChatError
-from pdftr.pipeline.usecases import NotFound, ServiceBusy, UserError, purge_expired
+from pdftr.pipeline.usecases import Conflict, NotFound, ServiceBusy, UserError, purge_expired
 from pdftr.pipeline.workers import run_thread
 from pdftr.storage.runtime_config import RevisionConflictError
 
@@ -245,6 +247,7 @@ def create_app(container: Container | None = None) -> FastAPI:
 
     app = FastAPI(title="pdf-translator", version=__version__, lifespan=lifespan)
     app.state.container = c
+    routes_exports.protect_access_logs()
 
     if c.settings.cors_origins:
         app.add_middleware(
@@ -287,6 +290,8 @@ def create_app(container: Container | None = None) -> FastAPI:
         finally:
             if reserved_mode is not None:
                 c.pipeline.release_upload(reserved_mode)
+        if request.url.path.rstrip("/") == "/api/exports/bundle" or request.url.path.startswith("/api/exports/bundle/"):
+            response.headers["Cache-Control"] = "no-store"
         for k, v in _SECURITY_HEADERS.items():
             response.headers.setdefault(k, v)
         return response
@@ -298,6 +303,10 @@ def create_app(container: Container | None = None) -> FastAPI:
     @app.exception_handler(NotFound)
     async def not_found(_: Request, e: NotFound) -> JSONResponse:
         return JSONResponse({"detail": str(e)}, status_code=404)
+
+    @app.exception_handler(Conflict)
+    async def conflict(_: Request, e: Conflict) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(e)})
 
     @app.exception_handler(RevisionConflictError)
     async def revision_conflict(_: Request, __: RevisionConflictError) -> JSONResponse:
@@ -313,6 +322,8 @@ def create_app(container: Container | None = None) -> FastAPI:
 
     app.include_router(routes_meta.router)
     app.include_router(routes_jobs.router)
+    app.include_router(routes_exports.router)
+    app.include_router(routes_expansions.router)
     app.include_router(routes_segments.router)
     app.include_router(routes_stats.router)
     app.include_router(routes_admin.router)

@@ -3,16 +3,19 @@
  */
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useLocation, useParams } from "react-router";
 
 import { progressOf, withSegment } from "@/entities/document/model";
 import { STAGE_LABELS, useJob } from "@/entities/job/model";
 import { useSettings } from "@/entities/settings/model";
+import { ExpandPagesDialog } from "@/features/expansion/ExpandPagesDialog";
+import { ExpansionBanner } from "@/features/expansion/ExpansionBanner";
+import { useExpansion } from "@/features/expansion/useExpansion";
 import { ExportDownloadLink } from "@/features/export/ExportDownloadLink";
 import { DownloadMenu } from "@/features/export/DownloadMenu";
 import { TermsPanel } from "@/features/job-terms/TermsPanel";
 import { JobProgress } from "@/features/job-progress/JobProgress";
-import { ReaderView } from "@/features/reader/ReaderView";
+import { ReaderView, type LocatePage } from "@/features/reader/ReaderView";
 import { RevisionList } from "@/features/revisions/RevisionList";
 import { SegmentEditor } from "@/features/segment-edit/SegmentEditor";
 import {
@@ -24,16 +27,24 @@ import {
   type SegmentData,
 } from "@/shared/api/client";
 import { APP_TITLE, notify, useVisible } from "@/shared/attention/attention";
+import { hasOpenModal } from "@/shared/feedback/ConfirmDialog";
 import { ErrorCard } from "@/shared/feedback/ErrorCard";
 import { expiresSoon, formatRemaining } from "@/shared/time/elapsed";
 
 export function JobPage() {
   const { id = "" } = useParams();
+  const location = useLocation();
+  const [request, setLocateRequest] = useState<{ key: string; target: LocatePage } | null>(null);
   const { job, error, refresh } = useJob(id);
+  const { active, started } = useExpansion(job, id, refresh);
+  const [expanding, setExpanding] = useState<string | null>(null);
+  const contentVersion = job?.content_version ?? 1;
   useJobTitle(job);
   const qc = useQueryClient();
   const { translationSide } = useSettings();
   const [selected, setSelected] = useState<string | null>(null);
+  const historyButton = useRef<HTMLButtonElement>(null);
+  const termsButton = useRef<HTMLButtonElement>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
   const [reviewingFailed, setReviewingFailed] = useState(false);
@@ -41,28 +52,47 @@ export function JobPage() {
   const [marked, setMarked] = useState<ReadonlySet<string>>(new Set());
   const [revealKey, setRevealKey] = useState(0);
   useEffect(() => {
-    if (!showHistory) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setShowHistory(false);
+    if (!showHistory && !showTerms) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing || e.defaultPrevented || hasOpenModal()) return;
+      e.preventDefault();
+      if (showHistory) {
+        setShowHistory(false);
+        historyButton.current?.focus();
+      } else {
+        setShowTerms(false);
+        setSpot(null);
+        setMarked(new Set());
+        termsButton.current?.focus();
+      }
+    };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [showHistory]);
+  }, [showHistory, showTerms]);
   const ready = job?.status === "done";
   const {
-    data: doc,
+    data: queriedDoc,
     error: docError,
     isFetching: documentLoading,
   } = useQuery({
-    queryKey: ["document", id],
+    queryKey: ["document", id, contentVersion],
     queryFn: ({ signal }) => api.document(id, signal),
+    placeholderData: (previous) => previous?.job.id === id ? previous : undefined,
     enabled: ready,
     // 超时后的自动重试可能与服务端尚未结束的计算重叠，交给用户手动重新打开。
     retry: false,
   });
   const { data: revisions = [] } = useQuery({
-    queryKey: ["revisions", id],
+    queryKey: ["revisions", id, contentVersion],
     queryFn: () => api.revisions(id),
+    placeholderData: (previous, query) => query?.queryKey[1] === id ? previous : undefined,
     enabled: ready,
   });
+  const doc = queriedDoc ?? (docError
+    ? qc.getQueriesData<DocumentData>({ queryKey: ["document", id] })
+        .flatMap(([, value]) => value ? [value] : [])
+        .sort((left, right) => right.job.content_version - left.job.content_version)[0]
+    : undefined);
   const labels = useMemo(() => segmentLabels(doc), [doc]);
 
   if (error)
@@ -72,7 +102,7 @@ export function JobPage() {
       </main>
     );
   if (!job) return <main className="center muted">正在打开…</main>;
-  if (!ready) return <JobProgress job={job} onRetried={refresh} />;
+  if (!ready) return <JobProgress key={id} job={job} onRetried={refresh} />;
   if (!doc)
     return (
       <DocumentOpening
@@ -84,9 +114,27 @@ export function JobPage() {
       />
     );
 
+  const displayedVersion = doc.job.content_version ?? 1;
+  const readOnly = Boolean(active) || displayedVersion !== contentVersion;
+  const pages = job.published_pages ?? job.options.pages;
+  const publishedCount = pages?.length ?? job.page_count;
+  const queryPage = new URLSearchParams(location.search).get("page");
+  const directPage = queryPage && /^[1-9]\d*$/.test(queryPage) ? Number(queryPage) : 0;
+  const locatePage: LocatePage | null = request?.key === location.key
+    ? request.target
+    : doc.pages.some((page) => page.index === directPage - 1)
+      ? { page: directPage, seq: 0, highlight: true }
+      : null;
+  const showPage = (page: number) => {
+    setLocateRequest((previous) => ({
+      key: location.key,
+      target: { page, seq: (previous?.target.seq ?? 0) + 1, highlight: true },
+    }));
+  };
+
   const onChange = (seg: SegmentData) => {
-    qc.setQueryData<DocumentData>(["document", id], (d) => (d ? withSegment(d, seg) : d));
-    void qc.invalidateQueries({ queryKey: ["revisions", id] });
+    qc.setQueryData<DocumentData>(["document", id, contentVersion], (d) => (d ? withSegment(d, seg) : d));
+    void qc.invalidateQueries({ queryKey: ["revisions", id, contentVersion] });
     // 重翻会更新任务费用，编辑或重翻结束后立即刷新任务摘要，顶部费用与保留时间保持同步。
     refresh();
   };
@@ -94,6 +142,7 @@ export function JobPage() {
   const open = (segmentId: string) => {
     setReviewingFailed(false);
     setSelected(segmentId);
+    void qc.invalidateQueries({ queryKey: ["document", id, contentVersion] });
     setShowHistory(false);
     setShowTerms(false);
     setMarked(new Set());
@@ -143,10 +192,13 @@ export function JobPage() {
           <span>
             已翻译 {stats.done}/{stats.total} 段
           </span>
+          {publishedCount < job.page_count && <span>仅翻译了 {publishedCount}/{job.page_count} 页</span>}
+          {active && <span>正在补翻其余页，完成后即可继续编辑</span>}
           {stats.failed > 0 && (
             <button
               type="button"
               className="link failed-segments-link"
+              disabled={readOnly}
               onClick={() => locateFailed(failedSegments[failedIndex >= 0 ? failedIndex : 0]!.id)}
               title="定位问题段落并打开编辑面板，可重翻或手动修改"
             >
@@ -167,12 +219,33 @@ export function JobPage() {
 
   return (
     <main className="job">
+      {active && <ExpansionBanner key={active.id} op={active} />}
+      {expanding === id && !readOnly && (
+        <ExpandPagesDialog
+          job={job}
+          published={new Set(pages ?? [])}
+          onClose={() => setExpanding(null)}
+          onStarted={(op) => {
+            setExpanding(null);
+            setSelected(null);
+            started(op);
+          }}
+        />
+      )}
+      {docError && displayedVersion !== contentVersion && (
+        <button type="button" onClick={() => void qc.invalidateQueries({ queryKey: ["document", id, contentVersion] })}>
+          重新加载补翻后的译文
+        </button>
+      )}
       <div className="workspace">
         <ReaderView
+          key={id}
           doc={doc}
           jobId={id}
+          locatePage={locatePage}
           selectedSegment={selected}
-          onSelectSegment={open}
+          onSelectSegment={readOnly ? undefined : open}
+          backgroundUrl={fileUrl(id, "background.pdf", displayedVersion)}
           heading={heading}
           side={translationSide}
           revealKey={revealKey}
@@ -183,6 +256,7 @@ export function JobPage() {
               <button
                 type="button"
                 className={showTerms ? "quiet on" : "quiet"}
+                ref={termsButton}
                 aria-pressed={showTerms}
                 onClick={() => {
                   setShowTerms((v) => !v);
@@ -198,6 +272,7 @@ export function JobPage() {
               <button
                 type="button"
                 className={showHistory ? "quiet on" : "quiet"}
+                ref={historyButton}
                 aria-pressed={showHistory}
                 onClick={() => {
                   setShowHistory((v) => !v);
@@ -211,7 +286,10 @@ export function JobPage() {
                   <span className="wide-only">修改</span>记录{changes > 0 && <span className="num"> {changes}</span>}
                 </span>
               </button>
-              <DownloadMenu key={id} jobId={id} />
+              {!readOnly && publishedCount < job.page_count && (
+                <button type="button" className="quiet" onClick={() => setExpanding(id)}>补翻其余页</button>
+              )}
+              <DownloadMenu jobId={id} contentVersion={contentVersion} onLocatePage={showPage} />
             </>
           }
         />
@@ -226,7 +304,7 @@ export function JobPage() {
               </button>
             </header>
             <p className="hint">点段落名称可打开那一段；撤回某一步，这一段会恢复到那一步之前的译文。</p>
-            <RevisionList revisions={revisions} labels={labels} onRevert={onRevert} onOpen={reveal} />
+            <RevisionList revisions={revisions} labels={labels} onRevert={onRevert} onOpen={reveal} readOnly={readOnly} />
           </aside>
         )}
         {showTerms && (
@@ -234,6 +312,7 @@ export function JobPage() {
             jobId={id}
             doc={doc}
             channelMode={job.channel_mode}
+            readOnly={readOnly}
             onChange={onChange}
             onSpot={(segmentId, term) => setSpot((s) => ({ id: segmentId, n: (s?.n ?? 0) + 1, term }))}
             onMark={(ids) => setMarked(new Set(ids))}
@@ -244,7 +323,7 @@ export function JobPage() {
             }}
           />
         )}
-        {!showHistory && !showTerms && segment && (
+        {!readOnly && !showHistory && !showTerms && segment && (
           <SegmentEditor
             key={`${segment.id}:${segment.target ?? ""}`}
             segment={segment}

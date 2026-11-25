@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent, type SetStateAction } from "react";
 import { Link } from "react-router";
 
 import { addHistory, findByHash, type HistoryEntry } from "@/entities/history/model";
@@ -8,18 +8,23 @@ import { termMap } from "@/entities/glossary/model";
 import {
   confirmLlmKeyBinding,
   confirmParserKeyBinding,
+  effectiveNormalizedLlmTarget,
   getSettings,
   llmKeyNeedsRebind,
   parserKeyNeedsRebind,
   resolveTranslationMode,
   saveSettings,
+  savePrefs,
   uploadAuthHeaders,
   useSettings,
   type TranslationMode,
 } from "@/entities/settings/model";
 import { parsePageRange } from "@/features/upload/pages";
 import { api, type Job, type JobOptions } from "@/shared/api/client";
+import { useToast } from "@/shared/feedback/Toast";
 import { fingerprint } from "@/shared/file/fingerprint";
+
+import { allFilesChecked, confirmPendingDuplicates, isPendingDuplicate, removePendingDuplicates, uploadQueue } from "./batchDedup";
 
 interface Props {
   onCreated: (job: Job) => void; // 只上传一个文件时：进入这个任务
@@ -55,14 +60,18 @@ interface Item {
   hash: string | null; // 文件指纹，只在本机用
   // 本机历史里翻译过同一文件：alive 表示服务器上的译文还在（24 小时内）
   seen: { entry: HistoryEntry; alive: boolean } | null;
+  checking: boolean;
   confirmed: boolean; // 翻译过的文件，用户点了“仍要重新翻译”
 }
+
+const checkingLabel = ({ pages }: Item) => pages === null ? "检查中…" : `${pages} 页 · 检查历史…`;
 
 const when = (iso: string) =>
   new Date(iso).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
 export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenTerms }: Props) {
   const settings = useSettings();
+  const toast = useToast();
   const {
     data: config,
     isPending: configLoading,
@@ -72,12 +81,15 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
     queryKey: ["config"],
     queryFn: api.config,
   });
-  const [items, setItems] = useState<Item[]>([]);
-  const [rangeText, setRangeText] = useState("");
+  const [{ items, rangeText, pickSeq }, setSelection] = useState({ items: [] as Item[], rangeText: "", pickSeq: 0 });
+  const setItems = (update: SetStateAction<Item[]>) =>
+    setSelection((previous) => ({ ...previous, items: typeof update === "function" ? update(previous.items) : update }));
+  const setRangeText = (rangeText: string) => setSelection((previous) => ({ ...previous, rangeText }));
   const [userSelectedParser, setUserSelectedParser] = useState<JobOptions["parser"] | null>(null);
   const consent = settings.cloudConsent; // 勾一次就记在浏览器里，以后默认勾上
-  const setConsent = (v: boolean) => saveSettings({ ...getSettings(), cloudConsent: v });
+  const setConsent = (v: boolean) => reportStorage(savePrefs({ cloudConsent: v }));
   const [busy, setBusy] = useState(false);
+  const submitting = useRef(false);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -89,7 +101,10 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
   const freeEnabled = Boolean(freeChannel?.enabled);
   const mode = resolveTranslationMode(settings, config);
   const isFree = freeEnabled && mode === "free";
-  const selectMode = (next: TranslationMode) => saveSettings({ ...getSettings(), translationMode: next });
+  const selectMode = (next: TranslationMode) => reportStorage(savePrefs({ translationMode: next }));
+  const reportStorage = (result: ReturnType<typeof saveSettings>) => {
+    if (!result.ok) toast.error(result.error);
+  };
   const paddleAvailable = Boolean(config?.paddle_public_enabled && config?.server_has_paddle_token);
   const mineruAvailable = isFree
     ? Boolean(config?.server_has_parser_token)
@@ -114,11 +129,12 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
 
   const usable = items.filter((it) => !itemError(it));
   const overFreeLimit = items.filter((it) => Boolean(freeLimitError(it)));
-  const undecided = usable.filter((it) => it.seen && !it.confirmed); // 翻译过、还没确认要不要重翻
+  const undecided = usable.filter((it) => isPendingDuplicate(it, itemError));
+  const allChecked = allFilesChecked(usable);
   const counted = usable.every((it) => it.pages !== null);
   const file = items.length === 1 ? items[0] : null;
   const fileError = file ? itemError(file) : null;
-  // 只选一个文件时可以只翻部分页（版面仍解析全文，翻译与费用按所选页数）
+  // 只选一个文件时开放页码范围。
   const range = file && file.pages !== null && !fileError ? parsePageRange(rangeText, file.pages) : null;
   const rangeError = range && !Array.isArray(range) ? range.error : null;
   const selected = Array.isArray(range) ? range : null;
@@ -155,8 +171,8 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
     setItems((list) => list.map((it) => (it.file === f ? { ...it, ...patch } : it)));
 
   const pick = async (picked: File[]) => {
+    if (busy || submitting.current || !picked.length) return;
     setError(null);
-    if (!picked.length) return;
     const seq = ++pickSeqRef.current;
     if (picked.length > MAX_BATCH) setError(`一次最多上传 ${MAX_BATCH} 个文件，只取前 ${MAX_BATCH} 个`);
     const chosen = picked.slice(0, MAX_BATCH);
@@ -166,46 +182,36 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
         : config && f.size > config.max_upload_mb * 1024 * 1024
           ? `超过 ${config.max_upload_mb} MB`
           : null;
-    setRangeText("");
-    setItems(
-      chosen.map((f) => ({
-        file: f,
-        pages: null,
-        error: check(f),
-        state: "ready",
-        hash: null,
-        seen: null,
-        confirmed: false,
-      })),
-    );
-    const { countPages } = await import("@/shared/pdf/pdf"); // pdf.js 较大，选了文件才加载
-    if (seq !== pickSeqRef.current) return;
+    const candidates = chosen.map((file): Item => {
+      const error = check(file);
+      return { file, error, pages: null, state: "ready", hash: null, seen: null, confirmed: false, checking: !error };
+    });
+    setSelection({ items: candidates, rangeText: "", pickSeq: seq });
+    const pdf = import("@/shared/pdf/pdf"); // pdf.js 较大，选了文件才加载
     await runWithConcurrency(
-      chosen.filter((f) => !check(f)),
+      candidates.filter((item) => item.checking),
       MAX_INSPECT_CONCURRENCY,
-      async (f) => {
+      async ({ file: f }) => {
         if (seq !== pickSeqRef.current) return;
         try {
+          const { countPages } = await pdf;
+          if (seq !== pickSeqRef.current) return;
           const n = await countPages(f);
           if (seq !== pickSeqRef.current) return;
           const over = config && n > config.max_pages ? `共 ${n} 页，超过上限 ${config.max_pages} 页` : null;
           update(f, { pages: n, error: over });
-        } catch {
+          if (over) return;
+          // 指纹只用于查询本机历史，服务端只按此前的任务编号查询。
+          const hash = await fingerprint(f);
           if (seq !== pickSeqRef.current) return;
-          update(f, { error: "无法打开，请确认是有效的 PDF" });
+          const prior = hash ? findByHash(hash)[0] : undefined;
+          const alive = prior ? await api.job(prior.id).then(() => true, () => false) : false;
+          if (seq === pickSeqRef.current) update(f, { hash, seen: prior ? { entry: prior, alive } : null });
+        } catch {
+          if (seq === pickSeqRef.current) update(f, { error: "无法检查文件，请确认是有效的 PDF" });
+        } finally {
+          if (seq === pickSeqRef.current) update(f, { checking: false });
         }
-        // 与本机历史比对（指纹不发给服务器）；翻译过的问一下服务器上那次的任务还在不在
-        const hash = await fingerprint(f);
-        if (seq !== pickSeqRef.current) return;
-        const prior = hash ? findByHash(hash)[0] : undefined;
-        const alive = prior
-          ? await api.job(prior.id).then(
-              () => true,
-              () => false,
-            )
-          : false;
-        if (seq !== pickSeqRef.current) return;
-        update(f, { hash, seen: prior ? { entry: prior, alive } : null });
       },
     );
   };
@@ -213,17 +219,17 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
   const onDrop = (e: DragEvent) => {
     e.preventDefault();
     setDragging(false);
+    if (busy || submitting.current) return;
     void pick([...e.dataTransfer.files]);
   };
 
   const submit = async () => {
-    if (!config || maintenance) return;
+    if (submitting.current || busy || !config || maintenance || pickSeq !== pickSeqRef.current) return;
+    if (!allChecked || undecided.length || rangeError || !consent || missingKey || missingToken) return;
     if (!isFree && llmKeyNeedsRebind(getSettings(), config)) return;
     if (!isFree && !isPaddle && parserKeyNeedsRebind(getSettings(), config)) return;
-    const queue = items.filter((it) => !itemError(it) && it.state === "ready");
+    const queue = uploadQueue(items, itemError);
     if (!queue.length) return;
-    setBusy(true);
-    setError(null);
     const options: Partial<JobOptions> = {
       cloud_consent: consent,
       user_terms: termMap(),
@@ -233,7 +239,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
       ...(items.length === 1 && selected ? { pages: selected } : {}),
     };
     const submitMode: TranslationMode = isFree ? "free" : "byok";
-    const submitHeaders = uploadAuthHeaders(submitMode, getSettings());
+    const submitHeaders = uploadAuthHeaders(submitMode, getSettings(), config);
     const created: Job[] = [];
     // 最多同时上传 PARALLEL_UPLOADS 个；某个失败（如服务器排队已满）只标在那个文件上
     const worker = async () => {
@@ -253,12 +259,19 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
         }
       }
     };
-    await Promise.all(Array.from({ length: PARALLEL_UPLOADS }, worker));
-    setBusy(false);
-    if (items.length === 1 && created[0]) onCreated(created[0]);
-    else if (created.length) {
-      onBatchCreated(created);
-      setItems((list) => list.filter((it) => it.state !== "done")); // 留下没传成功的，方便重试
+    submitting.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      await Promise.all(Array.from({ length: PARALLEL_UPLOADS }, worker));
+      if (items.length === 1 && created[0]) onCreated(created[0]);
+      else if (created.length) {
+        onBatchCreated(created);
+        setItems((list) => list.filter((it) => it.state !== "done"));
+      }
+    } finally {
+      submitting.current = false;
+      setBusy(false);
     }
   };
   const uploading = items.filter((it) => it.state !== "ready").length;
@@ -351,13 +364,14 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
         className={`dropzone${dragging ? " dragging" : ""}${items.length > 0 ? " has-file" : ""}`}
         onDragOver={(e) => {
           e.preventDefault();
-          setDragging(true);
+          setDragging(!busy && !submitting.current);
         }}
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
       >
         <input
           type="file"
+          disabled={busy}
           accept="application/pdf"
           multiple
           className="visually-hidden"
@@ -379,7 +393,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
             <>
               <span className="file-name">{file.file.name}</span>
               <span className="dropzone-sub">
-                {fileError ?? (file.pages === null ? "正在读取页数…" : `${file.pages} 页 · 点击可更换文件`)}
+                {fileError ?? (file.checking ? checkingLabel(file) : `${file.pages} 页 · 点击可更换文件`)}
               </span>
             </>
           ) : items.length > 1 ? (
@@ -430,14 +444,12 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
                       ? "上传中…"
                       : it.state === "done"
                         ? "已加入"
-                        : it.pages === null
-                          ? "读取中…"
-                          : `${it.pages} 页`)}
+                        : it.checking ? checkingLabel(it) : `${it.pages} 页`)}
                   {it.seen && !err && it.state === "ready" && (
                     <small className="seen-tag"> · {when(it.seen.entry.createdAt)} 翻译过</small>
                   )}
                 </span>
-                {it.seen && !it.confirmed && it.state === "ready" && !err && !busy && (
+                {isPendingDuplicate(it, itemError) && !busy && (
                   <button type="button" className="quiet" onClick={() => update(it.file, { confirmed: true })}>
                     仍要翻译
                   </button>
@@ -466,12 +478,20 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
         </p>
       )}
       {items.length > 1 && <p className="hint">上传后可在下方“我的任务”查看进度，每篇翻译完成后即可下载。</p>}
-      {items.length > 1 && undecided.length > 0 && (
-        <p className="seen-notice">
-          有 {undecided.length} 篇你在这个浏览器里翻译过，请先对每篇选择“仍要翻译”或“移除”。
-        </p>
+      {items.length > 1 && undecided.length > 0 && !busy && (
+        <div className="seen-notice">
+          <p>有 {undecided.length} 篇你在这个浏览器里翻译过，请确认是否重新翻译。</p>
+          <div className="row-actions">
+            <button type="button" onClick={() => setItems((list) => confirmPendingDuplicates(list, itemError))}>
+              全部仍要翻译
+            </button>
+            <button type="button" className="quiet" onClick={() => setSelection((value) => removePendingDuplicates(value, itemError))}>
+              移除待确认项
+            </button>
+          </div>
+        </div>
       )}
-      {file?.seen && !file.confirmed && !fileError && (
+      {file?.seen && isPendingDuplicate(file, itemError) && !busy && (
         <div className="seen-notice" role="status">
           <p>
             这篇你在 {when(file.seen.entry.createdAt)} 翻译过（{file.seen.entry.filename}）。
@@ -507,7 +527,10 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
           {rangeError ? (
             <small className="error">{rangeError}</small>
           ) : selected ? (
-            <small className="muted">只翻译这 {selected.length} 页，其余页保持原文</small>
+            <small className="muted">
+              只翻译这 {selected.length} 页，其余页保持原文
+              {!isPaddle && "；MinerU 将尽量仅解析所需页（小文档或含封面时可能附带解析更多页）"}
+            </small>
           ) : null}
         </label>
       )}
@@ -517,13 +540,13 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
         </p>
       )}
 
-      {keyNeedsRebind && config?.default_base_url && (
+      {keyNeedsRebind && config && (
         <div className="key-rebind-notice" role="alert">
           <p>
-            当前个人 API Key 尚未绑定到新默认服务地址（目标：{config.default_base_url}），请确认目标地址或重新填写。
+            当前个人 API Key 尚未绑定到当前服务地址，请检查目标（{effectiveNormalizedLlmTarget(settings, config)?.url ?? "地址无效"}）或重新填写。
           </p>
           <div className="row-actions">
-            <button type="button" onClick={() => confirmLlmKeyBinding(config)}>
+            <button type="button" disabled={!effectiveNormalizedLlmTarget(settings, config)} onClick={() => { if (settings === getSettings()) reportStorage(confirmLlmKeyBinding(config)); }}>
               确认发送到此地址
             </button>
             <button type="button" className="quiet" onClick={onNeedSettings}>
@@ -540,7 +563,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
             ），请确认目标地址或更换 Token。
           </p>
           <div className="row-actions">
-            <button type="button" onClick={() => saveSettings(confirmParserKeyBinding(getSettings(), config))}>
+            <button type="button" onClick={() => { if (settings === getSettings()) reportStorage(saveSettings(confirmParserKeyBinding(settings, config))); }}>
               确认发送到此解析地址
             </button>
             <button type="button" className="quiet" onClick={onNeedSettings}>
@@ -631,7 +654,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
           disabled={
             !config ||
             !usable.length ||
-            !counted ||
+            !allChecked ||
             !consent ||
             busy ||
             maintenance ||

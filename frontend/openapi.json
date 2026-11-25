@@ -876,6 +876,23 @@
        "type": "string",
        "title": "Name"
       }
+     },
+     {
+      "name": "v",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "integer",
+         "minimum": 1
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "V"
+      }
      }
     ],
     "responses": {
@@ -1292,6 +1309,424 @@
     }
    }
   },
+  "/api/jobs/{job_id}/export/start": {
+   "post": {
+    "tags": [
+     "exports"
+    ],
+    "summary": "Start Export",
+    "operationId": "start_export_api_jobs__job_id__export_start_post",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     },
+     {
+      "name": "mode",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "enum": [
+        "mono",
+        "dual"
+       ],
+       "type": "string",
+       "default": "mono",
+       "title": "Mode"
+      }
+     },
+     {
+      "name": "side",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "enum": [
+        "left",
+        "right"
+       ],
+       "type": "string",
+       "default": "right",
+       "title": "Side"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ExportStatusOut"
+        }
+       }
+      }
+     },
+     "202": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ExportStatusOut"
+        }
+       }
+      },
+      "description": "Accepted"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/jobs/{job_id}/export/status": {
+   "get": {
+    "tags": [
+     "exports"
+    ],
+    "summary": "Export Status",
+    "operationId": "export_status_api_jobs__job_id__export_status_get",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     },
+     {
+      "name": "snapshot",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "pattern": "^[0-9a-f]{16}$",
+       "title": "Snapshot"
+      }
+     },
+     {
+      "name": "mode",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "enum": [
+        "mono",
+        "dual"
+       ],
+       "type": "string",
+       "default": "mono",
+       "title": "Mode"
+      }
+     },
+     {
+      "name": "side",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "enum": [
+        "left",
+        "right"
+       ],
+       "type": "string",
+       "default": "right",
+       "title": "Side"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ExportStatusOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/exports/bundle": {
+   "post": {
+    "tags": [
+     "exports"
+    ],
+    "summary": "Create Bundle",
+    "operationId": "create_bundle_api_exports_bundle_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ExportBundleIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ExportBundleOut"
+        }
+       }
+      }
+     },
+     "409": {
+      "description": "Conflict",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ExportBundleStaleOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/exports/bundle/{token}": {
+   "get": {
+    "tags": [
+     "exports"
+    ],
+    "summary": "Download Bundle",
+    "operationId": "download_bundle_api_exports_bundle__token__get",
+    "parameters": [
+     {
+      "name": "token",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Token"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/zip": {
+        "schema": {
+         "type": "string",
+         "format": "binary"
+        }
+       }
+      }
+     },
+     "409": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ExportBundleStaleOut"
+        }
+       }
+      },
+      "description": "Conflict"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/jobs/{job_id}/expand-pages": {
+   "post": {
+    "tags": [
+     "expansions"
+    ],
+    "summary": "Expand Pages",
+    "operationId": "expand_pages_api_jobs__job_id__expand_pages_post",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ExpandPagesIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "202": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ExpansionOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/jobs/{job_id}/expansions/{op_id}": {
+   "get": {
+    "tags": [
+     "expansions"
+    ],
+    "summary": "Expansion Status",
+    "operationId": "expansion_status_api_jobs__job_id__expansions__op_id__get",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     },
+     {
+      "name": "op_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Op Id"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ExpansionOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/jobs/{job_id}/expansions/{op_id}/cancel": {
+   "post": {
+    "tags": [
+     "expansions"
+    ],
+    "summary": "Cancel Expansion",
+    "operationId": "cancel_expansion_api_jobs__job_id__expansions__op_id__cancel_post",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     },
+     {
+      "name": "op_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Op Id"
+      }
+     }
+    ],
+    "responses": {
+     "202": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ExpansionOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/segments/{segment_id}": {
    "patch": {
     "tags": [
@@ -1378,7 +1813,7 @@
       "content": {
        "application/json": {
         "schema": {
-         "$ref": "#/components/schemas/SegmentOut"
+         "$ref": "#/components/schemas/RetranslateSegmentOut"
         }
        }
       }
@@ -2806,6 +3241,44 @@
     ],
     "title": "Body_parse_glossary_api_glossary_parse_post"
    },
+   "BundleItemIn": {
+    "properties": {
+     "job_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "title": "Job Id"
+     },
+     "mode": {
+      "type": "string",
+      "enum": [
+       "mono",
+       "dual"
+      ],
+      "title": "Mode",
+      "default": "mono"
+     },
+     "side": {
+      "type": "string",
+      "enum": [
+       "left",
+       "right"
+      ],
+      "title": "Side",
+      "default": "right"
+     },
+     "snapshot": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "title": "Snapshot"
+     }
+    },
+    "type": "object",
+    "required": [
+     "job_id",
+     "snapshot"
+    ],
+    "title": "BundleItemIn"
+   },
    "ChatUsage": {
     "properties": {
      "prompt_tokens": {
@@ -3415,6 +3888,218 @@
     ],
     "title": "Estimate"
    },
+   "ExpandPagesIn": {
+    "properties": {
+     "pages": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "integer"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Pages"
+     }
+    },
+    "type": "object",
+    "title": "ExpandPagesIn"
+   },
+   "ExpansionOut": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "job_id": {
+      "type": "string",
+      "title": "Job Id"
+     },
+     "status": {
+      "$ref": "#/components/schemas/ExpansionStatus"
+     },
+     "stage": {
+      "$ref": "#/components/schemas/ExpansionStage"
+     },
+     "progress": {
+      "type": "number",
+      "title": "Progress"
+     },
+     "message": {
+      "type": "string",
+      "title": "Message"
+     },
+     "error": {
+      "type": "string",
+      "title": "Error"
+     },
+     "requested_pages": {
+      "items": {
+       "type": "integer"
+      },
+      "type": "array",
+      "title": "Requested Pages"
+     },
+     "merged_pages": {
+      "items": {
+       "type": "integer"
+      },
+      "type": "array",
+      "title": "Merged Pages"
+     },
+     "base_version": {
+      "type": "integer",
+      "title": "Base Version"
+     },
+     "target_version": {
+      "type": "integer",
+      "title": "Target Version"
+     },
+     "cost_cny": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Cost Cny"
+     },
+     "fallback_used": {
+      "type": "boolean",
+      "title": "Fallback Used"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Created At"
+     },
+     "updated_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Updated At"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "job_id",
+     "status",
+     "stage",
+     "progress",
+     "message",
+     "error",
+     "requested_pages",
+     "merged_pages",
+     "base_version",
+     "target_version",
+     "cost_cny",
+     "fallback_used",
+     "created_at",
+     "updated_at"
+    ],
+    "title": "ExpansionOut"
+   },
+   "ExpansionStage": {
+    "type": "string",
+    "enum": [
+     "parse",
+     "fuse",
+     "segment",
+     "translate",
+     "render",
+     "publish",
+     "done"
+    ],
+    "title": "ExpansionStage"
+   },
+   "ExpansionStatus": {
+    "type": "string",
+    "enum": [
+     "queued",
+     "running",
+     "done",
+     "failed",
+     "cancelled"
+    ],
+    "title": "ExpansionStatus"
+   },
+   "ExportBundleIn": {
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/BundleItemIn"
+      },
+      "type": "array",
+      "maxItems": 20,
+      "minItems": 1,
+      "title": "Items"
+     }
+    },
+    "type": "object",
+    "required": [
+     "items"
+    ],
+    "title": "ExportBundleIn"
+   },
+   "ExportBundleOut": {
+    "properties": {
+     "download_url": {
+      "type": "string",
+      "title": "Download Url"
+     },
+     "filename": {
+      "type": "string",
+      "title": "Filename"
+     },
+     "size_bytes": {
+      "type": "integer",
+      "title": "Size Bytes"
+     },
+     "item_count": {
+      "type": "integer",
+      "title": "Item Count"
+     },
+     "expires_in_s": {
+      "type": "integer",
+      "title": "Expires In S"
+     }
+    },
+    "type": "object",
+    "required": [
+     "download_url",
+     "filename",
+     "size_bytes",
+     "item_count",
+     "expires_in_s"
+    ],
+    "title": "ExportBundleOut"
+   },
+   "ExportBundleStaleOut": {
+    "properties": {
+     "detail": {
+      "type": "string",
+      "title": "Detail"
+     },
+     "stale_indexes": {
+      "items": {
+       "type": "integer"
+      },
+      "type": "array",
+      "title": "Stale Indexes"
+     }
+    },
+    "type": "object",
+    "required": [
+     "detail",
+     "stale_indexes"
+    ],
+    "title": "ExportBundleStaleOut"
+   },
    "ExportPrepareOut": {
     "properties": {
      "filename": {
@@ -3445,6 +4130,75 @@
     ],
     "title": "ExportPrepareOut",
     "description": "PDF 已生成或命中缓存后，供前端启动浏览器下载的信息。"
+   },
+   "ExportStatusOut": {
+    "properties": {
+     "status": {
+      "type": "string",
+      "enum": [
+       "preparing",
+       "ready",
+       "failed",
+       "expired"
+      ],
+      "title": "Status"
+     },
+     "snapshot": {
+      "type": "string",
+      "title": "Snapshot"
+     },
+     "filename": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Filename"
+     },
+     "download_url": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Download Url"
+     },
+     "size_bytes": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Size Bytes"
+     },
+     "overflow_pages": {
+      "items": {
+       "type": "integer"
+      },
+      "type": "array",
+      "title": "Overflow Pages"
+     },
+     "detail": {
+      "type": "string",
+      "title": "Detail",
+      "default": ""
+     }
+    },
+    "type": "object",
+    "required": [
+     "status",
+     "snapshot"
+    ],
+    "title": "ExportStatusOut"
    },
    "FormulaOut": {
     "properties": {
@@ -3975,6 +4729,35 @@
       "type": "integer",
       "title": "Page Count"
      },
+     "content_version": {
+      "type": "integer",
+      "title": "Content Version",
+      "default": 1
+     },
+     "published_pages": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "integer"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Published Pages"
+     },
+     "active_expansion": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/ExpansionOut"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
      "options": {
       "$ref": "#/components/schemas/JobOptions"
      },
@@ -4011,6 +4794,17 @@
       "type": "string",
       "format": "date-time",
       "title": "Created At"
+     },
+     "parse_queue_elapsed_s": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Parse Queue Elapsed S"
      },
      "stage_started_at": {
       "anyOf": [
@@ -4743,6 +5537,12 @@
        }
       ],
       "title": "User Terms"
+     },
+     "instruction": {
+      "type": "string",
+      "maxLength": 200,
+      "title": "Instruction",
+      "default": ""
      }
     },
     "type": "object",
@@ -4789,6 +5589,100 @@
      "segment_ids"
     ],
     "title": "RetranslateManyIn"
+   },
+   "RetranslateSegmentOut": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "title": "Id"
+     },
+     "block_ids": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Block Ids"
+     },
+     "parts": {
+      "items": {
+       "$ref": "#/components/schemas/PartOut"
+      },
+      "type": "array",
+      "title": "Parts"
+     },
+     "source": {
+      "type": "string",
+      "title": "Source"
+     },
+     "target": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Target"
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "pending",
+       "done",
+       "failed",
+       "edited"
+      ],
+      "title": "Status"
+     },
+     "quality": {
+      "type": "string",
+      "enum": [
+       "default",
+       "careful"
+      ],
+      "title": "Quality"
+     },
+     "formulas": {
+      "additionalProperties": {
+       "$ref": "#/components/schemas/FormulaOut"
+      },
+      "type": "object",
+      "title": "Formulas"
+     },
+     "translation_attempts": {
+      "type": "integer",
+      "title": "Translation Attempts",
+      "default": 0
+     },
+     "failure_reason": {
+      "type": "string",
+      "title": "Failure Reason",
+      "default": ""
+     },
+     "applied": {
+      "type": "boolean",
+      "title": "Applied",
+      "default": true
+     },
+     "notice": {
+      "type": "string",
+      "title": "Notice",
+      "default": ""
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "block_ids",
+     "parts",
+     "source",
+     "target",
+     "status",
+     "quality",
+     "formulas"
+    ],
+    "title": "RetranslateSegmentOut"
    },
    "RevisionOut": {
     "properties": {

@@ -16,6 +16,7 @@
   --rule: #cdd3ce;
   /* 钢笔蓝：主要操作与链接；蓝铅笔：悬停与选中；红笔：错误 */
   --pen: #1c5a8c;
+  --accent: var(--pen);
   --pen-strong: #154670;
   --pencil: rgb(118 190 220 / 0.32);
   --pencil-strong: rgb(118 190 220 / 0.55);
@@ -46,6 +47,7 @@
     --ink-soft: #9aa4a8;
     --rule: #363d42;
     --pen: #7cb3e0;
+    --accent: var(--pen);
     --pen-strong: #a2c9ea;
     --pencil: rgb(118 190 220 / 0.25);
     --pencil-strong: rgb(118 190 220 / 0.45);
@@ -1169,6 +1171,30 @@ input[type="radio"] {
   font-variant-numeric: tabular-nums;
 }
 
+.zoom-picker {
+  position: relative;
+}
+.zoom-menu {
+  width: 8rem;
+  padding: 4px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--paper);
+  box-shadow: var(--sheet-shadow);
+}
+.zoom-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+}
+.zoom-menu button[aria-checked="true"] {
+  background: var(--pencil);
+}
+.reader-search-scope {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
 .reader-search {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) auto auto auto auto;
@@ -1240,10 +1266,6 @@ input[type="radio"] {
   position: relative;
 }
 .download-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 6;
   display: grid;
   width: 280px;
   padding: 6px;
@@ -1251,6 +1273,15 @@ input[type="radio"] {
   border-radius: 8px;
   background: var(--paper);
   box-shadow: var(--sheet-shadow);
+}
+.download-menu[hidden] {
+  display: none;
+}
+.zoom-menu,
+.download-menu {
+  z-index: 35;
+  overflow: auto;
+  overflow-wrap: anywhere;
 }
 .download-menu a {
   display: grid;
@@ -1451,6 +1482,26 @@ input[type="radio"] {
   font-size: 14px;
   text-align: center;
 }
+.page-row.page-located .page {
+  outline: 3px solid var(--pen);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 7px var(--pencil), var(--sheet-shadow);
+}
+
+.retranslate-instruction {
+  display: grid;
+  gap: 5px;
+}
+
+.retranslate-instruction input {
+  width: 100%;
+}
+
+.export-download-status button.link {
+  padding: 0;
+  font: inherit;
+}
+
 .page-jump-flash {
   position: absolute;
   right: 0;
@@ -2346,9 +2397,13 @@ input[type="radio"] {
     min-height: 26px;
     padding: 0 6px;
   }
-  .toolbar > button,
-  .toolbar .download-menu > button {
+  .toolbar > button {
     padding: 2px 6px;
+  }
+  .zoom-menu button {
+    min-height: 30px;
+    padding: 2px 8px;
+    font-size: 13px;
   }
   .toolbar .back {
     display: none;
@@ -2783,12 +2838,12 @@ input[type="radio"] {
   }
 }
 @media (max-width: 640px) {
-  .toolbar .zoom-label {
-    display: none; /* 窄屏只留放大缩小，省出位置 */
-  }
   .toolbar .zoom button {
     min-width: 28px;
     padding: 0 4px;
+  }
+  .toolbar .zoom .zoom-label {
+    min-width: 38px;
   }
   .reader-search {
     grid-template-columns: minmax(0, 1fr) auto auto auto;
@@ -2896,8 +2951,7 @@ input[type="radio"] {
   gap: 6px;
 }
 @container (max-width: 1180px) {
-  .toolbar .wide-only,
-  .toolbar .zoom-label {
+  .toolbar .wide-only {
     display: none;
   }
   .toolbar {

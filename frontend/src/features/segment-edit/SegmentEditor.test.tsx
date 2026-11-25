@@ -2,11 +2,11 @@ import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, type SegmentData } from "@/shared/api/client";
+import { api, type RetranslateSegment, type SegmentData } from "@/shared/api/client";
 
 import { SegmentEditor } from "./SegmentEditor";
 
-const segment = (overrides: Partial<SegmentData> = {}): SegmentData => ({
+const segment = (overrides: Partial<RetranslateSegment> = {}): RetranslateSegment => ({
   id: "synthetic",
   block_ids: [],
   parts: [],
@@ -17,6 +17,8 @@ const segment = (overrides: Partial<SegmentData> = {}): SegmentData => ({
   formulas: {},
   translation_attempts: 10,
   failure_reason: "模型返回的公式不完整",
+  applied: true,
+  notice: "",
   ...overrides,
 });
 
@@ -60,6 +62,7 @@ describe("段落翻译失败反馈", () => {
     const initial = segment({ target: "上次有效译文", status, failure_reason: "", translation_attempts: 1 });
     vi.spyOn(api, "retranslate").mockResolvedValue({
       ...initial,
+      applied: false,
       failure_reason: "本次模型持续返回空译文",
       translation_attempts: 10,
     });
@@ -71,8 +74,27 @@ describe("段落翻译失败反馈", () => {
     expect(host.textContent).toContain("最近一次翻译实际尝试 10 次");
   });
 
+  it("关闭面板中止请求并忽略迟到的成功响应", async () => {
+    let finish!: (result: RetranslateSegment) => void;
+    const request = vi.spyOn(api, "retranslate").mockImplementation(() => new Promise((resolve) => (finish = resolve)));
+    const change = vi.fn();
+    await act(async () => root.render(<SegmentEditor segment={segment()} onChange={change} onClose={() => {}} />));
+    const chip = [...host.querySelectorAll("button")].find((button) => button.textContent === "更通顺自然")!;
+    await act(async () => chip.click());
+    const field = host.querySelector<HTMLInputElement>('input[aria-label="修改要求"]')!;
+    expect(field.maxLength).toBe(200);
+    expect(field.value).toBe("更通顺自然");
+    await act(async () => retryButton().click());
+    const options = request.mock.calls[0]?.[3];
+    expect(options?.instruction).toBe("更通顺自然");
+    await act(async () => root.render(null));
+    expect(options?.signal?.aborted).toBe(true);
+    await act(async () => finish(segment({ target: "迟到的译文", status: "done" })));
+    expect(change).not.toHaveBeenCalled();
+  });
+
   it("重翻过程中解释重试上限并防止同一轮重复提交", async () => {
-    let finish!: (value: SegmentData) => void;
+    let finish!: (value: RetranslateSegment) => void;
     const request = vi.spyOn(api, "retranslate").mockImplementation(() => new Promise((resolve) => (finish = resolve)));
     await act(async () => root.render(<Harness initial={segment()} />));
     const button = retryButton();
@@ -101,6 +123,6 @@ describe("段落翻译失败反馈", () => {
     const req = vi.spyOn(api, "retranslate").mockResolvedValue(segment({ target: "免费译文", status: "done" }));
     await act(async () => root.render(<Harness initial={segment()} channelMode="free" />));
     await act(async () => retryButton().click());
-    expect(req).toHaveBeenCalledWith("synthetic", "default", expect.any(Object), { channelMode: "free" });
+    expect(req).toHaveBeenCalledWith("synthetic", "default", expect.any(Object), expect.objectContaining({ channelMode: "free" }));
   });
 });

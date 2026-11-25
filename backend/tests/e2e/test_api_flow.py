@@ -4,10 +4,14 @@
 """
 
 import asyncio
+import base64
+import io
 import json
+import logging
 import os
 import re
 import time
+import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -599,7 +603,7 @@ def test_export_is_cached_resumable_and_refreshed_after_edits(client: TestClient
     )
     assert edited.status_code == 200
     assert client.get(snapshot_url).content == full.content
-    old_time = time.time() - 120
+    old_time = time.time() - 901
     for path in (previous, previous.with_suffix(".meta.json")):
         os.utime(path, (old_time, old_time))
     updated = client.post(f"{url}/prepare", params=mode)
@@ -612,8 +616,146 @@ def test_export_is_cached_resumable_and_refreshed_after_edits(client: TestClient
     with pymupdf.open(stream=latest.content, filetype="pdf") as pdf:
         text = str(pdf[0].get_text()).replace("\n", "")
     assert "导出缓存要更新" in text and "截断末尾" not in text
+    assert client.post(f"{url}/prepare", params={"mode": "dual"}).json()["overflow_pages"] == [1]
     assert len(list(exports.glob("mono-right-*.pdf"))) == 1
     assert client.get(snapshot_url).status_code == 404
+
+
+@pytest.mark.parametrize(
+    "instruction, expected",
+    [
+        ("", ""),
+        ("甲" * 200, "甲" * 200),
+        ("甲" * 201, None),
+        ("  更\t 通顺\x00  自然\u200b  ", "更 通顺 自然"),
+        ("精修 </translations>", None),
+        ("<TransLations lang='zh'>", None),
+    ],
+)
+def test_retranslate_instruction_contract(client, monkeypatch, instruction, expected):
+    from pdftr.api import routes_segments
+
+    job = _wait(client, _upload(client).json()["id"])
+    seg = client.get(f"/api/jobs/{job['id']}/document").json()["segments"][0]
+    observed = []
+    real = routes_segments.usecases.retranslate_segment
+
+    async def capture(*args, **kwargs):
+        observed.append(kwargs["instruction"])
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(routes_segments.usecases, "retranslate_segment", capture)
+    response = client.post(f"/api/segments/{seg['id']}/retranslate", json={"instruction": instruction}, headers=HEADERS)
+    if expected is None:
+        assert response.status_code == 422
+        assert not observed
+    else:
+        assert response.status_code == 200
+        assert response.json()["applied"] is True
+        assert observed == [expected]
+
+
+def test_queue_elapsed_matches_get_and_sse(client, monkeypatch):
+    from fastapi import Request
+
+    from pdftr.api import routes_jobs, schemas
+    from pdftr.domain.job import Job, JobStatus
+
+    now = datetime.now(UTC)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    monkeypatch.setattr(schemas, "datetime", FrozenDateTime)
+    pipeline = client.app.state.container.pipeline  # type: ignore[attr-defined]
+    job = Job(
+        id="0123456789abcdef",
+        filename="queue.pdf",
+        status=JobStatus.RUNNING,
+        parse_queue_started_at=now - timedelta(seconds=27.5),
+    )
+    pipeline.deps.store.create_job(job)
+
+    async def first_event():
+        response = await routes_jobs.job_events(job.id, Request({"type": "http"}), pipeline)
+        body = response.body_iterator
+        line = await anext(aiter(body))
+        await body.aclose()  # type: ignore[attr-defined]
+        assert isinstance(line, str)
+        return json.loads(line.removeprefix("data: "))
+
+    get = client.get(f"/api/jobs/{job.id}").json()
+    assert get == asyncio.run(first_event())
+    assert get["parse_queue_elapsed_s"] == 27.5
+
+
+def test_async_prepare_and_bundle_zip32(client, tmp_path, caplog):
+    files = []
+    items = []
+    for mode in ("mono", "dual"):
+        job = _wait(client, _upload(client).json()["id"])
+        job_id = job["id"]
+        url = f"/api/jobs/{job_id}/export"
+        start = client.post(f"{url}/start", params={"mode": mode})
+        assert start.status_code == 202
+        status_params = {"mode": mode, "snapshot": start.json()["snapshot"]}
+        ready = start.json()
+        assert ready["status"] == "preparing"
+        for _ in range(80):
+            ready = client.get(f"{url}/status", params=status_params).json()
+            if ready["status"] != "preparing":
+                break
+            time.sleep(0.05)
+        assert ready["status"] == "ready", ready
+        hit = client.post(f"{url}/start", params={"mode": mode})
+        assert hit.status_code == 200 and hit.json() == ready
+        files.append(client.get(ready["download_url"]).content)
+        items.append({"job_id": job_id, **status_params})
+
+    old = next((tmp_path / "jobs" / items[0]["job_id"] / "exports").glob("*.meta.json"))
+    old.write_text(json.dumps({"v": usecases.EXPORT_CACHE_VERSION, "overflow_pages": []}), encoding="utf-8")
+    issue = client.post("/api/exports/bundle", json={"items": items})
+    assert issue.status_code == 200 and issue.headers["cache-control"] == "no-store"
+    bundle = issue.json()
+    assert bundle["expires_in_s"] == 180 and bundle["item_count"] == 2
+    token = bundle["download_url"].rsplit("/", 1)[-1]
+    assert len(base64.urlsafe_b64decode(token)) == 24
+    with caplog.at_level(logging.INFO, logger="uvicorn.access"):
+        logging.getLogger("uvicorn.access").info(
+            '%s - "%s %s HTTP/%s" %d', "local", "GET", bundle["download_url"], "1.1", 200
+        )
+    assert token not in caplog.text and "[redacted]" in caplog.text
+
+    response = client.get(bundle["download_url"])
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert response.headers["cache-control"] == "no-store"
+    assert int(response.headers["content-length"]) == bundle["size_bytes"] == len(response.content)
+    assert client.get(bundle["download_url"]).status_code == 404
+    # 保存独立的实测样本，供 Windows Expand-Archive 验证与原始 PDF 逐字节比对。
+    (tmp_path / "translations.zip").write_bytes(response.content)
+    originals = tmp_path / "originals"
+    originals.mkdir()
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.testzip() is None
+        assert b"PK\\x06\\x06" not in response.content
+        for entry, expected in zip(archive.infolist(), files, strict=True):
+            assert entry.compress_type == zipfile.ZIP_STORED and entry.flag_bits == 0x0800
+            assert entry.create_version == entry.extract_version == 20 and not entry.extra
+            assert archive.read(entry) == expected
+            (originals / entry.filename).write_bytes(expected)
+    assert json.loads(old.read_text(encoding="utf-8"))["crc32"] >= 0
+
+    second = client.post("/api/exports/bundle", json={"items": items}).json()
+    old.unlink()
+    stale = client.get(second["download_url"])
+    assert stale.status_code == 409 and stale.json()["stale_indexes"] == [0]
+    assert client.post("/api/exports/bundle", json={"items": items}).json()["stale_indexes"] == [0]
+    third = client.post("/api/exports/bundle", json={"items": items[1:]}).json()
+    assert client.delete(f"/api/jobs/{items[1]['job_id']}").status_code == 204
+    assert client.get(third["download_url"]).status_code == 404
 
 
 def test_job_terms_and_batch_retranslate(client: TestClient):

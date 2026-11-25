@@ -1,4 +1,5 @@
 import { DownloadFormatSelect, useDownloadChoice } from "@/features/export/DownloadChoice";
+import { useBatchDownload } from "@/features/export/useBatchDownload";
 import type { Job } from "@/shared/api/client";
 
 import { HomeJobRow, type HomeJobActions } from "./HomeJobRow";
@@ -35,7 +36,9 @@ export function HomeTaskCard({
   const ids = [...new Set(jobIds)];
   const cardKey = JSON.stringify([...ids].sort());
   const { mode, setMode, preparing, onPreparingChange } = useDownloadChoice(cardKey);
-  const downloadable = ids.filter((id) => jobs.get(id)?.status === "done").length;
+  const downloadableIds = ids.filter((id) => jobs.get(id)?.status === "done");
+  const downloadable = downloadableIds.length;
+  const batchDownload = useBatchDownload(onPreparingChange);
   const timestamp = Date.parse(createdAt ?? "");
 
   return (
@@ -55,10 +58,24 @@ export function HomeTaskCard({
             可下载 {downloadable} / {ids.length} 篇
           </p>
         </div>
-        {downloadable > 0 && (
+        {(downloadable > 0 || batchDownload.progress) && (
           <div className="batch-format">
             <span aria-hidden="true">下载格式</span>
             <DownloadFormatSelect mode={mode} onChange={setMode} disabled={preparing} />
+            {downloadable >= 2 && (
+              <button type="button" disabled={preparing} onClick={() => void batchDownload.start(
+                downloadableIds.map((jobId) => ({ jobId, mode, side: "right" })),
+              )}>
+                全部下载（{downloadable} 篇）
+              </button>
+            )}
+            {batchDownload.progress && (
+              <>
+                <span role="status">准备中 {batchDownload.progress.current}/{batchDownload.progress.total}…</span>
+                <button type="button" className="quiet" onClick={batchDownload.cancel}>取消</button>
+              </>
+            )}
+            {batchDownload.error && <small role="alert" className="error">{batchDownload.error}</small> }
           </div>
         )}
       </div>

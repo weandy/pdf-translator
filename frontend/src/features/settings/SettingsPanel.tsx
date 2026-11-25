@@ -1,21 +1,24 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useRef, useState, type SubmitEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type SubmitEvent } from "react";
 
 import {
   authHeaders,
   bindKeysForSave,
   clearKeys,
   confirmParserKeyBinding,
-  effectiveLlmTarget,
-  isHttpUrl,
+  effectiveNormalizedLlmTarget,
+  getSettings,
   llmKeyNeedsRebind,
-  normalizeBoundUrl,
   parserKeyNeedsRebind,
   saveSettings,
   useSettings,
   type Settings,
 } from "@/entities/settings/model";
 import { api, type LlmCheck, type LlmPreset } from "@/shared/api/client";
+import { normalizeEndpointUrl } from "@/entities/settings/target";
+import { credentialEpoch, emptyCredentials, getMigrationError, useCredentialEpoch } from "@/entities/settings/vault";
+import { useConfirm } from "@/shared/feedback/ConfirmDialog";
+import { useToast } from "@/shared/feedback/Toast";
 
 const BASE_URLS = { openai: "https://api.deepseek.com", anthropic: "https://api.anthropic.com" } as const;
 
@@ -24,7 +27,12 @@ interface Props {
 }
 
 export function SettingsPanel({ onClose }: Props) {
+  const confirm = useConfirm();
+  const toast = useToast();
   const saved = useSettings();
+  const epoch = useCredentialEpoch();
+  const [draftEpoch, setDraftEpoch] = useState(epoch);
+  const [storageError, setStorageError] = useState(getMigrationError);
   const [form, setForm] = useState<Settings>(saved);
   const [keyClearedNotice, setKeyClearedNotice] = useState<string | null>(null);
   const dirty = JSON.stringify(form) !== JSON.stringify(saved);
@@ -33,16 +41,25 @@ export function SettingsPanel({ onClose }: Props) {
     queryFn: api.config,
   });
 
-  const requestClose = () => {
-    if (dirty && !window.confirm("设置还没有保存，确定要关闭吗？")) return;
+  const requestClose = async () => {
+    if (dirty && !(await confirm({ title: "关闭设置", message: "设置还没有保存，确定要关闭吗？", confirmLabel: "放弃修改" }))) return;
     onClose();
   };
+  const requestCloseRef = useRef(requestClose);
+  useLayoutEffect(() => {
+    requestCloseRef.current = requestClose;
+  });
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && requestClose();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !e.defaultPrevented && !e.isComposing) {
+        e.preventDefault();
+        void requestCloseRef.current();
+      }
+    };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  });
+  }, []);
 
   const protocol = form.protocol || config?.default_protocol || "openai";
   const needsRebind = llmKeyNeedsRebind(form, config);
@@ -62,6 +79,29 @@ export function SettingsPanel({ onClose }: Props) {
     },
     [],
   );
+  useLayoutEffect(() => () => {
+    modelRequest.current?.abort();
+    checkRequest.current?.abort();
+  }, [epoch]);
+  if (draftEpoch !== epoch) {
+    setDraftEpoch(epoch);
+    const target = effectiveNormalizedLlmTarget(form, config);
+    const restoredKey = target ? saved.llmKeysByTarget[target.key] ?? "" : "";
+    setForm({
+      ...form,
+      ...emptyCredentials,
+      rememberKeys: saved.rememberKeys,
+      llmKey: restoredKey,
+      llmKeyBoundUrl: restoredKey && target ? target.url : "",
+      llmKeyBoundProtocol: restoredKey && target ? target.protocol : "",
+      llmKeysByTarget: saved.llmKeysByTarget,
+      parserKey: saved.parserKey,
+      parserKeyBoundUrl: saved.parserKeyBoundUrl,
+    });
+    setModels({ list: [], error: null, busy: false });
+    setCheck(null);
+    setKeyClearedNotice("其他标签页已更改或清除已保存的 Key，表单中的旧凭据已同步更新");
+  }
   const abortProbes = (resetModels: boolean, resetCheck: boolean) => {
     if (resetModels) {
       modelRequest.current?.abort();
@@ -76,7 +116,7 @@ export function SettingsPanel({ onClose }: Props) {
   };
   // 用面板里还没保存的值请求；没填 Key 且用的是本站默认服务时，后端用本站的共享 Key
   const headers = () =>
-    Object.fromEntries(Object.entries(authHeaders({ ...form, protocol })).filter(([key]) => key.startsWith("X-LLM-")));
+    Object.fromEntries(Object.entries(authHeaders({ ...form, protocol }, config)).filter(([key]) => key.startsWith("X-LLM-")));
   // 只要个人 Key 处于待重新绑定状态，强制禁止探测，绝不借 server_has_llm_key 旁路放行
   const canAsk =
     !needsRebind &&
@@ -91,15 +131,18 @@ export function SettingsPanel({ onClose }: Props) {
       const nextKey = value as string;
       setKeyClearedNotice(null);
       setForm((f) => {
-        if (!nextKey.trim()) {
-          return { ...f, llmKey: nextKey, llmKeyBoundUrl: "", llmKeyBoundProtocol: "" };
+        const target = effectiveNormalizedLlmTarget(f, config);
+        const llmKeysByTarget = { ...f.llmKeysByTarget };
+        if (target) {
+          if (nextKey.trim()) llmKeysByTarget[target.key] = nextKey.trim();
+          else delete llmKeysByTarget[target.key];
         }
-        const target = effectiveLlmTarget(f, config);
         return {
           ...f,
           llmKey: nextKey,
-          llmKeyBoundUrl: normalizeBoundUrl(target.url),
-          llmKeyBoundProtocol: target.protocol,
+          llmKeysByTarget,
+          llmKeyBoundUrl: nextKey ? (target?.url ?? "") : "",
+          llmKeyBoundProtocol: nextKey ? (target?.protocol ?? "") : "",
         };
       });
       return;
@@ -114,58 +157,56 @@ export function SettingsPanel({ onClose }: Props) {
         return {
           ...f,
           parserKey: nextParserKey,
-          parserKeyBoundUrl: isHttpUrl(defaultMineruUrl) ? normalizeBoundUrl(defaultMineruUrl) : "",
+          parserKeyBoundUrl: normalizeEndpointUrl(defaultMineruUrl) ?? "",
         };
       });
       return;
     }
     if (key === "baseUrl" || key === "protocol") {
-      const nextForm = { ...form, [key]: value };
-      const prevTarget = effectiveLlmTarget(form, config);
-      const nextTarget = effectiveLlmTarget(nextForm, config);
-      const targetChanged =
-        normalizeBoundUrl(prevTarget.url) !== normalizeBoundUrl(nextTarget.url) ||
-        prevTarget.protocol !== nextTarget.protocol;
-      if (form.llmKey.trim() && targetChanged) {
-        setKeyClearedNotice("切换服务商/协议已清空旧 API Key，请填入新服务商的 Key。");
-        setForm({
-          ...nextForm,
-          llmKey: "",
-          llmKeyBoundUrl: "",
-          llmKeyBoundProtocol: "",
-        });
-      } else {
-        setForm(nextForm);
-      }
+      switchTarget({ ...form, [key]: value });
       return;
     }
     setForm((f) => ({ ...f, [key]: value }));
   };
   const presets = config?.llm_presets ?? [];
-  const applyPreset = (preset: LlmPreset) => {
-    abortProbes(true, true);
-    const prevTarget = effectiveLlmTarget(form, config);
-    const targetChanged =
-      normalizeBoundUrl(prevTarget.url) !== normalizeBoundUrl(preset.base_url) ||
-      prevTarget.protocol !== preset.protocol;
-    const shouldClearKey = Boolean(form.llmKey.trim() && targetChanged);
-    if (shouldClearKey) {
-      setKeyClearedNotice("切换服务商/协议已清空旧 API Key，请填入新服务商的 Key。");
+  const switchTarget = (next: Settings) => {
+    const before = effectiveNormalizedLlmTarget(form, config);
+    const after = effectiveNormalizedLlmTarget(next, config);
+    if (before?.key === after?.key && (before || (next.baseUrl === form.baseUrl && next.protocol === form.protocol))) {
+      setForm(next);
+      return;
     }
+    const llmModelsByTarget = { ...form.llmModelsByTarget };
+    if (before) llmModelsByTarget[before.key] = form.model;
+    const llmKeysByTarget = { ...form.llmKeysByTarget };
+    if (before && form.llmKey.trim() && !needsRebind) llmKeysByTarget[before.key] = form.llmKey.trim();
+    const llmKey = after ? (llmKeysByTarget[after.key] ?? "") : "";
+    const fallback = presets.find((preset) =>
+      effectiveNormalizedLlmTarget({ protocol: preset.protocol, baseUrl: preset.base_url })?.key === after?.key
+    )?.models?.[0] ?? "";
+    setKeyClearedNotice(llmKey ? "已自动恢复该服务商已保存的 API Key" : "已切换服务商，请填写对应 API Key");
     setForm({
-      ...form,
-      protocol: preset.protocol,
-      baseUrl: preset.base_url,
-      model: preset.models?.[0] ?? "",
-      ...(shouldClearKey ? { llmKey: "", llmKeyBoundUrl: "", llmKeyBoundProtocol: "" } : {}),
+      ...next,
+      llmKeysByTarget,
+      llmModelsByTarget,
+      model: after ? (llmModelsByTarget[after.key] ?? fallback) : "",
+      llmKey,
+      llmKeyBoundUrl: llmKey ? (after?.url ?? "") : "",
+      llmKeyBoundProtocol: llmKey ? (after?.protocol ?? "") : "",
     });
   };
+  const applyPreset = (preset: LlmPreset) => {
+    abortProbes(true, true);
+    switchTarget({ ...form, protocol: preset.protocol, baseUrl: preset.base_url });
+  };
   const confirmCurrentTarget = () => {
-    const target = effectiveLlmTarget(form, config);
+    const target = effectiveNormalizedLlmTarget(form, config);
+    if (!target) return;
     setKeyClearedNotice(null);
     setForm((f) => ({
       ...f,
-      llmKeyBoundUrl: normalizeBoundUrl(target.url),
+      llmKeysByTarget: { ...f.llmKeysByTarget, [target.key]: f.llmKey.trim() },
+      llmKeyBoundUrl: target.url,
       llmKeyBoundProtocol: target.protocol,
     }));
   };
@@ -255,8 +296,41 @@ export function SettingsPanel({ onClose }: Props) {
 
   const submit = (e: SubmitEvent<HTMLFormElement>) => {
     e.preventDefault();
-    saveSettings(bindKeysForSave(form, config));
+    const target = effectiveNormalizedLlmTarget(form, config);
+    const { cloudConsent, translationMode } = getSettings();
+    const next = bindKeysForSave({
+      ...form, cloudConsent, translationMode,
+      llmModelsByTarget: target ? { ...form.llmModelsByTarget, [target.key]: form.model } : form.llmModelsByTarget,
+    }, config);
+    const result = saveSettings(next, draftEpoch);
+    if (!result.ok) {
+      setStorageError(result.error);
+      toast.error(result.error);
+      return;
+    }
+    toast.success("已保存设置");
     onClose();
+  };
+
+  const clearSavedKeys = async () => {
+    if (!(await confirm({
+      title: "清除已保存的 Key",
+      message: "清除所有服务商的 API Key 和 MinerU Token？",
+      confirmLabel: "全部清除",
+      tone: "danger",
+    })) || draftEpoch !== credentialEpoch) return;
+    const result = clearKeys(draftEpoch);
+    if (!result.ok) {
+      setStorageError(result.error);
+      toast.error(result.error);
+      return;
+    }
+    abortProbes(true, true);
+    setDraftEpoch(credentialEpoch);
+    setStorageError(undefined);
+    setKeyClearedNotice("已清除全部已保存的 Key");
+    setForm((f) => ({ ...f, ...emptyCredentials }));
+    toast.success("已清除全部已保存的 Key");
   };
 
   return (
@@ -326,10 +400,10 @@ export function SettingsPanel({ onClose }: Props) {
                   {keyClearedNotice}
                 </p>
               )}
-              {needsRebind && config?.default_base_url && (
+              {needsRebind && effectiveNormalizedLlmTarget(form, config) && (
                 <div className="key-rebind-notice" role="alert">
                   <p>
-                    当前个人 API Key 尚未绑定到新默认服务地址（目标：{config.default_base_url}），请确认目标地址或重新填写后再测试或保存。
+                    当前个人 API Key 尚未绑定到当前服务地址（目标：{effectiveNormalizedLlmTarget(form, config)?.url}），请确认目标地址或重新填写后再测试或保存。
                   </p>
                   <div className="row-actions">
                     <button type="button" onClick={confirmCurrentTarget}>
@@ -341,7 +415,7 @@ export function SettingsPanel({ onClose }: Props) {
                   </div>
                 </div>
               )}
-              {form.llmKey && !form.baseUrl && config?.default_base_url && (
+              {form.llmKey && !needsRebind && !form.baseUrl && config?.default_base_url && (
                 <p className="hint preset-target-hint" role="note">
                   当前未填写自定义接口地址，你的 API Key 将发往默认服务商地址：{config.default_base_url}
                 </p>
@@ -382,7 +456,7 @@ export function SettingsPanel({ onClose }: Props) {
                   <span>接口地址</span>
                   <input
                     value={form.baseUrl}
-                    onChange={(e) => set("baseUrl", e.target.value.trim())}
+                    onChange={(e) => set("baseUrl", e.target.value)}
                     placeholder={
                       form.protocol && form.protocol !== config?.default_protocol
                         ? BASE_URLS[protocol]
@@ -525,23 +599,12 @@ export function SettingsPanel({ onClose }: Props) {
           </label>
         </details>
 
+        {storageError && <p className="error" role="alert">{storageError}</p>}
         <div className="dialog-actions">
           <button
             type="button"
             className="quiet danger"
-            onClick={() => {
-              clearKeys();
-              abortProbes(true, true);
-              setKeyClearedNotice(null);
-              setForm((f) => ({
-                ...f,
-                llmKey: "",
-                llmKeyBoundUrl: "",
-                llmKeyBoundProtocol: "",
-                parserKey: "",
-                parserKeyBoundUrl: "",
-              }));
-            }}
+            onClick={() => void clearSavedKeys()}
           >
             清除已保存的 Key
           </button>

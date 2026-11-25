@@ -40,7 +40,7 @@ from pdftr.fusion.formula_align import (
     refine_block,
     visual_lines,
 )
-from pdftr.fusion.relocate import dedupe_page_blocks, relocate
+from pdftr.fusion.relocate import RelocationReport, dedupe_page_blocks, relocate
 from pdftr.fusion.structure import margin_marks, split_layout
 from pdftr.fusion.style import block_style
 from pdftr.fusion.text_fix import (
@@ -127,8 +127,23 @@ def fuse(
     pages_to_translate: Iterable[int] | None = None,
     expected_layout_pages: Iterable[int] | None = None,
 ) -> tuple[Document, FusionReport]:
-    pdf_indexes = {page.index for page in char_pages}
+    pdf_indexes = _validate_layout(layout, char_pages)
     expected_layout = pdf_indexes if expected_layout_pages is None else (set(expected_layout_pages) & pdf_indexes)
+    relocated, rel = relocate(layout, char_pages=char_pages)
+    return _fuse_relocated(
+        job_id,
+        relocated,
+        char_pages,
+        rel,
+        used_cloud=used_cloud,
+        selected=set(pages_to_translate) if pages_to_translate is not None else pdf_indexes,
+        expected_layout=expected_layout,
+        restrict_meta=expected_layout_pages is not None,
+    )
+
+
+def _validate_layout(layout: LayoutResult, char_pages: Sequence[CharPage]) -> set[int]:
+    pdf_indexes = {page.index for page in char_pages}
     seen: set[int] = set()
     for page in layout.pages:
         if not 0 <= page.index < len(char_pages) or page.index not in pdf_indexes:
@@ -136,15 +151,27 @@ def fuse(
         if page.index in seen:
             raise InvalidLayoutPages(f"解析返回重复页号 {page.index}")
         seen.add(page.index)
+    return pdf_indexes
+
+
+def _fuse_relocated(
+    job_id: str,
+    layout: LayoutResult,
+    char_pages: Sequence[CharPage],
+    rel: RelocationReport,
+    *,
+    used_cloud: bool,
+    selected: set[int],
+    expected_layout: set[int],
+    restrict_meta: bool,
+) -> tuple[Document, FusionReport]:
     report = FusionReport()
-    relocated, rel = relocate(layout, char_pages=char_pages)
     report.moved_lines, report.unmatched_lines = rel.moved_lines, rel.unmatched_lines
 
     pages: list[Page] = []
     endpoints: dict[tuple[int, int], tuple[Block, Block]] = {}
     native_chars: dict[int, list[Char]] = {}
-    selected = set(pages_to_translate) if pages_to_translate is not None else pdf_indexes
-    by_index = {page.index: page for page in relocated.pages}
+    by_index = {page.index: page for page in layout.pages}
     native_captions: set[str] = set()
     for cp in sorted(char_pages, key=lambda page: page.index):
         if cp.kind is PageKind.NATIVE:
@@ -230,7 +257,7 @@ def fuse(
     _even_scan_sizes(pages)
     _even_caption_sizes(pages, native_captions)
     report.pages = len(pages)
-    meta = _meta(pages, layout.parser, used_cloud, expected_layout if expected_layout_pages is not None else None)
+    meta = _meta(pages, layout.parser, used_cloud, expected_layout if restrict_meta else None)
     doc = Document(job_id=job_id, pages=pages, meta=meta)
     return doc, report
 

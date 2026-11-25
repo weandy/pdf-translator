@@ -2,31 +2,40 @@
  * 下载译文 PDF：纯译文版（原版式，正文换成中文）或双语对照版（左原文右译文）。
  * 每次下载都按当前译文生成，包含在阅读器里做的修改。
  */
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+
+import { useAnchoredMenu } from "@/shared/feedback/useAnchoredMenu";
 
 import { ExportDownloadLink, ExportDownloadStatus, type ExportDownloadState } from "./ExportDownloadLink";
 
-export function DownloadMenu({ jobId }: { jobId: string }) {
+interface Props {
+  jobId: string;
+  contentVersion?: number;
+  onLocatePage?: (page: number) => void;
+}
+
+export function DownloadMenu(props: Props) {
+  return <JobDownloadMenu key={`${props.jobId}:${props.contentVersion ?? 1}`} {...props} />;
+}
+
+function JobDownloadMenu({ jobId, onLocatePage }: Props) {
   const [open, setOpen] = useState(false);
   const [state, setState] = useState<ExportDownloadState>("idle");
   const [message, setMessage] = useState("");
+  const [pages, setPages] = useState<number[]>([]);
   const root = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
   const statusId = useId();
+  const close = useCallback(() => setOpen(false), []);
+  const menu = useAnchoredMenu(open, trigger, close, "right", root);
 
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: MouseEvent | KeyboardEvent) => {
-      if (e instanceof KeyboardEvent ? e.key === "Escape" : !root.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", close);
-    return () => {
-      document.removeEventListener("mousedown", close);
-      document.removeEventListener("keydown", close);
-    };
-  }, [open]);
+  useLayoutEffect(() => {
+    if (open) menu.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus({ preventScroll: true });
+  }, [open, menu]);
 
-  const onStateChange = (next: ExportDownloadState, detail: string) => {
+  const onStateChange = (next: ExportDownloadState, detail: string, overflow: number[]) => {
+    setPages(overflow);
     setState(next);
     setMessage(detail);
   };
@@ -36,19 +45,32 @@ export function DownloadMenu({ jobId }: { jobId: string }) {
   return (
     <div className="download" ref={root}>
       <button
+        ref={trigger}
         type="button"
         className="primary"
         disabled={busy}
         aria-expanded={open}
+        aria-haspopup="menu"
         aria-busy={busy}
         aria-describedby={statusId}
         onClick={() => setOpen((o) => !o)}
       >
         下载 PDF
       </button>
-      <ExportDownloadStatus id={statusId} state={state} message={message} />
-      {open && (
-        <div className="download-menu" role="menu">
+      <ExportDownloadStatus
+        id={statusId}
+        state={state}
+        message={message}
+        pages={pages}
+        renderOverflowPage={onLocatePage && ((page) => (
+          <button type="button" className="link" aria-label={`定位到第 ${page} 页`} onClick={() => onLocatePage(page)}>
+            {page}
+          </button>
+        ))}
+      />
+      {(open || busy) && createPortal(
+        <div ref={menu} className="download-menu" role={open ? "menu" : undefined} hidden={!open}
+          style={{ position: "fixed" }}>
           <ExportDownloadLink {...menuItemProps} mode="mono">
             <span>中文版</span>
             <small>保留原版式，正文换成译文</small>
@@ -61,7 +83,8 @@ export function DownloadMenu({ jobId }: { jobId: string }) {
             <span>双语对照版（译文在左）</span>
             <small>每页左边译文、右边原文</small>
           </ExportDownloadLink>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

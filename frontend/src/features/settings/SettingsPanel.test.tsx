@@ -3,8 +3,10 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DEFAULTS, getSettings, saveSettings } from "@/entities/settings/model";
+import { DEFAULTS, getSettings, savePrefs, saveSettings } from "@/entities/settings/model";
 import { api, type ServerConfig } from "@/shared/api/client";
+import { ConfirmProvider } from "@/shared/feedback/ConfirmDialog";
+import { ToastProvider } from "@/shared/feedback/Toast";
 
 import { SettingsPanel } from "./SettingsPanel";
 
@@ -55,7 +57,7 @@ describe("共享 MinerU 设置引导", () => {
     await act(async () =>
       root.render(
         <QueryClientProvider client={client}>
-          <SettingsPanel onClose={close} />
+          <ToastProvider><ConfirmProvider><SettingsPanel onClose={close} /></ConfirmProvider></ToastProvider>
         </QueryClientProvider>,
       ),
     );
@@ -79,6 +81,108 @@ describe("共享 MinerU 设置引导", () => {
     });
   }
 
+  it("Escape 监听只注册一次，并使用修改后的表单状态", async () => {
+    const listen = vi.spyOn(document, "addEventListener");
+    await render(true);
+    const registrations = () => listen.mock.calls.filter(([event]) => event === "keydown");
+    expect(registrations()).toHaveLength(1);
+    await change(field("模型名称"), "edited-model");
+    expect(registrations()).toHaveLength(1);
+    await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true })));
+    expect(close).not.toHaveBeenCalled();
+    expect(document.querySelector("dialog[open]")?.textContent).toContain("设置还没有保存");
+    await act(async () => document.querySelector<HTMLButtonElement>("dialog button:last-child")!.click());
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("在 DeepSeek、Anthropic 与自定义租户间恢复 Key 和模型，并单独清除指定映射", async () => {
+    await render(true, {
+      default_base_url: "https://api.deepseek.com",
+      llm_presets: [
+        { id: "deepseek", name: "DeepSeek", protocol: "openai", base_url: "https://api.deepseek.com", models: ["deepseek-default"] },
+        { id: "anthropic", name: "Anthropic", protocol: "anthropic", base_url: "https://api.anthropic.com", models: ["claude-default"] },
+      ],
+    });
+    const key = () => field("翻译服务 API Key");
+    const model = () => field("模型名称");
+    await change(key(), "synthetic-deepseek");
+    await change(model(), "deepseek-custom");
+    await act(() => button("Anthropic").click());
+    expect(model().value).toBe("claude-default");
+    await change(key(), "synthetic-anthropic");
+    await change(model(), "claude-custom");
+    await change(field("接口地址"), "https://proxy.example.invalid:8443/TenantA");
+    await change(key(), "synthetic-tenant");
+    await change(model(), "tenant-custom");
+    await act(() => button("DeepSeek").click());
+    expect([key().value, model().value]).toEqual(["synthetic-deepseek", "deepseek-custom"]);
+    await act(() => button("Anthropic").click());
+    expect([key().value, model().value]).toEqual(["synthetic-anthropic", "claude-custom"]);
+    await change(field("接口地址"), "https://proxy.example.invalid:8443/TenantA/");
+    expect([key().value, model().value]).toEqual(["synthetic-tenant", "tenant-custom"]);
+    await change(key(), "");
+    await act(() => button("Anthropic").click());
+    await change(field("接口地址"), "https://proxy.example.invalid:8443/TenantA");
+    expect(key().value).toBe("");
+    await act(() => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true })));
+    expect(getSettings().llmKeysByTarget).toEqual({
+      "openai|https://api.deepseek.com": "synthetic-deepseek",
+      "anthropic|https://api.anthropic.com": "synthetic-anthropic",
+    });
+  });
+
+  it.each(["clear", "forget"])("跨标签页 %s 使在途探测及旧草稿失效，偏好保存不恢复旧 Key", async (kind) => {
+    saveSettings({ ...DEFAULTS, llmKey: "synthetic-saved", llmKeyBoundUrl: "https://example.invalid",
+      llmKeyBoundProtocol: "openai", parserKey: "synthetic-mineru", parserKeyBoundUrl: "https://mineru.net" });
+    const list = vi.spyOn(api, "llmModels").mockImplementation(() => new Promise(() => {}));
+    await render(true);
+    await change(field("翻译服务 API Key"), "synthetic-stale-draft");
+    await act(async () => button("获取模型列表").click());
+    const signal = list.mock.calls[0]![1]!;
+    const credentials = "pdftr.credentials.v2";
+    const prefs = "pdftr.prefs.v1";
+    await act(() => {
+      localStorage.removeItem(credentials);
+      if (kind === "forget") localStorage.setItem(prefs, JSON.stringify({ rememberKeys: false }));
+      const key = kind === "forget" ? prefs : credentials;
+      window.dispatchEvent(new StorageEvent("storage", { key, newValue: localStorage.getItem(key), storageArea: localStorage }));
+    });
+    expect(field("翻译服务 API Key").value).toBe("");
+    expect(parserInput().value).toBe("");
+    expect(signal.aborted).toBe(true);
+    expect(host.textContent).toContain("表单中的旧凭据已同步更新");
+    expect(getSettings()).toMatchObject({ llmKey: "", parserKey: "", llmKeysByTarget: {}, rememberKeys: kind !== "forget" });
+    await act(() => { savePrefs({ cloudConsent: true }); });
+    expect(localStorage.getItem(credentials)).toBeNull();
+  });
+
+  it("存储写入和清除失败均保留面板并准确报错，确认后可以重试清除", async () => {
+    saveSettings({ ...DEFAULTS, llmKey: "synthetic-saved", llmKeyBoundUrl: "https://example.invalid", llmKeyBoundProtocol: "openai" });
+    await render(true);
+    await change(field("模型名称"), "synthetic-edit");
+    const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
+    await act(() => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true })));
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("无法写入本地存储");
+    expect(document.querySelector('.toast [role="alert"]')?.textContent).toContain("无法写入本地存储");
+    expect(close).not.toHaveBeenCalled();
+    write.mockRestore();
+    const clear = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => { throw new Error("blocked"); });
+    const confirmClear = async () => {
+      await act(async () => button("清除已保存的 Key").click());
+      expect(document.querySelector("dialog[open]")).not.toBeNull();
+      await act(async () => document.querySelector<HTMLButtonElement>("dialog button:last-child")!.click());
+    };
+    await confirmClear();
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("无法清除本地存储");
+    expect(getSettings().llmKey).toBe("synthetic-saved");
+    clear.mockRestore();
+    await confirmClear();
+    expect(JSON.parse(localStorage.getItem("pdftr.credentials.v2")!)).toMatchObject({
+      llmKey: "", parserKey: "", llmKeysByTarget: {}, clearedAt: expect.any(Number),
+    });
+    expect(field("翻译服务 API Key").value).toBe("");
+  });
+
   it("按服务商和模型说明思考设置，两档费用均按实际用量计", async () => {
     await render(true);
     const choices = [...host.querySelectorAll("label.choice")].map((label) => label.textContent?.trim());
@@ -91,6 +195,7 @@ describe("共享 MinerU 设置引导", () => {
     saveSettings({ ...DEFAULTS, parserKey: "synthetic-parser-token", model: "manual-model" });
     await render(true);
     await change(field("接口地址"), "https://custom.example.invalid/v1");
+    await change(field("模型名称"), "manual-model");
     await change(field("翻译服务 API Key"), "synthetic-key");
     expect(list).not.toHaveBeenCalled();
     await act(async () => button("获取模型列表").click());
@@ -167,7 +272,7 @@ describe("共享 MinerU 设置引导", () => {
     expect(signal.aborted).toBe(true);
     // 切换目标地址自动清空旧 Key，防止发错服务商
     expect(field("翻译服务 API Key").value).toBe("");
-    expect(host.textContent).toContain("已清空旧 API Key");
+    expect(host.textContent).toContain("已切换服务商，请填写对应 API Key");
     expect(button("获取模型列表").disabled).toBe(true);
 
     await change(field("翻译服务 API Key"), "other-service-key");
@@ -326,7 +431,7 @@ describe("共享 MinerU 设置引导", () => {
     expect(field("接口地址").value).toBe("https://api.anthropic.com");
     expect(field("模型名称").value).toBe("claude-sonnet-4-20250514");
     expect(field("翻译服务 API Key").value).toBe("");
-    expect(host.textContent).toContain("已清空旧 API Key");
+    expect(host.textContent).toContain("已切换服务商，请填写对应 API Key");
 
     // 晚到的旧响应不得覆盖当前状态
     await act(async () => {

@@ -5,9 +5,10 @@ interface Props {
   onAction?: () => void;
   secondaryLabel?: string;
   onSecondary?: () => void;
+  busy?: boolean;
 }
 
-export function ErrorCard({ title, message, actionLabel, onAction, secondaryLabel, onSecondary }: Props) {
+export function ErrorCard({ title, message, actionLabel, onAction, secondaryLabel, onSecondary, busy }: Props) {
   return (
     <section className="error-card" role="alert">
       <div className="error-card-icon" aria-hidden="true">
@@ -19,12 +20,12 @@ export function ErrorCard({ title, message, actionLabel, onAction, secondaryLabe
         {(actionLabel || secondaryLabel) && (
           <div className="error-card-actions">
             {actionLabel && onAction && (
-              <button type="button" className="primary" onClick={onAction}>
+              <button type="button" className="primary" disabled={busy} onClick={onAction}>
                 {actionLabel}
               </button>
             )}
             {secondaryLabel && onSecondary && (
-              <button type="button" className="quiet danger" onClick={onSecondary}>
+              <button type="button" className="quiet danger" disabled={busy} onClick={onSecondary}>
                 {secondaryLabel}
               </button>
             )}

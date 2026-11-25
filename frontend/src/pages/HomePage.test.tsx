@@ -8,6 +8,7 @@ import type { BatchEntry } from "@/entities/batch/model";
 import type { HistoryEntry } from "@/entities/history/model";
 import { HomePage } from "@/pages/HomePage";
 import { api, type Job } from "@/shared/api/client";
+import { ConfirmProvider } from "@/shared/feedback/ConfirmDialog";
 
 const fixture = vi.hoisted(() => ({
   jobs: [] as Job[],
@@ -45,6 +46,7 @@ vi.mock("@/features/upload/UploadPanel", () => ({
 }));
 vi.mock("@/entities/history/model", () => ({
   useHistory: () => fixture.history,
+  readHistory: () => fixture.history,
   clearHistory: vi.fn(),
   removeHistory: vi.fn(),
 }));
@@ -58,6 +60,7 @@ function syntheticJob(id: string, filename: string, status: Job["status"], day: 
     progress: status === "done" ? 1 : 0.2,
     message: "",
     error: "",
+    content_version: 1,
     page_count: 3,
     options: {
       parser: "mineru-cloud",
@@ -85,7 +88,7 @@ async function renderHome(assertions: (host: HTMLElement) => Promise<void> | voi
       root.render(
         <QueryClientProvider client={client}>
           <MemoryRouter>
-            <HomePage openSettings={vi.fn()} />
+            <ConfirmProvider><HomePage openSettings={vi.fn()} /></ConfirmProvider>
           </MemoryRouter>
         </QueryClientProvider>,
       ),
@@ -213,7 +216,6 @@ describe("首页内容", () => {
     fixture.restoreMyJobs.mockImplementationOnce((ids: string[]) => {
       fixture.trackedIds.push(...ids);
     });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     await renderHome(async (host) => {
       const group = host.querySelector('a[href="/jobs/done"]')!.closest(".batch-card")!;
       expect(group.querySelector(".batch-card-info")?.textContent).toContain("可下载 1 / 4 篇");
@@ -230,6 +232,7 @@ describe("首页内容", () => {
 
       const ungroup = [...group.querySelectorAll("button")].find((button) => button.textContent === "取消分组")!;
       await act(async () => ungroup.click());
+      await act(async () => document.querySelector<HTMLButtonElement>("dialog button:last-child")!.click());
       expect(fixture.restoreMyJobs).toHaveBeenCalledWith(["done", "pending", "offline"]);
       expect(host.querySelector(".batch-card-footer")).toBeNull();
       const cards = [...host.querySelectorAll(".task-list > .batch-card")];

@@ -1,5 +1,5 @@
 import { queryOptions, useQueries, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { watchJob, type JobSnapshot } from "@/entities/job/sync";
 import { api, ApiError, type Job } from "@/shared/api/client";
@@ -97,7 +97,7 @@ export function useMyJobs(additionalIds: string[] = []): { data: MyJobsResult; i
         refetchInterval: (query) => {
           if (query.state.status === "error") return 3000;
           const status = query.state.data?.status;
-          return status === "queued" || status === "running" ? 3000 : false;
+          return status === "queued" || status === "running" || query.state.data?.active_expansion ? 3000 : false;
         },
       }),
     ),
@@ -141,6 +141,7 @@ export function useJob(id: string): {
 } {
   const [snapshot, setSnapshot] = useState<JobSnapshot & { id: string }>({ id, job: null, error: null });
   const [tick, setTick] = useState(0);
+  const refresh = useCallback(() => setTick((t) => t + 1), []);
 
   useEffect(() => {
     return watchJob(id, (next) =>
@@ -156,6 +157,6 @@ export function useJob(id: string): {
   return {
     job: snapshot.id === id ? snapshot.job : null,
     error: snapshot.id === id ? snapshot.error : null,
-    refresh: () => setTick((t) => t + 1),
+    refresh,
   };
 }

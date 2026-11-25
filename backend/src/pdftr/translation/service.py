@@ -78,6 +78,7 @@ class TranslateOptions(BaseModel):
     request_timeout_s: float = Field(default=30, gt=0)
     retry_timeout_s: float = Field(default=120, gt=0)  # 首批返回后的全部补救轮次共用，不逐段重新计时
     total_timeout_s: float | None = Field(default=None, gt=0)  # 同步重翻还要覆盖首批和排队，早于网关超时返回
+    custom_instruction: str = ""
     use_cache: bool = True  # 单段“重翻”时为 False：用户要的是另一个译文
     price_overrides: Mapping[str, Price] | None = None
 
@@ -596,10 +597,12 @@ async def translate(
     context_segments: Sequence[Segment] | None = None,
     opts: TranslateOptions | None = None,
     on_progress: Progress | None = None,
+    on_usage: Callable[[float | None, bool], None] | None = None,
 ) -> tuple[list[Segment], TranslateReport]:
     if bad_source(segments):
         raise ChatError(BAD_SOURCE_MESSAGE)
     o = opts or TranslateOptions()
+    use_cache = o.use_cache and not o.custom_instruction
     loop = asyncio.get_running_loop()
     total_deadline = loop.time() + o.total_timeout_s if o.total_timeout_s is not None else None
     out = [s.model_copy() for s in segments]
@@ -643,7 +646,7 @@ async def translate(
         )
         active_terms = ctx.terms | user_hits if user_hits else ctx.terms
         if (
-            o.use_cache
+            use_cache
             and (hit := cache.get(key))
             and not _target_problems(
                 seg.source, hit, translated_terms=active_terms, formulas=seg.formulas, prev_context=prev_context
@@ -707,6 +710,7 @@ async def translate(
             [],
             {},
             retry_feedback=hint,
+            custom_instruction=o.custom_instruction,
             scoped_meta=[u.meta(n) for n, u in numbered],
         )
         # 排队不计为模型尝试；有整次时限时，等待并发名额也必须受限。
@@ -787,6 +791,8 @@ async def translate(
             report.used_fallback = True
             if result.actual_model and result.actual_model not in report.fallback_models:
                 report.fallback_models.append(result.actual_model)
+        if on_usage is not None:
+            on_usage(report.cost_cny, report.used_fallback)
         if result.finish_reason in ("refusal", "content_filter"):
             failed_batch = fail(batch, f"模型拒绝翻译（{result.finish_reason}）")
             if len(batch) > 1:
@@ -815,7 +821,7 @@ async def translate(
             )
             if target and not errors:
                 target = normalize_cjk_spacing(target)
-                if o.use_cache and not result.compatibility_fallback and not result.used_fallback:
+                if use_cache and not result.compatibility_fallback and not result.used_fallback:
                     cache.put(u.key, target)
                 for i in u.seg_indexes:
                     out[i].target, out[i].status = target, SegmentStatus.DONE
@@ -848,7 +854,9 @@ async def translate(
         on_progress(done, total_units, note)
     system_tokens = estimate_tokens(system)
     sizes = [
-        estimate_tokens(user_prompt([(n, u.expanded)], [], {}, scoped_meta=[u.meta(n)]))
+        estimate_tokens(
+            user_prompt([(n, u.expanded)], [], {}, scoped_meta=[u.meta(n)], custom_instruction=o.custom_instruction)
+        )
         for n, u in enumerate(pending, start=1)
     ]
     batches = make_batches(

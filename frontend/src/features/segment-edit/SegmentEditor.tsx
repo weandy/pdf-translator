@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { findTerm, termMap, upsertTerms, useTerms } from "@/entities/glossary/model";
 import { api, formulaUrl, type Quality, type SegmentData, type TranslationMode } from "@/shared/api/client";
+import { hasOpenModal } from "@/shared/feedback/ConfirmDialog";
+import { useToast } from "@/shared/feedback/Toast";
 import { InlineMathText, renderLatex } from "@/shared/math/inline";
 import { checkPlaceholders, placeholdersOk } from "@/shared/text/placeholders";
 import { spaceCjkLatin } from "@/shared/text/typeset";
@@ -17,6 +19,8 @@ interface Props {
   navigation?: ReactNode;
 }
 
+const INSTRUCTION_CHIPS = ["更通顺自然", "更严谨直译", "偏精炼"];
+
 const STATUS: Record<SegmentData["status"], string> = {
   pending: "未翻译",
   done: "已翻译",
@@ -26,11 +30,24 @@ const STATUS: Record<SegmentData["status"], string> = {
 
 /** 切换段落或译文更新时由调用方用 key 重新挂载，草稿从 props 初始化。 */
 export function SegmentEditor({ segment, channelMode, onChange, onClose, history, navigation }: Props) {
+  const toast = useToast();
   const [draft, setDraft] = useState(segment.target ?? "");
   const [busy, setBusy] = useState<"save" | Quality | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [retryFailed, setRetryFailed] = useState(false);
-  const inFlight = useRef(false);
+  const [instruction, setInstruction] = useState("");
+  const mountedRef = useRef(false);
+  const reqSeqRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      reqSeqRef.current += 1;
+      abortRef.current?.abort();
+      abortRef.current = null;
+    };
+  }, [segment.id]);
   const [copied, setCopied] = useState<"source" | "target" | null>(null);
   const box = useRef<HTMLTextAreaElement>(null);
   const formulaKeys = Object.keys(segment.formulas).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
@@ -50,7 +67,7 @@ export function SegmentEditor({ segment, channelMode, onChange, onClose, history
   };
   const formulaName = (key: string) => `公式 ${key.slice(1)}`;
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !e.defaultPrevented && !hasOpenModal() && onClose();
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
@@ -87,31 +104,59 @@ export function SegmentEditor({ segment, channelMode, onChange, onClose, history
     const text = kind === "source" ? segment.source : draft;
     try {
       await navigator.clipboard.writeText(text);
+      toast.success(kind === "source" ? "已复制原文" : "已复制译文");
       setCopied(kind);
       window.setTimeout(() => setCopied((current) => (current === kind ? null : current)), 1600);
     } catch {
-      setError("复制失败，请检查浏览器的剪贴板权限");
+      const message = "复制失败，请检查浏览器的剪贴板权限";
+      setError(message);
+      toast.error(message);
     }
   };
 
   const run = async (kind: "save" | Quality) => {
-    if (inFlight.current) return;
-    inFlight.current = true;
+    if (abortRef.current) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const seq = ++reqSeqRef.current;
+    const current = () => mountedRef.current && seq === reqSeqRef.current;
     setBusy(kind);
     setError(null);
     setRetryFailed(false);
     try {
-      const seg =
-        kind === "save"
-          ? await api.editSegment(segment.id, draft)
-          : await api.retranslate(segment.id, kind, termMap(), { channelMode });
+      if (kind === "save") {
+        const seg = await api.editSegment(segment.id, draft, controller.signal);
+        if (!current()) return;
+        onChange(seg);
+        toast.success("已保存段落修改");
+        return;
+      }
+      const seg = await api.retranslate(segment.id, kind, termMap(), {
+        channelMode,
+        instruction,
+        signal: controller.signal,
+      });
+      if (!current()) return;
       onChange(seg);
+      if (seg.applied === false) {
+        setError(seg.failure_reason || seg.notice || "本次重翻未应用");
+        setRetryFailed(true);
+        toast.error(seg.notice || "重翻未通过校验");
+        return;
+      }
+      setInstruction("");
+      toast.success(kind === "careful" ? "精修完成" : "重翻完成");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (!current()) return;
+      const message = e instanceof Error ? e.message : String(e);
+      setError(message);
+      toast.error(message);
       setRetryFailed(kind !== "save");
     } finally {
-      inFlight.current = false;
-      setBusy(null);
+      if (current()) {
+        abortRef.current = null;
+        setBusy(null);
+      }
     }
   };
   const failure = error ?? (busy === null ? segment.failure_reason : "");
@@ -218,6 +263,29 @@ export function SegmentEditor({ segment, channelMode, onChange, onClose, history
           </p>
         </div>
       )}
+      <div className="retranslate-instruction">
+        <input
+          aria-label="修改要求"
+          placeholder="修改要求（可选，如：更符合中文学术习惯 / 保留英文方法名）"
+          maxLength={200}
+          disabled={busy !== null}
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+        />
+        <div className="chips">
+          {INSTRUCTION_CHIPS.map((chip) => (
+            <button
+              key={chip}
+              type="button"
+              className="quiet"
+              disabled={busy !== null || instruction.includes(chip) || instruction.trim().length + chip.length + (instruction.trim() ? 1 : 0) > 200}
+              onClick={() => setInstruction((value) => [value.trim(), chip].filter(Boolean).join("、"))}
+            >
+              {chip}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="actions">
         <button type="button" disabled={busy !== null} onClick={() => void run("default")}>
           {busy === "default" ? "重翻中…" : "重翻"}

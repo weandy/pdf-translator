@@ -5,6 +5,28 @@
 
 const memory = new Map<string, string>();
 
+export type StorageResult = { ok: true } | { ok: false; error: string };
+
+export function writeJSONChecked(key: string, value: unknown): StorageResult {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+    memory.delete(key);
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "无法写入本地存储，请检查浏览器是否允许保存站点数据或存储空间是否充足。" };
+  }
+}
+
+export function removeChecked(key: string): StorageResult {
+  try {
+    window.localStorage.removeItem(key);
+    memory.delete(key);
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "无法清除本地存储，请检查浏览器是否允许修改站点数据。" };
+  }
+}
+
 function storage(): Storage | null {
   try {
     const s = window.localStorage;

@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Revision } from "@/shared/api/client";
+import { ConfirmProvider } from "@/shared/feedback/ConfirmDialog";
 
 import { RevisionList } from "./RevisionList";
 
@@ -37,12 +38,12 @@ describe("修改记录的变化展示", () => {
   async function render(revisions = [revision()], onRevert = vi.fn().mockResolvedValue(undefined), onOpen = vi.fn()) {
     await act(async () =>
       root.render(
-        <RevisionList
+        <ConfirmProvider><RevisionList
           revisions={revisions}
           labels={{ synthetic: "第 1 页：合成段落" }}
           onRevert={onRevert}
           onOpen={onOpen}
-        />,
+        /></ConfirmProvider>,
       ),
     );
     return { onRevert, onOpen };
@@ -98,6 +99,19 @@ describe("修改记录的变化展示", () => {
     expect(host.querySelector("li.voided")).not.toBeNull();
     expect(host.textContent).toContain("已撤回");
     expect([...host.querySelectorAll("button")].some((b) => b.textContent === "撤回这一步")).toBe(false);
+  });
+
+  it("撤回有后续修改的步骤需要确认", async () => {
+    const previous = revision();
+    const { onRevert } = await render([previous, revision({ id: 2 }), revision({ id: 3 })]);
+    const button = host.querySelectorAll<HTMLButtonElement>(".rev-head button")[2]!;
+    await act(async () => button.click());
+    expect(document.querySelector("dialog")?.textContent).toContain("还有 2 次修改");
+    await act(async () => document.querySelector<HTMLButtonElement>("dialog button:first-child")!.click());
+    expect(onRevert).not.toHaveBeenCalled();
+    await act(async () => button.click());
+    await act(async () => document.querySelector<HTMLButtonElement>("dialog button:last-child")!.click());
+    expect(onRevert).toHaveBeenCalledExactlyOnceWith(previous);
   });
 
   it("长段落的完整对比说明按整块标记，空记录保持原提示", async () => {

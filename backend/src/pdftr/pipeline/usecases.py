@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import threading
 import time
+import zlib
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from typing import BinaryIO, Literal
 from pydantic import BaseModel
 
 from pdftr.domain.document_name import download_filename, paper_title, paper_title_blocks
+from pdftr.domain.expansion import ExpansionOp
 from pdftr.domain.ids import new_job_id
 from pdftr.domain.ir import (
     BlockType,
@@ -43,11 +45,13 @@ from pdftr.glossary.user_import import ParsedGlossary, parse_upload
 from pdftr.pipeline.memory import release_memory
 from pdftr.pipeline.runner import ExportResult, Pipeline, chat_session, load_context, load_document
 from pdftr.pipeline.secrets import Secrets
+from pdftr.pipeline.versions import purge_versions, version_artifact
 from pdftr.pipeline.workers import finish_on_cancel, run_thread
 from pdftr.rendering.background import crop_png
 from pdftr.rendering.export import ExportMode, Side, export_pdf_to_path, page_links, place_links
 from pdftr.rendering.links import VERSION as LINKS_VERSION
 from pdftr.rendering.links import PdfLink
+from pdftr.storage.port import RetranslateConflict
 from pdftr.translation.batching import placeholder_problems, rich_text_problems
 from pdftr.translation.cost import Price, cost_cny, is_deepseek_peak
 from pdftr.translation.segmenter import BAD_SOURCE_MESSAGE, bad_source
@@ -63,6 +67,10 @@ class UserError(ValueError):
 
 
 class NotFound(LookupError):
+    pass
+
+
+class Conflict(RuntimeError):
     pass
 
 
@@ -359,17 +367,22 @@ def purge_expired(pipeline: Pipeline, retention_hours: int, now: datetime | None
     now = now or datetime.now(UTC)
     removed = 0
     store = pipeline.deps.store
-    for job in store.all_jobs() if retention_hours > 0 else []:
-        if job.expires_at is None:
-            job.expires_at = now + timedelta(hours=retention_hours)
-            pipeline.deps.store.save_job(job)
-            continue
-        if job.expires_at <= now:
+    for job in store.all_jobs():
+        if retention_hours > 0 and job.expires_at is not None and job.expires_at <= now:
             with pipeline.deletion_access(job.id) as allowed:
                 if allowed:
                     store.delete_job(job.id)
                     _release_layout_cache(pipeline, job.id)
                     removed += 1
+            continue
+        with pipeline.version_cleanup_access(job.id) as allowed:
+            if not allowed or (current := store.get_job(job.id)) is None:
+                continue
+            if retention_hours > 0 and current.expires_at is None:
+                current.expires_at = now + timedelta(hours=retention_hours)
+                store.save_job(current)
+            with suppress(OSError):
+                purge_versions(pipeline.deps.artifacts, current, now)
     known: set[str] = set()
     if retention_hours > 0:
         known = {job.id for job in store.all_jobs()}
@@ -422,28 +435,37 @@ def _export_path(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side, 
 
 
 def _export_snapshot(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side) -> _Export:
-    job = get_job(pipeline, job_id)
-    if job.status is not JobStatus.DONE:
-        raise UserError("任务完成后才能下载")
-    deps = pipeline.deps
-    segments = deps.store.segments(job_id)
-    state = json.dumps([EXPORT_CACHE_VERSION, [(s.id, s.target, s.status.value) for s in segments]], ensure_ascii=False)
+    with pipeline.content_access():
+        job = get_job(pipeline, job_id)
+        if job.status is not JobStatus.DONE:
+            raise UserError("任务完成后才能下载")
+        segments = pipeline.deps.store.segments(job_id)
+    state = json.dumps(
+        [EXPORT_CACHE_VERSION, job.content_version, [(s.id, s.target, s.status.value) for s in segments]],
+        ensure_ascii=False,
+    )
     digest = hashlib.sha256(state.encode()).hexdigest()[:16]
     return _Export(job, mode, side, segments, _export_path(pipeline, job_id, mode, side, digest), digest)
 
 
 def _export_result(
-    doc: Document, job: Job, mode: ExportMode, path: Path, digest: str, overflow_pages: tuple[int, ...]
+    doc: Document, job: Job, mode: ExportMode, path: Path, digest: str, meta: "_ExportMeta"
 ) -> ExportResult:
     title = paper_title(doc.pages, fallback=doc.meta.title)
     filename = download_filename(title, job.filename, bilingual=mode == "dual")
-    return ExportResult(filename, path, path.stat().st_size, digest, overflow_pages)
+    return ExportResult(filename, path, meta.size_bytes, digest, meta.overflow_pages, meta.crc32)
 
 
-def _read_export_meta(pdf: Path) -> tuple[int, ...] | None:
+@dataclass(frozen=True)
+class _ExportMeta:
+    overflow_pages: tuple[int, ...]
+    size_bytes: int
+    crc32: int | None
+
+
+def _read_export_meta(pdf: Path) -> _ExportMeta | None:
     try:
-        if not pdf.is_file():
-            return None
+        actual_size = pdf.stat().st_size
         meta = json.loads(pdf.with_suffix(".meta.json").read_text(encoding="utf-8"))
         if not isinstance(meta, dict) or type(meta.get("v")) is not int or meta["v"] != EXPORT_CACHE_VERSION:
             return None
@@ -455,25 +477,52 @@ def _read_export_meta(pdf: Path) -> tuple[int, ...] | None:
             if type(page) is not int or page <= previous:
                 return None
             previous = page
-        return tuple(pages)
+        size = meta.get("size_bytes", actual_size)
+        crc = meta.get("crc32")
+        if (
+            type(size) is not int
+            or size != actual_size
+            or (crc is not None and (type(crc) is not int or not 0 <= crc <= 0xFFFFFFFF))
+        ):
+            return None
+        return _ExportMeta(tuple(pages), size, crc)
     except (OSError, ValueError, RecursionError):
         return None
 
 
-def _write_export_meta(pdf: Path, overflow_pages: list[int]) -> None:
+def export_crc32(file: BinaryIO) -> int:
+    crc = 0
+    while chunk := file.read(64 * 1024):
+        crc = zlib.crc32(chunk, crc)
+    file.seek(0)
+    return crc
+
+
+def write_export_meta(pdf: Path, overflow_pages: tuple[int, ...], size_bytes: int, crc32: int) -> _ExportMeta:
     meta = pdf.with_suffix(".meta.json")
     with tempfile.NamedTemporaryFile(dir=pdf.parent, prefix=f".{pdf.stem}-", suffix=".part", delete=False) as file:
         tmp = Path(file.name)
     try:
-        tmp.write_text(json.dumps({"v": EXPORT_CACHE_VERSION, "overflow_pages": overflow_pages}), encoding="utf-8")
+        tmp.write_text(
+            json.dumps(
+                {"v": EXPORT_CACHE_VERSION, "overflow_pages": overflow_pages, "size_bytes": size_bytes, "crc32": crc32}
+            ),
+            encoding="utf-8",
+        )
         tmp.replace(meta)
     finally:
         tmp.unlink(missing_ok=True)
+    return _ExportMeta(overflow_pages, size_bytes, crc32)
+
+
+def _write_export_meta(pdf: Path, overflow_pages: list[int]) -> _ExportMeta:
+    with pdf.open("rb") as file:
+        return write_export_meta(pdf, tuple(overflow_pages), pdf.stat().st_size, export_crc32(file))
 
 
 def _cleanup_exports(export: _Export) -> None:
     out = export.path
-    cutoff = time.time() - 60
+    cutoff = time.time() - 900
     for old in out.parent.glob(f"{export.mode}-{export.side}-*.pdf"):
         with suppress(OSError):
             if old != out and old.stat().st_mtime < cutoff:
@@ -500,21 +549,22 @@ def _render_export(pipeline: Pipeline, export: _Export) -> ExportResult:
         # 等待本机名额或路径锁期间，任务可能已重新进入翻译。
         if get_job(pipeline, job_id).status is not JobStatus.DONE:
             raise UserError("任务完成后才能下载")
-        doc = load_document(deps, job_id)
+        version = export.job.content_version
+        doc = load_document(deps, job_id, version)
         pages = _read_export_meta(out)
         if pages is None:
             # PDF 缺失时，旧旁路文件也可能仍有效，必须在重建前撤下提交标记。
             out.with_suffix(".meta.json").unlink(missing_ok=True)
             try:
                 overflow_pages = export_pdf_to_path(
-                    deps.artifacts.path(job_id, "original.pdf"), deps.artifacts.path(job_id, "background.pdf"),
+                    deps.artifacts.path(job_id, "original.pdf"),
+                    version_artifact(deps.artifacts, job_id, version, "background.pdf"),
                     doc, export.segments, export.mode, deps.font_dir, export.side,
-                    _raw_links(pipeline, job_id, doc, export.segments), out=out,
+                    _raw_links(pipeline, job_id, doc, export.segments, version), out=out,
                 )  # fmt: skip
-                _write_export_meta(out, overflow_pages)
+                pages = _write_export_meta(out, overflow_pages)
             finally:
                 release_memory()
-            pages = tuple(overflow_pages)
             with suppress(UserError, NotFound, OSError):
                 if _export_snapshot(pipeline, job_id, export.mode, export.side).path == out:
                     with pipeline.export_cleanup_access(job_id) as allowed:
@@ -533,7 +583,7 @@ def _lookup_export(
         pages = _read_export_meta(export.path)
         if pages is None:
             return export, None
-        doc = load_document(pipeline.deps, job_id)
+        doc = load_document(pipeline.deps, job_id, export.job.content_version)
         return export, _export_result(doc, export.job, mode, export.path, export.digest, pages)
 
 
@@ -544,7 +594,7 @@ def published_export(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Si
     pages = _read_export_meta(path)
     if pages is None:
         raise NotFound("导出快照已失效，请重新下载")
-    return _export_result(load_document(pipeline.deps, job_id), job, mode, path, digest, pages)
+    return _export_result(load_document(pipeline.deps, job_id, job.content_version), job, mode, path, digest, pages)
 
 
 def export_job(pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side = "right") -> tuple[str, Path]:
@@ -564,14 +614,49 @@ async def prepare_export(pipeline: Pipeline, job_id: str, mode: ExportMode, side
     if cached is not None:
         return cached
 
-    async def render() -> ExportResult:
+    return await pipeline.export_once(export.path, lambda: _render_export_async(pipeline, export))
+
+
+async def _render_export_async(pipeline: Pipeline, export: _Export) -> ExportResult:
+    with pipeline.export_access(export.job.id) as allowed:
+        if not allowed:
+            raise NotFound("任务不存在")
+        async with pipeline.local_slot():
+            return await run_thread(_render_export, pipeline, export)
+
+
+async def start_export(
+    pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side
+) -> tuple[str, ExportResult | None]:
+    export, cached = await run_thread(_lookup_export, pipeline, job_id, mode, side)
+    if cached is None:
+        pipeline.start_export(export.path, lambda: _render_export_async(pipeline, export))
+    return export.digest, cached
+
+
+async def export_status(
+    pipeline: Pipeline, job_id: str, mode: ExportMode, side: Side, digest: str
+) -> tuple[Literal["preparing", "ready", "failed", "expired"], ExportResult | None, str]:
+    def lookup() -> ExportResult | None:
         with pipeline.export_access(job_id) as allowed:
             if not allowed:
                 raise NotFound("任务不存在")
-            async with pipeline.local_slot():
-                return await run_thread(_render_export, pipeline, export)
+            get_job(pipeline, job_id)
+            try:
+                return published_export(pipeline, job_id, mode, side, digest)
+            except NotFound:
+                return None
 
-    return await pipeline.export_once(export.path, render)
+    path = _export_path(pipeline, job_id, mode, side, digest)
+    state, detail = pipeline.export_task_state(path)
+    cached = await run_thread(lookup)
+    if cached is not None:
+        return "ready", cached, ""
+    # 在读取磁盘期间可能刚发布，保留在途状态，下一次轮询即可命中。
+    if state == "preparing":
+        return state, None, detail
+    state, detail = pipeline.export_task_state(path)
+    return state, None, detail
 
 
 def cancel_job(pipeline: Pipeline, job_id: str) -> Job:
@@ -595,21 +680,16 @@ def retry_job(
         limits.maintenance_mode if limits is not None else maintenance_mode,
         limits.site_notice if limits is not None else site_notice,
     )
-    job = get_job(pipeline, job_id)
-    if pipeline.is_running(job_id):
-        raise UserError("任务正在进行中")
-    if job.status is JobStatus.DONE and not pipeline.deps.store.count_segments(job_id, SegmentStatus.FAILED):
-        raise UserError("任务已完成")
-    needs_parser = job.stage == "parse" and not pipeline.deps.artifacts.path(job_id, "layout.json").exists()
-    if needs_parser:
-        _check_paddle_access(job.options.parser, secrets, limits)
-    _require_secrets(secrets, parser=job.options.parser if needs_parser else None)
-    if limits is not None:
-        # 队列已满时必须在改写任务状态或落盘之前拒绝
-        _check_admission(pipeline, limits, job.channel_mode)
     if not pipeline.begin_mutation(job_id):
-        raise UserError("任务正在修改，请稍后再试")
+        raise UserError(pipeline.mutation_blocked_message(job_id))
     try:
+        job = get_job(pipeline, job_id)
+        if job.status is JobStatus.DONE and not pipeline.deps.store.count_segments(job_id, SegmentStatus.FAILED):
+            raise UserError("任务已完成")
+        needs_parser = job.stage == "parse" and not pipeline.deps.artifacts.path(job_id, "layout.json").exists()
+        if needs_parser:
+            _check_paddle_access(job.options.parser, secrets, limits)
+        _require_secrets(secrets, parser=job.options.parser if needs_parser else None)
         if limits is not None:
             _check_admission(pipeline, limits, job.channel_mode)
         if bad_source(pipeline.deps.store.segments(job_id)):
@@ -620,6 +700,7 @@ def retry_job(
             job.channel_provider_id = secrets.channel_provider_id
             job.model = secrets.llm_model
         job.status, job.error = JobStatus.QUEUED, ""
+        job.parse_queue_started_at = None
         pipeline.deps.store.save_job(job)
         pipeline.submit(job, secrets)
         return job
@@ -633,6 +714,7 @@ class DocumentView(BaseModel):
     segments: list[Segment]
     links: list[PdfLink] = []
     outline: list[OutlineItem] = []
+    active_expansion: ExpansionOp | None = None
 
 
 _LETTERS = re.compile(r"[^0-9a-z]+")
@@ -718,9 +800,11 @@ def _read_link_cache(cache: Path) -> list[PdfLink] | None:
         return None
 
 
-def _raw_links(pipeline: Pipeline, job_id: str, doc: Document, segments: list[Segment]) -> list[PdfLink]:
+def _raw_links(
+    pipeline: Pipeline, job_id: str, doc: Document, segments: list[Segment], version: int = 1
+) -> list[PdfLink]:
     """原文链接按任务缓存；首次并发阅读和下载共享一次提取，并原子发布缓存。"""
-    cache = pipeline.deps.artifacts.path(job_id, f"links.v{LINKS_VERSION}.json")
+    cache = version_artifact(pipeline.deps.artifacts, job_id, version, f"links.v{LINKS_VERSION}.json")
     if (cached := _read_link_cache(cache)) is not None:
         return cached
     with _LINK_CACHE_LOCKS[hash(str(cache)) % len(_LINK_CACHE_LOCKS)]:
@@ -740,15 +824,24 @@ def _raw_links(pipeline: Pipeline, job_id: str, doc: Document, segments: list[Se
 
 
 def document_view(pipeline: Pipeline, job_id: str) -> DocumentView:
-    job = get_job(pipeline, job_id)
-    if STAGES.index("segment") > (STAGES.index(job.stage) if job.stage in STAGES else len(STAGES)):
-        raise UserError("文档尚未解析完成")
-    doc, segments = load_document(pipeline.deps, job_id), pipeline.deps.store.segments(job_id)
-    links: list[PdfLink] = []
-    if job.status is JobStatus.DONE:
-        links = place_links(_raw_links(pipeline, job_id, doc, segments), doc, segments, _reader_text)
-    outline = build_outline(pipeline.deps.artifacts.path(job_id, "original.pdf"), doc, segments)
-    return DocumentView(job=job, document=doc, segments=segments, links=links, outline=outline)
+    with pipeline.export_access(job_id) as allowed:
+        if not allowed:
+            raise NotFound("任务不存在")
+        with pipeline.content_access():
+            job = get_job(pipeline, job_id)
+            if STAGES.index("segment") > (STAGES.index(job.stage) if job.stage in STAGES else len(STAGES)):
+                raise UserError("文档尚未解析完成")
+            segments = pipeline.deps.store.segments(job_id)
+            active = pipeline.active_expansion(job_id)
+        doc = load_document(pipeline.deps, job_id, job.content_version)
+        links: list[PdfLink] = []
+        if job.status is JobStatus.DONE:
+            raw = _raw_links(pipeline, job_id, doc, segments, job.content_version)
+            links = place_links(raw, doc, segments, _reader_text)
+        outline = build_outline(pipeline.deps.artifacts.path(job_id, "original.pdf"), doc, segments)
+        return DocumentView(
+            job=job, document=doc, segments=segments, links=links, outline=outline, active_expansion=active
+        )
 
 
 def _segment(pipeline: Pipeline, segment_id: str) -> Segment:
@@ -761,12 +854,14 @@ def _segment(pipeline: Pipeline, segment_id: str) -> Segment:
 def _record(
     pipeline: Pipeline, before: Segment, after: Segment, action: RevisionAction, reverts: int | None = None
 ) -> None:
-    pipeline.deps.store.add_revision(
-        Revision(
-            job_id=after.job_id, segment_id=after.id, action=action, reverts=reverts,
-            before=before.target, before_status=before.status, before_quality=before.quality,
-            after=after.target, after_status=after.status, after_quality=after.quality,
-        )
+    pipeline.deps.store.add_revision(_revision(before, after, action, reverts))
+
+
+def _revision(before: Segment, after: Segment, action: RevisionAction, reverts: int | None = None) -> Revision:
+    return Revision(
+        job_id=after.job_id, segment_id=after.id, action=action, reverts=reverts,
+        before=before.target, before_status=before.status, before_quality=before.quality,
+        after=after.target, after_status=after.status, after_quality=after.quality,
     )  # fmt: skip
 
 
@@ -779,7 +874,7 @@ def edit_segment(pipeline: Pipeline, segment_id: str, target: str) -> Segment:
     if job.status is not JobStatus.DONE:
         raise UserError("任务完成后才能编辑译文")
     if not pipeline.begin_mutation(seg.job_id):
-        raise UserError("任务正在修改，请稍后再试")
+        raise UserError(pipeline.mutation_blocked_message(seg.job_id))
     try:
         seg = _segment(pipeline, segment_id)
         job = get_job(pipeline, seg.job_id)
@@ -862,7 +957,7 @@ def revert_revision(pipeline: Pipeline, revision_id: int) -> Segment:
     if get_job(pipeline, rev.job_id).status is not JobStatus.DONE:
         raise UserError("任务完成后才能撤回修改")
     if not pipeline.begin_mutation(rev.job_id):
-        raise UserError("任务正在修改，请稍后再试")
+        raise UserError(pipeline.mutation_blocked_message(rev.job_id))
     try:
         seg = _segment(pipeline, rev.segment_id)
         before = seg.model_copy()
@@ -899,17 +994,19 @@ async def retranslate_segment(
     *,
     maintenance_mode: bool = False,
     site_notice: str = "",
-) -> Segment:
+    instruction: str = "",
+) -> tuple[Segment, bool, str]:
     """user_terms：浏览器里最新的用户术语库（用户纠正术语后重翻这一段时用）；不传则用建任务时的。"""
     _check_maintenance(maintenance_mode, site_notice)
     seg = _segment(pipeline, segment_id)
-    (out,) = await retranslate_segments(
+    (out,) = await _retranslate_segments(
         pipeline,
         seg.job_id,
         [segment_id],
         quality,
         secrets,
         user_terms,
+        instruction=instruction,
         maintenance_mode=maintenance_mode,
         site_notice=site_notice,
     )
@@ -932,6 +1029,31 @@ async def retranslate_segments(
 ) -> list[Segment]:
     """一次重翻同一任务的多段（改了术语译法后重翻用到它的段落），与整篇翻译一样分批发给模型。
     每段照常记入修改记录、可以撤回，费用计入任务。"""
+    results = await _retranslate_segments(
+        pipeline,
+        job_id,
+        segment_ids,
+        quality,
+        secrets,
+        user_terms,
+        maintenance_mode=maintenance_mode,
+        site_notice=site_notice,
+    )
+    return [seg for seg, _, _ in results]
+
+
+async def _retranslate_segments(
+    pipeline: Pipeline,
+    job_id: str,
+    segment_ids: list[str],
+    quality: Quality,
+    secrets: Secrets,
+    user_terms: dict[str, str] | None,
+    *,
+    maintenance_mode: bool,
+    site_notice: str,
+    instruction: str = "",
+) -> list[tuple[Segment, bool, str]]:
     _check_maintenance(maintenance_mode, site_notice)
     _require_secrets(secrets, parser=None)
     if not 1 <= len(segment_ids) <= MAX_RETRANSLATE:
@@ -940,8 +1062,11 @@ async def retranslate_segments(
     if job.status is not JobStatus.DONE:
         raise UserError("任务完成后才能重翻段落")
     if not pipeline.begin_mutation(job_id):
-        raise UserError("任务正在修改，请稍后再试")
+        raise UserError(pipeline.mutation_blocked_message(job_id))
     try:
+        job = get_job(pipeline, job_id)
+        if job.status is not JobStatus.DONE:
+            raise UserError("任务完成后才能重翻段落")
         deps = pipeline.deps
         all_segs = deps.store.segments(job_id)
         by_id = {s.id: s for s in all_segs}
@@ -978,14 +1103,19 @@ async def retranslate_segments(
                             quality=quality,
                             concurrency=pipeline.llm_concurrency(secrets),
                             use_cache=False,
+                            custom_instruction=instruction,
                             total_timeout_s=remaining,
                             price_overrides=prices,
                         ),
                     )
         except TimeoutError as exc:
             raise ServiceBusy("翻译通道正忙，等待重翻超时，请稍后再试") from exc
+        results = []
+        revisions_to_add = []
         for out in outs:
             before = befores[out.id]
+            applied = out.status is SegmentStatus.DONE
+            notice = ""
             if (
                 out.status is SegmentStatus.FAILED
                 and before.target
@@ -993,17 +1123,22 @@ async def retranslate_segments(
             ):
                 # 重翻未成功时保留上一份可用译文，不能把已翻好的段落退回原文。
                 out.target, out.status, out.quality = before.target, before.status, before.quality
-        deps.store.save_segments(outs)
-        for out in outs:
-            _record(pipeline, befores[out.id], out, "careful" if quality == "careful" else "retranslate")
-        if report.cost_cny is not None or report.used_fallback:  # 重翻、精修的费用与备选状态也计入任务
-            job = get_job(pipeline, job_id)
-            if report.cost_cny is not None:
-                job.cost_cny = (job.cost_cny or 0) + report.cost_cny
-            if report.used_fallback:
-                job.fallback_used = True
-            deps.store.save_job(job)
-        return outs
+                notice = "本次重翻未通过校验，已保留原有译文"
+            if applied:
+                revisions_to_add.append(_revision(before, out, "careful" if quality == "careful" else "retranslate"))
+            results.append((out, applied, notice))
+        try:
+            deps.store.commit_retranslate(
+                expected_job=job,
+                expected_before=befores,
+                updated_segments=outs,
+                revisions_to_add=revisions_to_add,
+                cost_delta_cny=report.cost_cny,
+                used_fallback=report.used_fallback,
+            )
+        except RetranslateConflict as exc:
+            raise Conflict(str(exc)) from exc
+        return results
     finally:
         pipeline.end_mutation(job_id)
 
@@ -1020,12 +1155,18 @@ class TermUse(BaseModel):
 def job_terms(pipeline: Pipeline, job_id: str) -> list[TermUse]:
     """这篇论文用到了哪些术语、各在哪几段（出现得多的在前）。来源与译法按建任务时的用户术语库计算；
     译文有没有用上推荐译法由前端检查（要按浏览器里最新的术语库和当前译文算）。"""
-    job = get_job(pipeline, job_id)
     deps = pipeline.deps
-    _, selection = load_context(deps, job_id, job.options.user_terms)
+    with pipeline.export_access(job_id) as allowed:
+        if not allowed:
+            raise NotFound("任务不存在")
+        with pipeline.content_access():
+            job = get_job(pipeline, job_id)
+            segments = deps.store.segments(job_id)
+        doc = load_document(deps, job_id, job.content_version)
+        _, selection = load_context(deps, job_id, job.options.user_terms, doc)
     origins: tuple[Literal["user", "paper", "library"], ...] = ("user", "paper", "library")
     uses: dict[str, TermUse] = {}
-    for seg in deps.store.segments(job_id):
+    for seg in segments:
         seen: set[str] = set()
         for origin, hits in zip(origins, selection.match_segment(seg.source), strict=True):
             for source, target in hits.items():

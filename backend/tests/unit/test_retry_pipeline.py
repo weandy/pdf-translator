@@ -155,12 +155,41 @@ def test_manual_retry_has_whole_request_budget_and_retains_previous_valid_transl
 
     monkeypatch.setattr(usecases, "translate", translate)
     try:
-        result = asyncio.run(usecases.retranslate_segment(pipeline, "hard", "default", SECRETS))
+        result, applied, notice = asyncio.run(usecases.retranslate_segment(pipeline, "hard", "default", SECRETS))
+        assert not applied and notice
+        assert not pipeline.deps.store.revisions(job.id)
         assert observed == [45]
         assert result.status is SegmentStatus.EDITED and result.target == original.target
         assert result.failure_reason and result.translation_attempts == 10
         current = pipeline.deps.store.get_job(job.id)
         assert current is not None and current.cost_cny is not None and current.cost_cny > 0
+    finally:
+        close_pipeline(pipeline)
+
+
+def test_retranslate_rejects_intervening_edit_without_recording_cost(tmp_path, monkeypatch):
+    pipeline, job = setup_pipeline(tmp_path, monkeypatch, RepairChat())
+    job.status = JobStatus.DONE
+    pipeline.deps.store.save_job(job)
+    store = pipeline.deps.store
+    translate = usecases.translate
+
+    async def concurrent_edit(*args, **kwargs):
+        result = await translate(*args, **kwargs)
+        current = store.segment("hard")
+        assert current is not None
+        current.target = "并发更新的译文 <m1/>"
+        current.status = SegmentStatus.EDITED
+        store.save_segments([current])
+        return result
+
+    monkeypatch.setattr(usecases, "translate", concurrent_edit)
+    try:
+        with pytest.raises(usecases.Conflict, match="段落已变化"):
+            asyncio.run(usecases.retranslate_segment(pipeline, "hard", "default", SECRETS))
+        current = store.segment("hard")
+        assert current and current.target == "并发更新的译文 <m1/>"
+        assert store.get_job(job.id) == job and not store.revisions(job.id)
     finally:
         close_pipeline(pipeline)
 

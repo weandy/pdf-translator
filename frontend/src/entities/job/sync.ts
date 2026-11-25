@@ -8,7 +8,8 @@ export interface JobSnapshot {
 const POLL_INTERVAL = 3000;
 const REQUEST_TIMEOUT = 10000;
 const MAX_RETRY_DELAY = 30000;
-const isTerminal = (job: Job) => job.status === "done" || job.status === "failed" || job.status === "cancelled";
+const isTerminal = (job: Job) =>
+  (job.status === "done" && !job.active_expansion) || job.status === "failed" || job.status === "cancelled";
 
 /** SSE 负责即时更新，定期 GET 校准，避免长连接正常但漏掉完成事件时一直等待。 */
 export function watchJob(id: string, onChange: (snapshot: JobSnapshot) => void): () => void {

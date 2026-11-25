@@ -352,6 +352,125 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/{job_id}/export/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start Export */
+        post: operations["start_export_api_jobs__job_id__export_start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/export/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export Status */
+        get: operations["export_status_api_jobs__job_id__export_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/exports/bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Bundle */
+        post: operations["create_bundle_api_exports_bundle_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/exports/bundle/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Bundle */
+        get: operations["download_bundle_api_exports_bundle__token__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/expand-pages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Expand Pages */
+        post: operations["expand_pages_api_jobs__job_id__expand_pages_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/expansions/{op_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Expansion Status */
+        get: operations["expansion_status_api_jobs__job_id__expansions__op_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/expansions/{op_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Expansion */
+        post: operations["cancel_expansion_api_jobs__job_id__expansions__op_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/segments/{segment_id}": {
         parameters: {
             query?: never;
@@ -1006,6 +1125,25 @@ export interface components {
              */
             ai: boolean;
         };
+        /** BundleItemIn */
+        BundleItemIn: {
+            /** Job Id */
+            job_id: string;
+            /**
+             * Mode
+             * @default mono
+             * @enum {string}
+             */
+            mode: "mono" | "dual";
+            /**
+             * Side
+             * @default right
+             * @enum {string}
+             */
+            side: "left" | "right";
+            /** Snapshot */
+            snapshot: string;
+        };
         /** ChatUsage */
         ChatUsage: {
             /**
@@ -1259,6 +1397,83 @@ export interface components {
             /** Minutes */
             minutes: number;
         };
+        /** ExpandPagesIn */
+        ExpandPagesIn: {
+            /** Pages */
+            pages?: number[] | null;
+        };
+        /** ExpansionOut */
+        ExpansionOut: {
+            /** Id */
+            id: string;
+            /** Job Id */
+            job_id: string;
+            status: components["schemas"]["ExpansionStatus"];
+            stage: components["schemas"]["ExpansionStage"];
+            /** Progress */
+            progress: number;
+            /** Message */
+            message: string;
+            /** Error */
+            error: string;
+            /** Requested Pages */
+            requested_pages: number[];
+            /** Merged Pages */
+            merged_pages: number[];
+            /** Base Version */
+            base_version: number;
+            /** Target Version */
+            target_version: number;
+            /** Cost Cny */
+            cost_cny: number | null;
+            /** Fallback Used */
+            fallback_used: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * ExpansionStage
+         * @enum {string}
+         */
+        ExpansionStage: "parse" | "fuse" | "segment" | "translate" | "render" | "publish" | "done";
+        /**
+         * ExpansionStatus
+         * @enum {string}
+         */
+        ExpansionStatus: "queued" | "running" | "done" | "failed" | "cancelled";
+        /** ExportBundleIn */
+        ExportBundleIn: {
+            /** Items */
+            items: components["schemas"]["BundleItemIn"][];
+        };
+        /** ExportBundleOut */
+        ExportBundleOut: {
+            /** Download Url */
+            download_url: string;
+            /** Filename */
+            filename: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Item Count */
+            item_count: number;
+            /** Expires In S */
+            expires_in_s: number;
+        };
+        /** ExportBundleStaleOut */
+        ExportBundleStaleOut: {
+            /** Detail */
+            detail: string;
+            /** Stale Indexes */
+            stale_indexes: number[];
+        };
         /**
          * ExportPrepareOut
          * @description PDF 已生成或命中缓存后，供前端启动浏览器下载的信息。
@@ -1272,6 +1487,29 @@ export interface components {
             size_bytes: number;
             /** Overflow Pages */
             overflow_pages?: number[];
+        };
+        /** ExportStatusOut */
+        ExportStatusOut: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "preparing" | "ready" | "failed" | "expired";
+            /** Snapshot */
+            snapshot: string;
+            /** Filename */
+            filename?: string | null;
+            /** Download Url */
+            download_url?: string | null;
+            /** Size Bytes */
+            size_bytes?: number | null;
+            /** Overflow Pages */
+            overflow_pages?: number[];
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
         };
         /**
          * FormulaOut
@@ -1500,6 +1738,14 @@ export interface components {
             error: string;
             /** Page Count */
             page_count: number;
+            /**
+             * Content Version
+             * @default 1
+             */
+            content_version: number;
+            /** Published Pages */
+            published_pages?: number[] | null;
+            active_expansion?: components["schemas"]["ExpansionOut"] | null;
             options: components["schemas"]["JobOptions"];
             /** Model */
             model: string;
@@ -1521,6 +1767,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Parse Queue Elapsed S */
+            parse_queue_elapsed_s?: number | null;
             /** Stage Started At */
             stage_started_at: string | null;
             /** Expires At */
@@ -1838,6 +2086,11 @@ export interface components {
             user_terms?: {
                 [key: string]: string;
             } | null;
+            /**
+             * Instruction
+             * @default
+             */
+            instruction: string;
         };
         /** RetranslateManyIn */
         RetranslateManyIn: {
@@ -1853,6 +2106,53 @@ export interface components {
             user_terms?: {
                 [key: string]: string;
             } | null;
+        };
+        /** RetranslateSegmentOut */
+        RetranslateSegmentOut: {
+            /** Id */
+            id: string;
+            /** Block Ids */
+            block_ids: string[];
+            /** Parts */
+            parts: components["schemas"]["PartOut"][];
+            /** Source */
+            source: string;
+            /** Target */
+            target: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "done" | "failed" | "edited";
+            /**
+             * Quality
+             * @enum {string}
+             */
+            quality: "default" | "careful";
+            /** Formulas */
+            formulas: {
+                [key: string]: components["schemas"]["FormulaOut"];
+            };
+            /**
+             * Translation Attempts
+             * @default 0
+             */
+            translation_attempts: number;
+            /**
+             * Failure Reason
+             * @default
+             */
+            failure_reason: string;
+            /**
+             * Applied
+             * @default true
+             */
+            applied: boolean;
+            /**
+             * Notice
+             * @default
+             */
+            notice: string;
         };
         /** RevisionOut */
         RevisionOut: {
@@ -2746,7 +3046,9 @@ export interface operations {
     };
     get_file_api_jobs__job_id__files__name__get: {
         parameters: {
-            query?: never;
+            query?: {
+                v?: number | null;
+            };
             header?: never;
             path: {
                 job_id: string;
@@ -3004,6 +3306,265 @@ export interface operations {
             };
         };
     };
+    start_export_api_jobs__job_id__export_start_post: {
+        parameters: {
+            query?: {
+                mode?: "mono" | "dual";
+                side?: "left" | "right";
+            };
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportStatusOut"];
+                };
+            };
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportStatusOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_status_api_jobs__job_id__export_status_get: {
+        parameters: {
+            query: {
+                snapshot: string;
+                mode?: "mono" | "dual";
+                side?: "left" | "right";
+            };
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportStatusOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_bundle_api_exports_bundle_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExportBundleIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportBundleOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportBundleStaleOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_bundle_api_exports_bundle__token__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": string;
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportBundleStaleOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    expand_pages_api_jobs__job_id__expand_pages_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExpandPagesIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExpansionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    expansion_status_api_jobs__job_id__expansions__op_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                op_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExpansionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_expansion_api_jobs__job_id__expansions__op_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                op_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExpansionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     edit_segment_api_segments__segment_id__patch: {
         parameters: {
             query?: never;
@@ -3060,7 +3621,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SegmentOut"];
+                    "application/json": components["schemas"]["RetranslateSegmentOut"];
                 };
             };
             /** @description Validation Error */

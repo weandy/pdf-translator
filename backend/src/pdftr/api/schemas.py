@@ -1,12 +1,15 @@
 """接口的请求/响应结构（DTO），与 IR 解耦；前端类型由 OpenAPI 生成（frontend/src/shared/api/schema.d.ts）。"""
 
-from datetime import datetime
+import re
+import unicodedata
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from pdftr.domain.expansion import ExpansionOp, ExpansionStage, ExpansionStatus
 from pdftr.domain.ir import Document, OutlineItem, Revision, Segment
-from pdftr.domain.job import Job, JobOptions
+from pdftr.domain.job import Job, JobOptions, JobStatus
 from pdftr.domain.runtime_config import LlmPreset
 from pdftr.rendering.links import PdfLink
 
@@ -48,6 +51,32 @@ class ConfigOut(BaseModel):
     site_notice: str = ""
 
 
+class ExpandPagesIn(BaseModel):
+    pages: list[int] | None = None
+
+
+class ExpansionOut(BaseModel):
+    id: str
+    job_id: str
+    status: ExpansionStatus
+    stage: ExpansionStage
+    progress: float
+    message: str
+    error: str
+    requested_pages: list[int]
+    merged_pages: list[int]
+    base_version: int
+    target_version: int
+    cost_cny: float | None
+    fallback_used: bool
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, op: ExpansionOp) -> "ExpansionOut":
+        return cls(**op.model_dump(exclude={"cost_applied"}))
+
+
 class JobOut(BaseModel):
     id: str
     filename: str
@@ -57,18 +86,32 @@ class JobOut(BaseModel):
     message: str
     error: str
     page_count: int
+    content_version: int = 1
+    published_pages: list[int] | None = None
+    active_expansion: ExpansionOut | None = None
     options: JobOptions
     model: str
     cost_cny: float | None
     channel_mode: Literal["byok", "free"] = "byok"
     fallback_used: bool = False
     created_at: datetime
+    parse_queue_elapsed_s: float | None = None
     stage_started_at: datetime | None
     expires_at: datetime | None  # 到期后服务器自动删除；None 表示不自动删除
 
     @classmethod
-    def of(cls, job: Job) -> "JobOut":
-        return cls(**job.model_dump(exclude={"updated_at", "channel_provider_id"}))
+    def of(cls, job: Job, active_expansion: ExpansionOp | None = None) -> "JobOut":
+        started = job.parse_queue_started_at
+        elapsed = (
+            round(max(0.0, (datetime.now(UTC) - started).total_seconds()), 1)
+            if job.status is JobStatus.RUNNING and job.stage == "parse" and started is not None
+            else None
+        )
+        return cls(
+            **job.model_dump(exclude={"updated_at", "channel_provider_id", "parse_queue_started_at"}),
+            parse_queue_elapsed_s=elapsed,
+            active_expansion=ExpansionOut.of(active_expansion) if active_expansion is not None else None,
+        )
 
 
 class ExportPrepareOut(BaseModel):
@@ -78,6 +121,40 @@ class ExportPrepareOut(BaseModel):
     download_url: str
     size_bytes: int
     overflow_pages: list[int] = Field(default_factory=list)
+
+
+class ExportStatusOut(BaseModel):
+    status: Literal["preparing", "ready", "failed", "expired"]
+    snapshot: str
+    filename: str | None = None
+    download_url: str | None = None
+    size_bytes: int | None = None
+    overflow_pages: list[int] = Field(default_factory=list)
+    detail: str = ""
+
+
+class BundleItemIn(BaseModel):
+    job_id: str = Field(pattern=r"^[0-9a-f]{16}$")
+    mode: Literal["mono", "dual"] = "mono"
+    side: Literal["left", "right"] = "right"
+    snapshot: str = Field(pattern=r"^[0-9a-f]{16}$")
+
+
+class ExportBundleIn(BaseModel):
+    items: list[BundleItemIn] = Field(min_length=1, max_length=20)
+
+
+class ExportBundleOut(BaseModel):
+    download_url: str
+    filename: str
+    size_bytes: int
+    item_count: int
+    expires_in_s: int
+
+
+class ExportBundleStaleOut(BaseModel):
+    detail: str
+    stale_indexes: list[int]
 
 
 class RectOut(BaseModel):
@@ -195,6 +272,7 @@ class DocumentOut(BaseModel):
         segments: list[Segment],
         links: list[PdfLink] | None = None,
         outline: list[OutlineItem] | None = None,
+        active_expansion: ExpansionOp | None = None,
     ) -> "DocumentOut":
         pages = [
             PageOut(
@@ -210,9 +288,14 @@ class DocumentOut(BaseModel):
             )
             for p in doc.pages
         ]  # fmt: skip
-        return cls(job=JobOut.of(job), title=doc.meta.title, pages=pages, segments=[SegmentOut.of(s) for s in segments],
-                   links=[LinkOut.of(x) for x in links or []],
-                   outline=[OutlineOut(**x.model_dump()) for x in outline or []])  # fmt: skip
+        return cls(
+            job=JobOut.of(job, active_expansion),
+            title=doc.meta.title,
+            pages=pages,
+            segments=[SegmentOut.of(s) for s in segments],
+            links=[LinkOut.of(x) for x in links or []],
+            outline=[OutlineOut(**x.model_dump()) for x in outline or []],
+        )
 
 
 class ModelsOut(BaseModel):
@@ -251,9 +334,25 @@ class EditIn(BaseModel):
         return cleaned
 
 
+class RetranslateSegmentOut(SegmentOut):
+    applied: bool = True
+    notice: str = ""
+
+
 class RetranslateIn(BaseModel):
     quality: Literal["default", "careful"] = "careful"
     user_terms: dict[str, str] | None = Field(default=None, max_length=5000)  # 浏览器里最新的用户术语库
+
+    instruction: str = Field(default="", max_length=200)
+
+    @field_validator("instruction")
+    @classmethod
+    def _clean_instruction(cls, value: str) -> str:
+        clean = "".join(c for c in value if not unicodedata.category(c).startswith("C") or c.isspace())
+        clean = " ".join(clean.split())
+        if re.search(r"</?translations\b", clean, re.IGNORECASE):
+            raise ValueError("修改要求不能包含翻译协议标签")
+        return clean
 
 
 class RetranslateManyIn(BaseModel):

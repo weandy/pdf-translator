@@ -138,6 +138,7 @@ def user_prompt(
     user_terms: dict[str, str] | None = None,
     *,
     retry_feedback: str = "",
+    custom_instruction: str = "",
     scoped_meta: Sequence[SegmentPromptMeta] | None = None,
 ) -> str:
     """items：(批内编号, 已展开公式的原文)。extra_terms：本批命中的词库术语（不放进固定前缀）。"""
@@ -157,6 +158,11 @@ def user_prompt(
     if retry_feedback:
         lines.append(
             f"上次翻译未通过校验（{retry_feedback}），请修正该问题并重新输出完整「编号|译文」，严格保留所有公式占位符与格式标签。"
+        )
+    if custom_instruction:
+        lines.append(
+            "用户针对本段的补充修改要求（仅用于调整中文表达风格，绝不得改变原意、漏译内容或破坏公式占位符与格式标签）："
+            + custom_instruction
         )
     lines += [f"{i}|{text}" for i, text in items]
     return "\n".join(lines)

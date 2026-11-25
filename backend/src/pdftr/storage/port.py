@@ -1,9 +1,11 @@
 """存储端口：任务工件文件、任务与段落。翻译缓存的端口由 translation 定义，这里按结构实现。"""
 
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
+from pdftr.domain.expansion import ExpansionOp, ExpansionStatus
 from pdftr.domain.ir import Revision, Segment, SegmentStatus
 from pdftr.domain.job import Job, JobStatus
 from pdftr.domain.stats import AdminStatsSnapshot, StatsOut
@@ -25,7 +27,30 @@ class ArtifactStore(Protocol):
     def orphaned_jobs(self, known_job_ids: set[str], before: datetime) -> list[str]: ...
 
 
+class RetranslateConflict(RuntimeError):
+    pass
+
+
 class JobStore(Protocol):
+    def create_expansion(self, op: ExpansionOp) -> None: ...
+
+    def expansion(self, job_id: str, op_id: str) -> ExpansionOp | None: ...
+
+    def active_expansions(self, job_id: str | None = None) -> list[ExpansionOp]: ...
+
+    def save_expansion(self, op: ExpansionOp) -> None: ...
+
+    def finish_expansion(self, job_id: str, op_id: str, status: ExpansionStatus, error: str) -> Job: ...
+
+    def publish_expansion(
+        self,
+        job_id: str,
+        op_id: str,
+        old_ids: set[str],
+        new_segments: Sequence[Segment],
+        ordered_ids: Sequence[str],
+    ) -> Job: ...
+
     def record_visit(self, event_id: str, visitor_id: str, *, user_agent: str | None = None) -> None: ...
 
     def stats(self, days: int = 7) -> StatsOut: ...
@@ -59,6 +84,17 @@ class JobStore(Protocol):
     def replace_segments(self, job_id: str, segments: list[Segment]) -> None: ...
 
     def save_segments(self, segments: list[Segment]) -> None: ...
+
+    def commit_retranslate(
+        self,
+        *,
+        expected_job: Job,
+        expected_before: Mapping[str, Segment],
+        updated_segments: list[Segment],
+        revisions_to_add: list[Revision],
+        cost_delta_cny: float | None,
+        used_fallback: bool,
+    ) -> None: ...
 
     def segments(self, job_id: str) -> list[Segment]: ...
 

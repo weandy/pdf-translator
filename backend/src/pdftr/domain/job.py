@@ -44,6 +44,8 @@ class Job(BaseModel):
     message: str = ""
     error: str = ""
     page_count: int = 0
+    content_version: int = 1
+    published_pages: list[int] | None = None
     options: JobOptions = Field(default_factory=JobOptions)
     model: str = ""
     cost_cny: float | None = None
@@ -53,4 +55,13 @@ class Job(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     expires_at: datetime | None = None  # 到期后自动删除（文件与译文）；None 表示不自动删除
     stage_started_at: datetime | None = None  # 当前阶段开始时间，前端据此显示“已等待多久”
+    parse_queue_started_at: datetime | None = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+def effective_published_pages(job: Job) -> list[int]:
+    if job.published_pages is not None:
+        return job.published_pages
+    if job.options.pages is not None:
+        return job.options.pages
+    return list(range(job.page_count))

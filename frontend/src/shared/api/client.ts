@@ -6,10 +6,12 @@
 import type { components } from "@/shared/api/schema";
 
 export type Job = components["schemas"]["JobOut"];
+export type Expansion = components["schemas"]["ExpansionOut"];
 export type JobOptions = components["schemas"]["JobOptions"];
 export type DocumentData = components["schemas"]["DocumentOut"];
 export type PageData = components["schemas"]["PageOut"];
 export type BlockData = components["schemas"]["BlockOut"];
+export type RetranslateSegment = components["schemas"]["RetranslateSegmentOut"];
 export type SegmentData = components["schemas"]["SegmentOut"];
 export type LinkData = components["schemas"]["LinkOut"];
 export type OutlineData = components["schemas"]["OutlineOut"];
@@ -24,12 +26,16 @@ export type ParsedGlossary = components["schemas"]["ParsedGlossary"];
 export type TermUse = components["schemas"]["TermUse"];
 export type SiteStats = components["schemas"]["StatsOut"];
 export type ExportPrepare = components["schemas"]["ExportPrepareOut"];
+export type ExportStatus = components["schemas"]["ExportStatusOut"];
+export type ExportBundleItem = components["schemas"]["BundleItemIn"];
+export type ExportBundle = components["schemas"]["ExportBundleOut"];
 export type Quality = "default" | "careful";
 
 export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly staleIndexes?: number[],
   ) {
     super(message);
   }
@@ -47,14 +53,18 @@ async function request<T>(path: string, init: RequestInit = {}, includeAuth = fa
     headers: { Accept: "application/json", ...(includeAuth ? authHeaders() : {}), ...init.headers },
   });
   if (!res.ok) {
+    let staleIndexes: number[] | undefined;
     let detail = `${res.status} ${res.statusText}`;
     try {
-      const body = (await res.json()) as { detail?: unknown };
+      const body = (await res.json()) as { detail?: unknown; stale_indexes?: unknown };
+      if (Array.isArray(body.stale_indexes) && body.stale_indexes.every((index) => Number.isSafeInteger(index))) {
+        staleIndexes = body.stale_indexes as number[];
+      }
       if (typeof body.detail === "string") detail = body.detail;
     } catch {
       // 非 JSON 错误体
     }
-    throw new ApiError(res.status, detail);
+    throw new ApiError(res.status, detail, staleIndexes);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -80,7 +90,7 @@ function stripPersonalCredentialHeaders(headers: Record<string, string>): Record
   return Object.fromEntries(
     Object.entries(headers).filter(([k]) => {
       const lower = k.toLowerCase();
-      return !lower.startsWith("x-llm-") && !lower.startsWith("x-parser-") && !lower.startsWith("x-paddle-");
+      return lower !== "x-translation-mode" && !lower.startsWith("x-llm-") && !lower.startsWith("x-parser-") && !lower.startsWith("x-paddle-");
     }),
   );
 }
@@ -130,6 +140,16 @@ export const api = {
       `/api/estimate?${new URLSearchParams({ pages: String(pages), quality, ...(model ? { model } : {}) })}`,
     ),
   job: (id: string, signal?: AbortSignal) => request<Job>(`/api/jobs/${id}`, { signal }),
+  expandPages: (id: string, pages: number[] | null, mode: TranslationMode = "byok") =>
+    request<Expansion>(
+      `/api/jobs/${id}/expand-pages`,
+      { method: "POST", ...json({ pages } satisfies components["schemas"]["ExpandPagesIn"]) },
+      mode !== "free",
+    ),
+  expansionStatus: (id: string, opId: string, signal?: AbortSignal) =>
+    request<Expansion>(`/api/jobs/${id}/expansions/${opId}`, { signal }),
+  cancelExpansion: (id: string, opId: string) =>
+    request<Expansion>(`/api/jobs/${id}/expansions/${opId}/cancel`, { method: "POST" }),
   deleteJob: (id: string) => request<void>(`/api/jobs/${id}`, { method: "DELETE" }),
   createJob: (
     file: File,
@@ -141,14 +161,12 @@ export const api = {
     form.append("options", JSON.stringify(options));
     const parsed = isJobRequestOptions(extra) ? extra : { headers: extra };
     const explicitHeaders = parsed.headers;
-    const headerMode = explicitHeaders?.["X-Translation-Mode"]?.toLowerCase();
+    const headerMode = new Headers(explicitHeaders).get("X-Translation-Mode")?.toLowerCase();
     const effectiveMode: TranslationMode | undefined =
       parsed.mode ?? (headerMode === "free" ? "free" : headerMode === "byok" ? "byok" : undefined);
     if (effectiveMode === "free") {
       // 免费体验模式绝不携带任何个人翻译或解析凭据头，避免泄露浏览器里的个人 Key/Token。
-      const base = explicitHeaders
-        ? stripPersonalCredentialHeaders(explicitHeaders)
-        : stripPersonalCredentialHeaders(authHeaders());
+      const base = explicitHeaders ? stripPersonalCredentialHeaders(explicitHeaders) : {};
       return request<Job>(
         "/api/jobs",
         { method: "POST", body: form, headers: { ...base, "X-Translation-Mode": "free" } },
@@ -178,33 +196,26 @@ export const api = {
   },
   retryJob: (id: string, options?: { channelMode?: TranslationMode; mode?: TranslationMode }) => {
     const mode = options?.channelMode ?? options?.mode;
-    if (mode === "free") {
-      // 免费任务重试由后端按已落库的 channel_mode 走免费通道快照，不携带任何个人翻译或解析凭据头。
-      return request<Job>(
-        `/api/jobs/${id}/retry`,
-        { method: "POST", headers: stripPersonalCredentialHeaders(authHeaders()) },
-        false,
-      );
-    }
-    return request<Job>(`/api/jobs/${id}/retry`, { method: "POST" }, true);
+    return request<Job>(`/api/jobs/${id}/retry`, { method: "POST" }, mode !== "free");
   },
   cancelJob: (id: string) => request<Job>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   document: documentRequest,
-  editSegment: (id: string, target: string) =>
-    request<SegmentData>(`/api/segments/${id}`, { method: "PATCH", ...json({ target }) }),
+  editSegment: (id: string, target: string, signal?: AbortSignal) =>
+    request<SegmentData>(`/api/segments/${id}`, { method: "PATCH", ...json({ target }), signal }),
   /** userTerms：浏览器里最新的用户术语库 */
   retranslate: (
     id: string,
     quality: Quality,
     userTerms?: Record<string, string>,
-    options?: { channelMode?: TranslationMode; mode?: TranslationMode },
+    options?: { channelMode?: TranslationMode; mode?: TranslationMode; instruction?: string; signal?: AbortSignal },
   ) => {
     const mode = options?.channelMode ?? options?.mode;
-    return request<SegmentData>(
+    return request<RetranslateSegment>(
       `/api/segments/${id}/retranslate`,
       {
         method: "POST",
-        ...json({ quality, user_terms: userTerms }),
+        ...json({ quality, user_terms: userTerms, instruction: options?.instruction }),
+        signal: options?.signal,
       },
       mode !== "free",
     );
@@ -242,6 +253,14 @@ export const api = {
       clearTimeout(timer);
     }
   },
+  startExport: (jobId: string, mode: ExportMode, side: "left" | "right", signal: AbortSignal) =>
+    request<ExportStatus>(`/api/jobs/${jobId}/export/start?mode=${mode}&side=${side}`, { method: "POST", signal }),
+  exportStatus: (jobId: string, mode: ExportMode, side: "left" | "right", snapshot: string, signal: AbortSignal) =>
+    request<ExportStatus>(
+      `/api/jobs/${jobId}/export/status?${new URLSearchParams({ mode, side, snapshot })}`, { signal },
+    ),
+  createExportBundle: (items: ExportBundleItem[], signal: AbortSignal) =>
+    request<ExportBundle>("/api/exports/bundle", { method: "POST", ...json({ items }), signal }),
   parseGlossary: (file: File, ai: boolean) => {
     const form = new FormData();
     form.append("file", file);
@@ -283,7 +302,8 @@ export const api = {
     request<SegmentData>(`/api/segments/revisions/${revisionId}/revert`, { method: "POST" }),
 };
 
-export const fileUrl = (jobId: string, name: "original.pdf" | "background.pdf") => `/api/jobs/${jobId}/files/${name}`;
+export const fileUrl = (jobId: string, name: "original.pdf" | "background.pdf", version?: number) =>
+  `/api/jobs/${jobId}/files/${name}${name === "background.pdf" && version !== undefined ? `?v=${version}` : ""}`;
 export type ExportMode = "mono" | "dual";
 export const exportUrl = (jobId: string, mode: ExportMode, side: "left" | "right" = "right") =>
   `/api/jobs/${jobId}/export?mode=${mode}${mode === "dual" ? `&side=${side}` : ""}`;
@@ -295,7 +315,7 @@ export function subscribeJob(id: string, onJob: (job: Job) => void, onError?: ()
   es.onmessage = (e) => {
     const job = JSON.parse(e.data as string) as Job;
     onJob(job);
-    if (job.status === "done" || job.status === "failed" || job.status === "cancelled") es.close();
+    if ((job.status === "done" && !job.active_expansion) || job.status === "failed" || job.status === "cancelled") es.close();
   };
   es.onerror = () => {
     es.close();

@@ -277,7 +277,7 @@ def test_http_concurrent_exports_after_edit_use_distinct_snapshots(export_contai
     folder.mkdir()
     outdated = folder / "mono-right-outdated.pdf"
     outdated.write_bytes(b"%PDF-outdated")
-    old_time = time.time() - 120
+    old_time = time.time() - 901
     os.utime(outdated, (old_time, old_time))
     first_started, second_looked_up, release = threading.Event(), threading.Event(), threading.Event()
     rendered = {}

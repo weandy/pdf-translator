@@ -9,6 +9,9 @@ import { DownloadMenu } from "./DownloadMenu";
 import { ExportDownloadLink } from "./ExportDownloadLink";
 
 const preparedPdf = {
+  status: "ready" as const,
+  detail: "",
+  snapshot: "0123456789abcdef",
   filename: "synthetic.pdf",
   download_url: "/api/jobs/synthetic/export",
   size_bytes: 100,
@@ -52,8 +55,8 @@ describe("任务下载", () => {
     link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   }
 
-  async function download() {
-    await act(async () => clickDownload());
+  async function download(link?: HTMLAnchorElement) {
+    await act(async () => clickDownload(link));
   }
 
   async function select(mode: "mono" | "dual") {
@@ -65,25 +68,25 @@ describe("任务下载", () => {
   }
 
   it("默认双语右侧译文，切换仅译文及切回双语均使用对应参数并重置下载状态", async () => {
-    const prepare = vi.spyOn(api, "prepareExport").mockResolvedValue(preparedPdf);
+    const prepare = vi.spyOn(api, "startExport").mockResolvedValue(preparedPdf);
     await render("switch-format");
     expect(host.querySelector("select")!.value).toBe("dual");
     expect(host.querySelector("label")!.htmlFor).toBe(host.querySelector("select")!.id);
     await download();
-    expect(prepare).toHaveBeenLastCalledWith("synthetic", "dual", "right");
+    expect(prepare).toHaveBeenLastCalledWith("synthetic", "dual", "right", expect.any(AbortSignal));
     expect(host.textContent).toContain("已开始下载");
     await select("mono");
     expect(host.querySelector("a")!.textContent).toBe("下载 PDF");
     await download();
-    expect(prepare).toHaveBeenLastCalledWith("synthetic", "mono", "right");
+    expect(prepare).toHaveBeenLastCalledWith("synthetic", "mono", "right", expect.any(AbortSignal));
     await select("dual");
     await download();
-    expect(prepare).toHaveBeenLastCalledWith("synthetic", "dual", "right");
+    expect(prepare).toHaveBeenLastCalledWith("synthetic", "dual", "right", expect.any(AbortSignal));
     expect(prepare).toHaveBeenCalledTimes(3);
   });
 
   it("同格式可再次下载，反馈始终在按钮外更新", async () => {
-    const prepare = vi.spyOn(api, "prepareExport").mockResolvedValue(preparedPdf);
+    const prepare = vi.spyOn(api, "startExport").mockResolvedValue(preparedPdf);
     await render("repeat-download");
     const link = host.querySelector("a")!;
     const status = host.querySelector('[role="status"]')!;
@@ -97,21 +100,21 @@ describe("任务下载", () => {
     await download();
 
     expect(prepare.mock.calls).toEqual([
-      ["synthetic", "dual", "right"],
-      ["synthetic", "dual", "right"],
+      ["synthetic", "dual", "right", expect.any(AbortSignal)],
+      ["synthetic", "dual", "right", expect.any(AbortSignal)],
     ]);
     expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(2);
   });
 
-  it("用准备结果的快照链接下载，提示最多五个截断页码与总页数", async () => {
+  it("用准备结果的快照链接下载，提示最多八个截断页码与总页数", async () => {
     const downloadUrl = "/api/jobs/synthetic/export?mode=dual&side=right&snapshot=0123456789abcdef";
-    const withOverflow = { ...preparedPdf, download_url: downloadUrl, overflow_pages: [1, 2, 3, 4, 5, 7] };
-    vi.spyOn(api, "prepareExport").mockResolvedValue(withOverflow);
+    const withOverflow = { ...preparedPdf, download_url: downloadUrl, overflow_pages: [1, 2, 3, 4, 5, 7, 9, 12, 13] };
+    vi.spyOn(api, "startExport").mockResolvedValue(withOverflow);
     const click = vi.mocked(HTMLAnchorElement.prototype.click);
     await render("overflow");
     await download();
     const status = host.querySelector('[role="status"]')!;
-    expect(status.textContent).toBe("已开始下载，第 1、2、3、4、5 页等共 6 页部分译文未写入 PDF");
+    expect(status.textContent).toBe("已开始下载，第 1、2、3、4、5、7、9、12 页等共 9 页部分译文未写入 PDF");
     expect(click).toHaveBeenCalledOnce();
     expect((click.mock.contexts[0] as HTMLAnchorElement).getAttribute("href")).toBe(downloadUrl);
 
@@ -122,7 +125,7 @@ describe("任务下载", () => {
   it("再次准备或失败时清除上次的截断提示", async () => {
     let reject!: (reason: Error) => void;
     const withOverflow = { ...preparedPdf, overflow_pages: [3, 7] };
-    vi.spyOn(api, "prepareExport")
+    vi.spyOn(api, "startExport")
       .mockResolvedValueOnce(withOverflow)
       .mockImplementationOnce(
         () =>
@@ -141,7 +144,7 @@ describe("任务下载", () => {
   });
 
   it("返回任务列表后恢复所选格式，各卡片的格式独立", async () => {
-    const prepare = vi.spyOn(api, "prepareExport").mockResolvedValue(preparedPdf);
+    const prepare = vi.spyOn(api, "startExport").mockResolvedValue(preparedPdf);
     await render("saved-format");
     await select("mono");
     await act(async () => root.render(null));
@@ -151,7 +154,7 @@ describe("任务下载", () => {
     await render("saved-format");
     expect(host.querySelector("select")!.value).toBe("mono");
     await download();
-    expect(prepare).toHaveBeenCalledWith("synthetic", "mono", "right");
+    expect(prepare).toHaveBeenCalledWith("synthetic", "mono", "right", expect.any(AbortSignal));
 
     await select("dual");
     await act(async () => root.render(null));
@@ -161,7 +164,7 @@ describe("任务下载", () => {
 
   it("准备期间锁定类型并阻止重复下载，失败后可切换类型", async () => {
     let reject!: (reason: Error) => void;
-    const prepare = vi.spyOn(api, "prepareExport").mockImplementation(
+    const prepare = vi.spyOn(api, "startExport").mockImplementation(
       () =>
         new Promise((_, fail) => {
           reject = fail;
@@ -189,7 +192,7 @@ describe("任务下载", () => {
 
   it("控件卸载时释放准备锁，晚完成的请求不会重复释放", async () => {
     let complete!: (result: typeof preparedPdf) => void;
-    vi.spyOn(api, "prepareExport").mockImplementation(
+    vi.spyOn(api, "startExport").mockImplementation(
       () =>
         new Promise((resolve) => {
           complete = resolve;
@@ -213,13 +216,46 @@ describe("任务下载", () => {
 
     await act(async () => complete(preparedPdf));
     expect(onPreparingChange.mock.calls).toEqual([[true], [false]]);
-    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledOnce();
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+  });
+
+  it("溢出页支持连续点击，切换任务时清空", async () => {
+    vi.spyOn(api, "startExport").mockResolvedValue({ ...preparedPdf, overflow_pages: [5] });
+    const locate = vi.fn();
+    await act(async () => root.render(<DownloadMenu jobId="synthetic" onLocatePage={locate} />));
+    await act(async () => host.querySelector("button")!.click());
+    await download(document.querySelector<HTMLAnchorElement>(".download-menu a")!);
+    const button = host.querySelector<HTMLButtonElement>('[aria-label="定位到第 5 页"]')!;
+    await act(async () => {
+      button.click();
+      button.click();
+    });
+    expect(locate.mock.calls).toEqual([[5], [5]]);
+    await act(async () => root.render(<DownloadMenu jobId="other" onLocatePage={locate} />));
+    expect(host.querySelector('[aria-label="定位到第 5 页"]')).toBeNull();
+  });
+
+  it("下载菜单挂在 body 上，点击菜单内保持打开，Escape 关闭并归还焦点", async () => {
+    await act(async () => root.render(<DownloadMenu jobId="synthetic" />));
+    const toggle = host.querySelector("button")!;
+    await act(async () => toggle.click());
+    const menu = document.querySelector<HTMLDivElement>('.download-menu[role="menu"]')!;
+    expect(menu.parentElement).toBe(document.body);
+    expect(menu.style.position).toBe("fixed");
+    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(3);
+    await act(async () => menu.firstElementChild!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+    expect(menu.isConnected).toBe(true);
+    await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Escape", bubbles: true, cancelable: true,
+    })));
+    expect(menu.isConnected).toBe(false);
+    expect(document.activeElement).toBe(toggle);
   });
 
   it("阅读器关闭准备中的菜单后，可再次打开并下载同一种格式", async () => {
     let complete!: (result: typeof preparedPdf) => void;
     const prepare = vi
-      .spyOn(api, "prepareExport")
+      .spyOn(api, "startExport")
       .mockImplementationOnce(
         () =>
           new Promise((resolve) => {
@@ -231,23 +267,27 @@ describe("任务下载", () => {
     const toggle = host.querySelector("button")!;
     const status = host.querySelector('[role="status"]')!;
     await act(async () => toggle.click());
-    await download();
+    const menu = () => document.querySelector<HTMLDivElement>(".download-menu")!;
+    await download(menu().querySelector("a")!);
     expect(toggle.disabled).toBe(true);
     expect(toggle.textContent).toBe("下载 PDF");
     expect(status.textContent).toBe("正在准备 PDF…");
-    expect([...host.querySelectorAll("a")].every((link) => link.getAttribute("aria-disabled") === "true")).toBe(true);
+    expect([...menu().querySelectorAll("a")].map((link) => link.getAttribute("aria-disabled"))).toEqual([
+      "true", "true", "true",
+    ]);
 
-    await act(async () => document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
-    expect(host.querySelector('[role="menu"]')).toBeNull();
+    await act(async () => document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+    expect(menu().hidden).toBe(true);
+    expect(menu().getAttribute("role")).toBeNull();
     await act(async () => complete(preparedPdf));
     expect(toggle.disabled).toBe(false);
     expect(status.textContent).toBe("已开始下载");
 
     await act(async () => toggle.click());
-    await download();
+    await download(menu().querySelector("a")!);
     expect(prepare.mock.calls).toEqual([
-      ["synthetic", "mono", "right"],
-      ["synthetic", "mono", "right"],
+      ["synthetic", "mono", "right", expect.any(AbortSignal)],
+      ["synthetic", "mono", "right", expect.any(AbortSignal)],
     ]);
   });
 });

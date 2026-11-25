@@ -46,6 +46,10 @@ export function clearHistory(): void {
   remove(KEY);
 }
 
+export function readHistory(): HistoryEntry[] {
+  return current;
+}
+
 export function useHistory(): HistoryEntry[] {
   return useSyncExternalStore(
     (l) => {

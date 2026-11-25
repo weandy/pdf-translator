@@ -3,6 +3,7 @@
 import asyncio
 import json
 from collections.abc import AsyncGenerator, Coroutine
+from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import cast
 
@@ -10,6 +11,7 @@ import pytest
 from fastapi import Request
 
 from pdftr.api import routes_jobs
+from pdftr.domain.expansion import ExpansionOp, ExpansionStatus
 from pdftr.domain.job import Job, JobStatus
 from pdftr.pipeline.events import EventBus
 from pdftr.pipeline.runner import Pipeline
@@ -19,6 +21,7 @@ from pdftr.pipeline.usecases import NotFound
 class MemoryStore:
     def __init__(self) -> None:
         self.job = Job(id="0000000000000001", filename="synthetic.pdf", status=JobStatus.RUNNING)
+        self.expansion: ExpansionOp | None = None
 
     def get_job(self, job_id: str) -> Job | None:
         return self.job.model_copy(deep=True) if job_id == self.job.id else None
@@ -31,7 +34,14 @@ class MemoryStore:
 def setup_stream():
     store = MemoryStore()
     events = EventBus()
-    pipeline = cast(Pipeline, SimpleNamespace(deps=SimpleNamespace(store=store, events=events)))
+    pipeline = cast(
+        Pipeline,
+        SimpleNamespace(
+            deps=SimpleNamespace(store=store, events=events),
+            content_access=nullcontext,
+            active_expansion=lambda job_id: store.expansion,
+        ),
+    )
 
     async def connected() -> bool:
         return False
@@ -116,6 +126,39 @@ def test_disconnected_client_unsubscribes():
         assert status(await anext(stream)) == "running"
         with pytest.raises(StopAsyncIteration):
             await anext(stream)
+        assert not events._subs
+
+    asyncio.run(scenario())
+
+
+def test_done_job_with_expansion_stays_open_until_published():
+    async def scenario():
+        store, events, pipeline, request = setup_stream()
+        store.finish()
+        store.expansion = ExpansionOp(
+            id="synthetic",
+            job_id=store.job.id,
+            base_version=1,
+            target_version=2,
+            requested_pages=[1],
+            merged_pages=[0, 1],
+            status=ExpansionStatus.RUNNING,
+        )
+        response = await routes_jobs.job_events(store.job.id, request, pipeline)
+        stream = cast(AsyncGenerator[str], response.body_iterator)
+        try:
+            before = json.loads((await anext(stream)).removeprefix("data: "))
+            assert before["status"] == "done" and before["active_expansion"]["status"] == "running"
+            events.publish(store.job)
+            store.expansion = None
+            store.job.content_version = 2
+            events.publish(store.job)
+            published = json.loads((await anext(stream)).removeprefix("data: "))
+            assert published["content_version"] == 2 and published["active_expansion"] is None
+            with pytest.raises(StopAsyncIteration):
+                await anext(stream)
+        finally:
+            await stream.aclose()
         assert not events._subs
 
     asyncio.run(scenario())

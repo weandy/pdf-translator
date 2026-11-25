@@ -208,21 +208,21 @@ export async function countPages(file: File): Promise<number> {
 }
 
 export function usePdf(url: string | null): { doc: PDFDocumentProxy | null; error: string | null } {
-  const [state, setState] = useState<{ doc: PDFDocumentProxy | null; error: string | null }>({ doc: null, error: null });
+  const [state, setState] = useState<{ url: string; doc: PDFDocumentProxy | null; error: string | null } | null>(null);
   useEffect(() => {
     if (!url) return;
     let alive = true;
     const handle = acquire(url);
     handle.promise.then(
-      (doc) => alive && setState({ doc, error: null }),
-      (e: unknown) => alive && setState({ doc: null, error: String(e) }),
+      (doc) => alive && setState({ url, doc, error: null }),
+      (e: unknown) => alive && setState({ url, doc: null, error: String(e) }),
     );
     return () => {
       alive = false;
       handle.release();
     };
   }, [url]);
-  return state;
+  return state?.url === url ? state : { doc: null, error: null };
 }
 
 interface CanvasProps {

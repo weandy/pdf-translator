@@ -19,9 +19,8 @@ import { HomePage } from "@/pages/HomePage";
 import { StatsPage } from "@/pages/StatsPage";
 import { TermsPage } from "@/pages/TermsPage";
 import { api, setAuthHeaders, type ServerConfig } from "@/shared/api/client";
-
-// 把浏览器里保存的 Key 注入接口客户端（shared 层不依赖 entities，由这里连接）
-setAuthHeaders(() => authHeaders());
+import { ConfirmProvider } from "@/shared/feedback/ConfirmDialog";
+import { ToastProvider } from "@/shared/feedback/Toast";
 
 // 阅读器连同 pdf.js、KaTeX 按需加载，首页不用下载它们
 const JobPage = lazy(() => import("@/pages/JobPage").then((m) => ({ default: m.JobPage })));
@@ -32,13 +31,18 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
 });
 
+setAuthHeaders(() => authHeaders(undefined, queryClient.getQueryData<ServerConfig>(["config"])));
+
 interface LayoutContext {
   openSettings: () => void;
 }
 
 function Layout() {
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsRoute, setSettingsRoute] = useState<string | null>(null);
   const location = useLocation();
+  if (settingsRoute !== null && settingsRoute !== location.key) setSettingsRoute(null);
+  const openSettings = () => setSettingsRoute(location.key);
+  useQuery({ queryKey: ["config"], queryFn: api.config });
   usePageVisit(location.key);
   return (
     <>
@@ -65,12 +69,12 @@ function Layout() {
         <Link to="/stats" className="topbar-link">
           统计
         </Link>
-        <button type="button" className="quiet" onClick={() => setSettingsOpen(true)}>
+        <button type="button" className="quiet" onClick={openSettings}>
           设置
         </button>
       </header>
-      <Outlet context={{ openSettings: () => setSettingsOpen(true) } satisfies LayoutContext} />
-      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
+      <Outlet context={{ openSettings } satisfies LayoutContext} />
+      {settingsRoute === location.key && <SettingsPanel onClose={() => setSettingsRoute(null)} />}
     </>
   );
 }
@@ -151,7 +155,11 @@ const router = createBrowserRouter([
 export function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <ToastProvider>
+        <ConfirmProvider>
+          <RouterProvider router={router} />
+        </ConfirmProvider>
+      </ToastProvider>
     </QueryClientProvider>
   );
 }

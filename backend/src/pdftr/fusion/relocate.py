@@ -8,7 +8,7 @@ MinerU 把同一段落的后续行并进前一块（这些行的坐标仍是它�
 
 import difflib
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from pdftr.domain.chars import Char, CharPage
@@ -277,6 +277,8 @@ def dedupe_page_blocks(blocks: list[Block], page_chars: Sequence[Char] | None = 
 def relocate(
     layout: LayoutResult,
     char_pages: Sequence[CharPage] | None = None,
+    *,
+    can_move: Callable[[int, int, LayoutLine], bool] | None = None,
 ) -> tuple[LayoutResult, RelocationReport]:
     result = layout.model_copy(deep=True)
     report = RelocationReport()
@@ -365,6 +367,9 @@ def relocate(
                 cursor = k
                 detached = True
                 target_page, target = candidates[k]
+                if can_move is not None and not can_move(pi, target_page, line):
+                    stays.append(line)
+                    continue
                 if not target.lines:
                     report.links[(target_page, target.order)] = prev
                     prev = (target_page, target.order)

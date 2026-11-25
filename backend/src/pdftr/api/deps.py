@@ -7,6 +7,7 @@ from fastapi import Header, HTTPException, Request
 
 from pdftr.container import Container
 from pdftr.domain.job import Job
+from pdftr.pipeline import usecases
 from pdftr.pipeline.runner import Pipeline
 from pdftr.pipeline.secrets import Secrets
 from pdftr.pipeline.url_guard import validate_llm_url
@@ -156,8 +157,61 @@ def resolve_existing_job_secrets(request: Request, job: Job, *, for_retranslate:
         and job.stage == "parse"
         and not c.pipeline.deps.artifacts.path(job.id, "layout.json").exists()
     )
+    return _existing_channel_secrets(request, job, needs_parser=needs_parser)
+
+
+def _build_limits(request: Request, channel_mode: Literal["byok", "free"]) -> usecases.Limits:
+    c = container(request)
+    settings = c.settings
+    snap = c.runtime_config.snapshot() if c.runtime_config is not None else None
+    paddle_public_enabled = snap.data.parser.paddle_public_enabled if snap is not None else False
+    # 免费模式或自备模式下未传入个人 X-Paddle-Key 时，均视为使用站点 PaddleOCR 能力，须受公开开关约束
+    user_has_paddle_key = channel_mode == "byok" and bool((request.headers.get("x-paddle-key") or "").strip())
+    using_site_paddle_token = not user_has_paddle_key
+    if snap is not None and snap.revision > 0:
+        sys_cfg = snap.data.system
+        return usecases.Limits(
+            max_upload_mb=sys_cfg.max_upload_mb,
+            max_pages=sys_cfg.max_pages,
+            max_active_jobs=sys_cfg.max_concurrent_jobs + sys_cfg.max_queued_jobs,
+            free_max_pages=snap.data.free_translation.max_pages,
+            free_max_active_jobs=sys_cfg.free_max_concurrent_translations + sys_cfg.free_max_queued_jobs,
+            min_free_disk_mb=sys_cfg.min_free_disk_mb,
+            retention_hours=sys_cfg.retention_hours,
+            maintenance_mode=sys_cfg.maintenance_mode,
+            site_notice=sys_cfg.site_notice,
+            paddle_public_enabled=paddle_public_enabled,
+            using_site_paddle_token=using_site_paddle_token,
+        )
+    sys_cfg = snap.data.system if snap is not None else None
+    return usecases.Limits(
+        max_upload_mb=settings.max_upload_mb,
+        max_pages=settings.max_pages,
+        max_active_jobs=settings.max_concurrent_jobs + settings.max_queued_jobs,
+        free_max_pages=snap.data.free_translation.max_pages if snap is not None else None,
+        free_max_active_jobs=(
+            sys_cfg.free_max_concurrent_translations + sys_cfg.free_max_queued_jobs if sys_cfg is not None else 7
+        ),
+        min_free_disk_mb=settings.min_free_disk_mb,
+        retention_hours=settings.retention_hours,
+        maintenance_mode=sys_cfg.maintenance_mode if sys_cfg is not None else False,
+        site_notice=sys_cfg.site_notice if sys_cfg is not None else "",
+        paddle_public_enabled=paddle_public_enabled,
+        using_site_paddle_token=using_site_paddle_token,
+    )
+
+
+def resolve_expansion_secrets(request: Request, job: Job, *, needs_parser: bool) -> Secrets:
+    sec = _existing_channel_secrets(request, job, needs_parser=needs_parser)
+    if needs_parser:
+        usecases._check_paddle_access(job.options.parser, sec, _build_limits(request, sec.channel_mode))
+    usecases._require_secrets(sec, parser=job.options.parser if needs_parser else None)
+    return sec
+
+
+def _existing_channel_secrets(request: Request, job: Job, *, needs_parser: bool) -> Secrets:
     if job.channel_mode == "free":
-        return c.free_secrets(
+        return container(request).free_secrets(
             job.channel_provider_id or None,
             require_parser=needs_parser,
             parser=job.options.parser if needs_parser else None,

@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from "vitest";
 
 import { useJob } from "@/entities/job/model";
-import { api, ApiError, subscribeJob, type Job } from "@/shared/api/client";
+import { api, ApiError, subscribeJob, type Expansion, type Job } from "@/shared/api/client";
 
 vi.mock("@/shared/api/client", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/shared/api/client")>();
@@ -22,6 +22,7 @@ function job(status: Job["status"], id = ID, progress = 0.5): Job {
     progress,
     message: "",
     error: "",
+    content_version: 1,
     page_count: 1,
     options: {
       parser: "mineru-cloud",
@@ -110,6 +111,25 @@ describe("任务详情状态同步", () => {
     const count = requests.mock.calls.length;
     await advance(30000);
     expect(requests).toHaveBeenCalledTimes(count);
+  });
+
+  it("已完成任务正在补翻时持续观察，直到收到新版本", async () => {
+    const before = job("done");
+    const active: Expansion = {
+      id: "operation", job_id: ID, status: "running", stage: "parse", progress: 0.5,
+      message: "", error: "", base_version: 1, target_version: 2, requested_pages: [1],
+      merged_pages: [0, 1], cost_cny: null, fallback_used: false,
+      created_at: before.created_at, updated_at: before.created_at,
+    };
+    requests.mockResolvedValue({ ...before, active_expansion: active });
+    await render();
+    expect(current.job?.active_expansion?.id).toBe(active.id);
+    expect(unsubscribe).not.toHaveBeenCalled();
+    await advance(3000);
+    expect(requests).toHaveBeenCalledTimes(2);
+    await act(async () => onEvent({ ...before, content_version: 2 }));
+    expect(current.job?.content_version).toBe(2);
+    expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
   it("首次查询暂时失败后持续重试，成功时自动清除错误", async () => {

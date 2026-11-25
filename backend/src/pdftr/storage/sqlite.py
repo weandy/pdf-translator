@@ -4,12 +4,13 @@
 """
 
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
+from pdftr.domain.expansion import ExpansionOp, ExpansionStatus
 from pdftr.domain.ir import Revision, Segment, SegmentStatus
 from pdftr.domain.job import Job, JobStatus
 from pdftr.domain.stats import AdminStatsSnapshot, OverviewFailureSummary, StatsOut
@@ -21,7 +22,9 @@ from pdftr.domain.submissions import (
     failure_details,
 )
 from pdftr.domain.user_agent import parse_user_agent
+from pdftr.storage import expansions
 from pdftr.storage.connection import connect, retry_busy, write_tx
+from pdftr.storage.port import RetranslateConflict
 from pdftr.storage.stats import SCHEMA as STATS_SCHEMA
 from pdftr.storage.stats import SqliteStats, utc_now
 from pdftr.storage.submissions import SCHEMA as SUBMISSIONS_SCHEMA
@@ -80,7 +83,7 @@ class SqliteStore:
         self._submissions = SqliteSubmissions(self._db)
         with self._lock, write_tx(self._db):
             # 固定的建表语句逐条执行，避免 executescript 隐式提交。
-            for statement in (_SCHEMA + STATS_SCHEMA + SUBMISSIONS_SCHEMA).split(";"):
+            for statement in (_SCHEMA + STATS_SCHEMA + SUBMISSIONS_SCHEMA + expansions.EXPANSIONS_SCHEMA).split(";"):
                 if statement.strip():
                     self._db.execute(statement)
             ensure_submission_columns(self._db)
@@ -259,6 +262,7 @@ class SqliteStore:
             self._queue_artifact_cleanup(job_id)
             self._db.execute("DELETE FROM segments WHERE job_id = ?", (job_id,))
             self._db.execute("DELETE FROM revisions WHERE job_id = ?", (job_id,))
+            self._db.execute("DELETE FROM job_expansions WHERE job_id = ?", (job_id,))
             self._db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
 
     def _queue_artifact_cleanup(self, job_id: str) -> None:
@@ -302,6 +306,46 @@ class SqliteStore:
             rows = self._db.execute("SELECT data FROM jobs WHERE status = ?", (status,)).fetchall()
         return [Job.model_validate_json(r[0]) for r in rows]
 
+    @retry_busy
+    def create_expansion(self, op: ExpansionOp) -> None:
+        with self._lock, write_tx(self._db):
+            self._db.execute(
+                "INSERT INTO job_expansions (id, job_id, status, data, created_at) VALUES (?, ?, ?, ?, ?)",
+                (op.id, op.job_id, op.status, op.model_dump_json(), op.created_at.isoformat()),
+            )
+
+    @retry_busy
+    def expansion(self, job_id: str, op_id: str) -> ExpansionOp | None:
+        with self._lock:
+            return expansions.load_expansion(self._db, job_id, op_id)
+
+    @retry_busy
+    def active_expansions(self, job_id: str | None = None) -> list[ExpansionOp]:
+        with self._lock:
+            return expansions.active_expansions(self._db, job_id)
+
+    @retry_busy
+    def save_expansion(self, op: ExpansionOp) -> None:
+        with self._lock, write_tx(self._db):
+            expansions.save_expansion(self._db, op)
+
+    @retry_busy
+    def finish_expansion(self, job_id: str, op_id: str, status: ExpansionStatus, error: str) -> Job:
+        with self._lock, write_tx(self._db):
+            return expansions.finish_expansion(self._db, job_id, op_id, status, error)
+
+    @retry_busy
+    def publish_expansion(
+        self,
+        job_id: str,
+        op_id: str,
+        old_ids: set[str],
+        new_segments: Sequence[Segment],
+        ordered_ids: Sequence[str],
+    ) -> Job:
+        with self._lock, write_tx(self._db):
+            return expansions.publish_expansion(self._db, job_id, op_id, old_ids, new_segments, ordered_ids)
+
     # ---- 段落 ----
     @retry_busy
     def replace_segments(self, job_id: str, segments: list[Segment]) -> None:
@@ -315,10 +359,47 @@ class SqliteStore:
     @retry_busy
     def save_segments(self, segments: list[Segment]) -> None:
         with self._lock, write_tx(self._db):
-            self._db.executemany(
-                "UPDATE segments SET status = ?, data = ? WHERE id = ?",
-                [(s.status, s.model_dump_json(), s.id) for s in segments],
-            )
+            self._save_segments(segments)
+
+    def _save_segments(self, segments: list[Segment]) -> None:
+        self._db.executemany(
+            "UPDATE segments SET status = ?, data = ? WHERE id = ?",
+            [(s.status, s.model_dump_json(), s.id) for s in segments],
+        )
+
+    @retry_busy
+    def commit_retranslate(
+        self,
+        *,
+        expected_job: Job,
+        expected_before: Mapping[str, Segment],
+        updated_segments: list[Segment],
+        revisions_to_add: list[Revision],
+        cost_delta_cny: float | None,
+        used_fallback: bool,
+    ) -> None:
+        with self._lock, write_tx(self._db):
+            row = self._db.execute("SELECT data FROM jobs WHERE id = ?", (expected_job.id,)).fetchone()
+            job = Job.model_validate_json(row[0]) if row else None
+            if job is None or job.status is not JobStatus.DONE or job.updated_at != expected_job.updated_at:
+                raise RetranslateConflict("任务已变化，请刷新后重试")
+            for segment_id, before in expected_before.items():
+                row = self._db.execute(
+                    "SELECT data FROM segments WHERE job_id = ? AND id = ?", (job.id, segment_id)
+                ).fetchone()
+                if row is None or Segment.model_validate_json(row[0]) != before:
+                    raise RetranslateConflict("段落已变化，请刷新后重试")
+            self._save_segments(updated_segments)
+            for rev in revisions_to_add:
+                self._insert_revision(rev)
+            if cost_delta_cny is not None or used_fallback:
+                if cost_delta_cny is not None:
+                    job.cost_cny = (job.cost_cny or 0) + cost_delta_cny
+                job.fallback_used |= used_fallback
+                job.updated_at = utc_now()
+                self._db.execute("UPDATE jobs SET data = ? WHERE id = ?", (job.model_dump_json(), job.id))
+                if self._submission_audit_enabled:
+                    self._submissions.job_saved(job, job.updated_at)
 
     @retry_busy
     def segments(self, job_id: str) -> list[Segment]:
@@ -344,11 +425,14 @@ class SqliteStore:
     @retry_busy
     def add_revision(self, rev: Revision) -> Revision:
         with self._lock, write_tx(self._db):
-            cur = self._db.execute(
-                "INSERT INTO revisions (job_id, segment_id, data) VALUES (?, ?, '')", (rev.job_id, rev.segment_id)
-            )
-            rev = rev.model_copy(update={"id": cur.lastrowid})
-            self._db.execute("UPDATE revisions SET data = ? WHERE id = ?", (rev.model_dump_json(), rev.id))
+            return self._insert_revision(rev)
+
+    def _insert_revision(self, rev: Revision) -> Revision:
+        cur = self._db.execute(
+            "INSERT INTO revisions (job_id, segment_id, data) VALUES (?, ?, '')", (rev.job_id, rev.segment_id)
+        )
+        rev = rev.model_copy(update={"id": cur.lastrowid})
+        self._db.execute("UPDATE revisions SET data = ? WHERE id = ?", (rev.model_dump_json(), rev.id))
         return rev
 
     @retry_busy

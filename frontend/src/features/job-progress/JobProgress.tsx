@@ -1,11 +1,15 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { deleteJob, STAGE_LABELS, STAGE_ORDER } from "@/entities/job/model";
 import { api, type Job } from "@/shared/api/client";
 import { askNotify, notifyState, type NotifyState } from "@/shared/attention/attention";
+import { useConfirm } from "@/shared/feedback/ConfirmDialog";
+import { useToast } from "@/shared/feedback/Toast";
 import { ErrorCard } from "@/shared/feedback/ErrorCard";
 import { formatDuration, formatRemaining, useNow } from "@/shared/time/elapsed";
+
+import { useMineruQueueElapsed } from "./pending";
 
 interface Props {
   job: Job;
@@ -15,58 +19,61 @@ interface Props {
 /** 只有解析（逐页）和翻译（逐批）有真实的完成比例，其余阶段显示“仍在处理”的动画条。 */
 const HAS_FRACTION = new Set(["parse", "translate"]);
 
-/** 只有 MinerU 仍在等待服务端资源时，才显示高峰排队提示。 */
-export function isMineruPending(message: string): boolean {
-  const normalized = message.trim().toLowerCase();
-  return (
-    normalized.includes("排队") ||
-    normalized.includes("pending") ||
-    normalized.includes("waiting-file") ||
-    normalized.includes("等待 mineru") ||
-    normalized.includes("等待解析")
-  );
-}
-
 export function JobProgress({ job, onRetried }: Props) {
   const navigate = useNavigate();
+  const confirm = useConfirm();
+  const toast = useToast();
+  const latest = useRef(job);
+  useLayoutEffect(() => { latest.current = job; }, [job]);
+  const inFlight = useRef(false);
   const [error, setError] = useState<string | null>(null);
-  const [cancelling, setCancelling] = useState(false);
+  const [busy, setBusy] = useState<"retry" | "cancel" | "delete" | null>(null);
   const [notifying, setNotifying] = useState<NotifyState>(notifyState);
   const live = job.status === "running" || job.status === "queued";
   const now = useNow(live);
+  const cloudQueueElapsed = useMineruQueueElapsed(job);
   const current = STAGE_ORDER.indexOf(job.stage);
   const since = (iso: string | null | undefined) => (iso ? formatDuration(now - Date.parse(iso)) : null);
 
-  const retry = async () => {
+  const run = async (action: "retry" | "cancel" | "delete") => {
+    if (inFlight.current) return;
+    if (action === "cancel" && !(await confirm({
+      title: "取消翻译",
+      message: "取消这个任务？已完成的步骤会保留，之后可以从中断处重新开始。",
+      confirmLabel: "确认取消",
+    }))) return;
+    if (action === "delete" && !(await confirm({
+      title: "删除任务",
+      message: `删除“${job.filename}”的原文与译文？删除后无法恢复。`,
+      confirmLabel: "确认删除",
+      tone: "danger",
+    }))) return;
+    const currentJob = latest.current;
+    const active = currentJob.status === "running" || currentJob.status === "queued";
+    if (inFlight.current || job.id !== currentJob.id || active !== (action === "cancel")) return;
+    inFlight.current = true;
+    setBusy(action);
     setError(null);
     try {
-      await api.retryJob(job.id, { channelMode: job.channel_mode });
-      onRetried();
+      if (action === "retry") {
+        await api.retryJob(job.id, { channelMode: currentJob.channel_mode });
+        toast.info("已提交重试请求");
+        onRetried();
+      } else if (action === "cancel") {
+        await api.cancelJob(job.id);
+        toast.info("已提交取消请求，正在停止任务…");
+      } else {
+        await deleteJob(job.id);
+        toast.success("已删除任务");
+        void navigate("/");
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
-
-  const cancel = async () => {
-    if (!window.confirm("取消这个任务？已完成的步骤会保留，之后可以从中断处重新开始。")) return;
-    setError(null);
-    setCancelling(true);
-    try {
-      await api.cancelJob(job.id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const message = e instanceof Error ? e.message : String(e);
+      setError(message);
+      toast.error(message);
     } finally {
-      setCancelling(false);
-    }
-  };
-
-  const remove = async () => {
-    if (!window.confirm(`删除“${job.filename}”的原文与译文？删除后无法恢复。`)) return;
-    try {
-      await deleteJob(job.id);
-      void navigate("/");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      inFlight.current = false;
+      setBusy(null);
     }
   };
 
@@ -117,9 +124,9 @@ export function JobProgress({ job, onRetried }: Props) {
                   >
                     <span style={fraction === null ? undefined : { width: `${fraction * 100}%` }} />
                   </div>
-                  {stage === "parse" && job.options.parser === "mineru-cloud" && isMineruPending(job.message) && (
-                    <p className="wait-note">
-                      MinerU 免费额度在高峰时可能要排队 10 分钟以上。可以先关闭这个页面，之后在首页“我的任务”里打开。
+                  {stage === "parse" && cloudQueueElapsed > 0 && (
+                    <p className="wait-note" role="status">
+                      当前 MinerU 云端队列较忙，已等待 {formatDuration(cloudQueueElapsed)}。可以先关闭此页面，稍后在首页「我的任务」查看进度。
                     </p>
                   )}
                 </div>
@@ -134,9 +141,9 @@ export function JobProgress({ job, onRetried }: Props) {
                         : "已完成的步骤会保留，可以从中断处重新开始。"
                     }
                     actionLabel={state === "failed" ? "从中断处重试" : "重新开始"}
-                    onAction={() => void retry()}
+                    busy={busy !== null} onAction={() => void run("retry")}
                     secondaryLabel="删除"
-                    onSecondary={() => void remove()}
+                    onSecondary={() => void run("delete")}
                   />
                 </div>
               )}
@@ -155,12 +162,12 @@ export function JobProgress({ job, onRetried }: Props) {
               完成时通知我
             </button>
           ) : null}
-          <button type="button" className="quiet danger" disabled={cancelling} onClick={() => void cancel()}>
-            {cancelling ? "正在取消…" : "取消翻译"}
+          <button type="button" className="quiet danger" disabled={busy !== null} onClick={() => void run("cancel")}>
+            {busy === "cancel" ? "正在取消…" : "取消翻译"}
           </button>
         </div>
       )}
-      {error && <ErrorCard title="操作没有完成" message={error} actionLabel="再试一次" onAction={() => void retry()} />}
+      {error && <ErrorCard title="操作没有完成" message={error} actionLabel="再试一次" busy={busy !== null} onAction={() => void run("retry")} />}
     </section>
   );
 }

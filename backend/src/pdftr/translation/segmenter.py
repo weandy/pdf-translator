@@ -383,10 +383,14 @@ def segment(
     include_references: bool = False,
     include_figures: bool = True,
     pages: Iterable[int] | None = None,
+    exclude_block_ids: Collection[str] | None = None,
+    id_start: int = 0,
 ) -> list[Segment]:
     page_set = set(pages) if pages is not None else None
     blocks = doc.blocks()
     skip = front_matter_ids(doc)
+    if exclude_block_ids is not None:
+        skip.update(exclude_block_ids)
     candidates = [b for b in blocks if b.id not in skip and _wanted(b, include_references, include_figures)]
     inline_hyphenated, inline_joined = _inline_words(candidates)
     selected = {b.id for b in candidates if page_set is None or b.page in page_set}
@@ -438,7 +442,7 @@ def segment(
             continue
         segments.append(
             Segment(
-                id=segment_id(doc.job_id, len(segments)),
+                id=segment_id(doc.job_id, id_start + len(segments)),
                 job_id=doc.job_id,
                 block_ids=[b.id for b in chain],
                 source=text,

@@ -166,30 +166,55 @@ describe("阅读位置恢复、手动段落定位与虚拟化搜索", () => {
     targetDoc: DocumentData = doc,
     jobId = "synthetic",
     onSelect: (id: string) => void = () => {},
+    locatePage?: import("./ReaderView").LocatePage,
   ) {
     await act(async () =>
       root.render(
-        <ReaderView doc={targetDoc} jobId={jobId} selectedSegment={null} onSelectSegment={onSelect} spot={spot} />,
+        <ReaderView doc={targetDoc} jobId={jobId} selectedSegment={null} onSelectSegment={onSelect} spot={spot} locatePage={locatePage} />,
       ),
     );
   }
 
-  it("未操作时恢复上次阅读位置到第 2 页精确坐标", async () => {
-    await render();
-    await act(async () => vi.advanceTimersByTimeAsync(450));
-    expect(scrollTo).toHaveBeenCalledTimes(1);
-    const arg = scrollTo.mock.calls[0]?.[0] as { top: number; behavior: string } | undefined;
-    expect(arg).toEqual({ top: expect.any(Number), behavior: "auto" });
-    expect(arg?.top).toBeGreaterThan(0);
+  it("首帧恢复上次阅读位置并挂载远页", async () => {
+    localStorage.setItem("pdftr.pos.v1", JSON.stringify({ synthetic: 79 }));
+    await render(null, makeDoc(100));
+    expect(container.querySelector('.page-row[data-page="79"]')).not.toBeNull();
+    expect(container.querySelector('.page-row[data-page="0"]')).toBeNull();
+    expect(container.querySelector(".pages")!.scrollTop).toBeGreaterThan(0);
+    expect(scrollTo).not.toHaveBeenCalled();
   });
 
-  it("手动定位取消待执行的自动恢复，重复定位仍能生效", async () => {
+  it("直达原文页优先于本地位置，并可重复定位与延长高亮", async () => {
+    const long = makeDoc(100);
+    localStorage.setItem("pdftr.pos.v1", JSON.stringify({ synthetic: 79 }));
+    const target = () => container.querySelector('.page-row[data-page="29"].page-located');
+    await render(null, long, "synthetic", undefined, { page: 30, seq: 0, highlight: true });
+    expect(target()).not.toBeNull();
+    expect(container.querySelector('.page-row[data-page="79"]')).toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    expect(target()).not.toBeNull();
+    await render(null, long, "synthetic", undefined, { page: 30, seq: 1, highlight: true });
+    expect(scrollTo).toHaveBeenCalledTimes(2);
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(target()).not.toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(1900));
+    expect(target()).toBeNull();
+  });
+
+  it("不存在的直达页回退到本地位置", async () => {
+    localStorage.setItem("pdftr.pos.v1", JSON.stringify({ synthetic: 79 }));
+    await render(null, makeDoc(100), "synthetic", undefined, { page: 101, seq: 0, highlight: true });
+    expect(container.querySelector('.page-row[data-page="79"]')).not.toBeNull();
+    expect(container.querySelector(".page-located")).toBeNull();
+  });
+
+  it("手动定位在首帧恢复后生效，重复定位仍可再次跳转", async () => {
     await render();
     await act(async () => vi.advanceTimersByTimeAsync(100));
     await render({ id: "s1", n: 1 });
     await act(async () => vi.advanceTimersByTimeAsync(450));
     expect(scrollTo).toHaveBeenCalledTimes(1);
-    expect(scrollTo).toHaveBeenLastCalledWith({ top: expect.any(Number), behavior: "smooth" });
+    expect(scrollTo).toHaveBeenLastCalledWith({ top: expect.any(Number), behavior: "auto" });
     await render({ id: "s1", n: 2 });
     await act(async () => vi.advanceTimersByTimeAsync(40));
     expect(scrollTo).toHaveBeenCalledTimes(2);
@@ -199,6 +224,7 @@ describe("阅读位置恢复、手动段落定位与虚拟化搜索", () => {
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
       return this.classList.contains("page") ? new DOMRect(0, 0, 600, 800) : new DOMRect();
     });
+    localStorage.setItem("pdftr.pos.v1", "{}");
     await render({ id: "s1", n: 1 });
     await act(async () => vi.advanceTimersByTimeAsync(40));
     expect(scrollTo).toHaveBeenLastCalledWith({ top: 44, behavior: "smooth" });
@@ -228,7 +254,7 @@ describe("阅读位置恢复、手动段落定位与虚拟化搜索", () => {
     expect(pageBefore).toBeGreaterThanOrEqual(24);
     expect(pageBefore).toBeLessThanOrEqual(28);
 
-    // 从“对照”切换为“原文”（缩放翻倍）：应保持在同一页，不跳回第 13 页
+    // 从“对照”切换为有舒适上限的单栏，仍保持同一页的阅读位置。
     const origBtn = [...container.querySelectorAll<HTMLButtonElement>(".segmented button")].find(
       (b) => b.textContent === "原文",
     )!;
@@ -238,7 +264,8 @@ describe("阅读位置恢复、手动段落定位与虚拟化搜索", () => {
     });
     const pageAfter = Number(pageInput.value);
     expect(Math.abs(pageAfter - pageBefore)).toBeLessThanOrEqual(1);
-    expect(scroller.scrollTop).toBeGreaterThan(35000);
+    expect(scroller.scrollTop).toBeGreaterThan(29000);
+    expect(scroller.scrollTop).toBeLessThan(30000);
     expect(container.querySelector(`.page-row[data-page="${pageBefore - 1}"]`)).not.toBeNull();
   });
 
@@ -267,12 +294,98 @@ describe("阅读位置恢复、手动段落定位与虚拟化搜索", () => {
     expect(container.querySelector('.page-row[data-page="1"]')).not.toBeNull();
   });
 
+  it("Ctrl+F 带入正文选区并立即搜索，Cmd+F 在搜索框内全选，Esc 逐层恢复焦点", async () => {
+    const listen = vi.spyOn(EventTarget.prototype, "addEventListener");
+    await render();
+    const pages = container.querySelector<HTMLDivElement>(".pages")!;
+    pages.focus();
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      isCollapsed: false,
+      anchorNode: pages.querySelector(".page-row"),
+      focusNode: pages.querySelector(".page-row"),
+      toString: () => "Transformer",
+    } as unknown as Selection);
+    const find = new KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true, cancelable: true });
+    await act(() => pages.dispatchEvent(find));
+    expect(find.defaultPrevented).toBe(true);
+    expect(container.querySelector(".reader-search-count")?.textContent).toContain("1 /");
+    await act(() => vi.advanceTimersByTimeAsync(20));
+    const input = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe("Transformer");
+    input.setSelectionRange(0, 0);
+    const findMac = new KeyboardEvent("keydown", { key: "f", metaKey: true, bubbles: true, cancelable: true });
+    await act(() => input.dispatchEvent(findMac));
+    expect(input.selectionEnd).toBe(input.value.length);
+    const zoom = container.querySelector<HTMLButtonElement>(".zoom-label")!;
+    await act(() => zoom.click());
+    const escape = () => act(() => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown",
+      { key: "Escape", bubbles: true, cancelable: true })));
+    const menu = document.querySelector<HTMLDivElement>(".zoom-menu")!;
+    expect(menu.parentElement).toBe(document.body);
+    expect(menu.style.position).toBe("fixed");
+    expect(menu.querySelectorAll('[role="menuitemradio"]')).toHaveLength(6);
+    await escape();
+    expect(menu.isConnected).toBe(false);
+    expect(document.activeElement).toBe(zoom);
+    expect(container.contains(input)).toBe(true);
+    await escape();
+    expect(container.contains(input)).toBe(false);
+    expect(document.activeElement).toBe(pages);
+    // React 会在首次挂载 Portal 时给 body 添加委托监听，阅读器本身不注册滚轮事件。
+    expect(listen.mock.calls.filter(([type], index) =>
+      /^(wheel|mousewheel|gesture)/i.test(type) && listen.mock.contexts[index] !== document.body,
+    )).toEqual([]);
+  });
+
+  it("缩放菜单只在点击外部或滚动工具栏时关闭", async () => {
+    await render();
+    const zoom = container.querySelector<HTMLButtonElement>(".zoom-label")!;
+    const menu = () => document.querySelector(".zoom-menu");
+    const pointerDown = (target: EventTarget) =>
+      act(async () => target.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+    await act(async () => zoom.click());
+    await pointerDown(menu()!.firstElementChild!);
+    expect(menu()).not.toBeNull();
+    await pointerDown(zoom);
+    expect(menu()).not.toBeNull();
+    await pointerDown(document.body);
+    expect(menu()).toBeNull();
+    await act(async () => zoom.click());
+    await act(async () => container.querySelector(".toolbar-tools")!.dispatchEvent(new Event("scroll")));
+    expect(menu()).toBeNull();
+  });
+
+  it("Ctrl+F 让出普通输入、IME、模态框和右侧抽屉", async () => {
+    await render();
+    const pages = container.querySelector<HTMLDivElement>(".pages")!;
+    const attempt = async (target: HTMLElement, options: KeyboardEventInit = {}) => {
+      target.focus();
+      const event = new KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true, cancelable: true, ...options });
+      await act(() => target.dispatchEvent(event));
+      expect(event.defaultPrevented).toBe(false);
+      expect(container.querySelector(".reader-search")).toBeNull();
+    };
+    await attempt(container.querySelector("input")!);
+    await attempt(pages, { isComposing: true });
+    for (const selector of ["editor", "terms-panel", "modal"]) {
+      const panel = document.createElement("aside");
+      const button = document.createElement("button");
+      panel.className = selector;
+      if (selector === "modal") panel.setAttribute("aria-modal", "true");
+      panel.append(button);
+      container.append(panel);
+      await attempt(selector === "modal" ? pages : button);
+      panel.remove();
+    }
+  });
+
   it("搜索防抖 150ms 后出结果，并可跳转到尚未挂载的第 80 页（远距离用 auto）", async () => {
     const longDoc = makeDoc(100);
     await render(null, longDoc, "long-doc-search");
     expect(container.querySelector('.page-row[data-page="79"]')).toBeNull();
 
-    const searchBtn = container.querySelector<HTMLButtonElement>('button[title="搜索原文和译文"]');
+    const searchBtn = container.querySelector<HTMLButtonElement>('button[title="搜索已索引段落的原文和译文"]');
     await act(async () => searchBtn?.click());
     const input = container.querySelector<HTMLInputElement>('input[aria-label="搜索原文或译文"]')!;
 
@@ -294,7 +407,7 @@ describe("阅读位置恢复、手动段落定位与虚拟化搜索", () => {
   it("搜索框忽略中文 IME 组合回车，正常 Shift+Enter 立即跳到末条命中并高亮", async () => {
     const longDoc = makeDoc(100);
     await render(null, longDoc, "long-doc-enter");
-    const searchBtn = container.querySelector<HTMLButtonElement>('button[title="搜索原文和译文"]');
+    const searchBtn = container.querySelector<HTMLButtonElement>('button[title="搜索已索引段落的原文和译文"]');
     await act(async () => searchBtn?.click());
     const input = container.querySelector<HTMLInputElement>('input[aria-label="搜索原文或译文"]')!;
 
@@ -321,9 +434,8 @@ describe("阅读位置恢复、手动段落定位与虚拟化搜索", () => {
     localStorage.setItem("pdftr.pos.v1", JSON.stringify({ sparse: 5 }));
     await render(null, sparseDoc, "sparse");
 
-    // 自动恢复到真实 page.index = 5（第 2 页）
-    await act(async () => vi.advanceTimersByTimeAsync(450));
-    expect(scrollTo).toHaveBeenCalledTimes(1);
+    // 首帧恢复到真实 page.index = 5（第 2 页）
+    expect(scrollTo).not.toHaveBeenCalled();
     const pageInput = container.querySelector<HTMLInputElement>('input[aria-label="跳到第几页"]')!;
     expect(pageInput.value).toBe("2");
 
@@ -332,7 +444,7 @@ describe("阅读位置恢复、手动段落定位与虚拟化搜索", () => {
       setInputValue(pageInput, "1");
       pageInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
-    expect(scrollTo).toHaveBeenCalledTimes(2);
+    expect(scrollTo).toHaveBeenCalledTimes(1);
 
     // 触发 pagehide 应立即将最新页写入 localStorage 无需等 500ms
     await act(async () => {
@@ -375,6 +487,7 @@ describe("阅读位置恢复、手动段落定位与虚拟化搜索", () => {
     const mixedDoc = makeDoc(2);
     mixedDoc.pages[1]!.kind = "scanned";
     await render(null, mixedDoc, "hit-doc", onSelect);
+    await act(() => [...container.querySelectorAll<HTMLButtonElement>(".segmented button")].find((button) => button.textContent === "对照")!.click());
 
     const origPage = container.querySelector<HTMLElement>('.page-row[data-page="0"] .page[aria-label="原文第 1 页"]')!;
     await act(async () => {

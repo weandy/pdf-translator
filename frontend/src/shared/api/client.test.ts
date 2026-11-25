@@ -1,6 +1,37 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, setAuthHeaders } from "@/shared/api/client";
+import { api, setAuthHeaders, subscribeJob } from "@/shared/api/client";
+
+it("父任务已完成但补翻仍在运行时，继续接收 SSE 直到补翻结束", () => {
+  class MockEventSource {
+    static current: MockEventSource;
+    close = vi.fn();
+    onmessage?: (event: MessageEvent) => void;
+
+    constructor(public readonly url: string) {
+      MockEventSource.current = this;
+    }
+  }
+  vi.stubGlobal("EventSource", MockEventSource);
+  try {
+    const onJob = vi.fn();
+    subscribeJob("synthetic", onJob);
+    const stream = MockEventSource.current;
+    expect(stream.url).toBe("/api/jobs/synthetic/events");
+    const running = { status: "done", active_expansion: { status: "running", progress: 0.2 } };
+    const progress = { ...running, active_expansion: { status: "running", progress: 0.7 } };
+    const complete = { status: "done", active_expansion: null };
+    for (const job of [running, progress]) {
+      stream.onmessage?.(new MessageEvent("message", { data: JSON.stringify(job) }));
+      expect(stream.close).not.toHaveBeenCalled();
+    }
+    stream.onmessage?.(new MessageEvent("message", { data: JSON.stringify(complete) }));
+    expect(stream.close).toHaveBeenCalledOnce();
+    expect(onJob.mock.calls).toEqual([[running], [progress], [complete]]);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
 
 function headerKeys(call: unknown[]): string[] {
   const init = (call[1] ?? {}) as RequestInit;
@@ -75,6 +106,8 @@ describe("接口客户端凭据隔离（默认不发送个人 Key）", () => {
   it("免费任务全生命周期（建任务、重试、单段重翻、批量重翻）与规则解析术语均不发送 X-LLM-* / X-Parser-* / X-Paddle-* 头", async () => {
     const file = new File(["pdf"], "paper.pdf", { type: "application/pdf" });
     const glossary = new File(["term,术语"], "terms.csv", { type: "text/csv" });
+    const auth = vi.fn(() => ({ "X-LLM-Key": "synthetic-personal-key" }));
+    setAuthHeaders(auth);
 
     await api.createJob(file, { cloud_consent: true }, { mode: "free" });
     await api.createJob(
@@ -99,6 +132,7 @@ describe("接口客户端凭据隔离（默认不发送个人 Key）", () => {
     await api.parseGlossary(glossary, false);
 
     expect(fetchMock).toHaveBeenCalledTimes(9);
+    expect(auth).not.toHaveBeenCalled();
     for (const call of fetchMock.mock.calls) {
       expect(hasLlmHeader(call), String(call[0])).toBe(false);
       expect(hasPersonalCredentialHeader(call), String(call[0])).toBe(false);
@@ -121,6 +155,26 @@ describe("接口客户端凭据隔离（默认不发送个人 Key）", () => {
 
     // 规则解析术语既不发 X-LLM-* 也不发 X-Parser-*
     expect(headerKeys(fetchMock.mock.calls[8]!)).not.toContain("x-parser-key");
+  });
+
+  it("补翻发送 JSON，免费任务不读取个人凭据", async () => {
+    const auth = vi.fn(() => ({ "X-LLM-Key": "synthetic-personal-key" }));
+    setAuthHeaders(auth);
+
+    await api.expandPages("job-free", null, "free");
+    await api.expandPages("job-byok", [2, 4], "byok");
+
+    expect(auth).toHaveBeenCalledOnce();
+    const [free, byok] = fetchMock.mock.calls;
+    expect(free?.[0]).toBe("/api/jobs/job-free/expand-pages");
+    expect(free?.[1]).toMatchObject({
+      method: "POST", body: '{"pages":null}', headers: { "Content-Type": "application/json" },
+    });
+    expect(hasPersonalCredentialHeader(free!)).toBe(false);
+    expect(byok?.[1]).toMatchObject({
+      method: "POST", body: '{"pages":[2,4]}',
+      headers: { "Content-Type": "application/json", "X-LLM-Key": "synthetic-personal-key" },
+    });
   });
 
   it("BYOK 模式与 AI 解析术语正常携带浏览器中的 X-LLM-Key", async () => {

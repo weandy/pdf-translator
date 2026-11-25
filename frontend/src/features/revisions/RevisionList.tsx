@@ -2,9 +2,11 @@
  * 手动修改记录：每次保存修改、重翻、精修、撤回各一条。撤回某一步 = 这一段恢复到那一步之前，
  * 这一段在那之后的修改一并作废；不同段落互不影响（后端 revert_revision）。
  */
-import { useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { Revision } from "@/shared/api/client";
+import { useConfirm } from "@/shared/feedback/ConfirmDialog";
+import { useToast } from "@/shared/feedback/Toast";
 import { diffPreview, diffText, type TextChange } from "@/shared/text/diff";
 
 import "./revisions.css";
@@ -21,6 +23,7 @@ interface Props {
   /** 段落 id → 简短说明（如“第 3 页：Large Language Models…”）；只看一段的记录时不传 */
   labels?: Record<string, string>;
   onRevert: (rev: Revision) => Promise<void>;
+  readOnly?: boolean;
   onOpen?: (segmentId: string) => void;
 }
 
@@ -74,23 +77,37 @@ function RevisionDiff({ before, after }: Pick<Revision, "before" | "after">) {
 const time = (iso: string) =>
   new Date(iso).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
-export function RevisionList({ revisions, labels, onRevert, onOpen }: Props) {
+export function RevisionList({ revisions, labels, onRevert, onOpen, readOnly = false }: Props) {
   const [busy, setBusy] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const confirm = useConfirm();
+  const toast = useToast();
+  const latest = useRef(revisions);
+  const locked = useRef(readOnly);
+  const inFlight = useRef(false);
+  useLayoutEffect(() => { latest.current = revisions; locked.current = readOnly; }, [revisions, readOnly]);
   if (revisions.length === 0) return <p className="muted revisions-empty">还没有手动修改。</p>;
 
   const revert = async (rev: Revision) => {
-    const later = revisions.filter(
+    const countLater = () => latest.current.filter(
       (r) => r.segment_id === rev.segment_id && r.id > rev.id && r.action !== "revert" && r.reverted_by === null,
     ).length;
-    if (later > 0 && !window.confirm(`这一段在这一步之后还有 ${later} 次修改，会一并撤回。继续吗？`)) return;
+    const later = countLater();
+    if (locked.current || inFlight.current) return;
+    if (later > 0 && !(await confirm({ title: "撤回修改", message: `这一段在这一步之后还有 ${later} 次修改，会一并撤回。继续吗？`, confirmLabel: "确认撤回", tone: "danger" }))) return;
+    if (locked.current || inFlight.current || countLater() > later || !latest.current.some((r) => r.id === rev.id && r.reverted_by === null)) return;
+    inFlight.current = true;
     setBusy(rev.id);
     setError(null);
     try {
       await onRevert(rev);
+      toast.success("已撤回修改");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const message = e instanceof Error ? e.message : String(e);
+      setError(message);
+      toast.error(message);
     } finally {
+      inFlight.current = false;
       setBusy(null);
     }
   };
@@ -116,7 +133,7 @@ export function RevisionList({ revisions, labels, onRevert, onOpen }: Props) {
                   <button
                     type="button"
                     className="quiet"
-                    disabled={busy !== null}
+                    disabled={readOnly || busy !== null}
                     onClick={() => void revert(rev)}
                     title="这一段恢复到这一步之前的译文"
                   >
@@ -125,7 +142,7 @@ export function RevisionList({ revisions, labels, onRevert, onOpen }: Props) {
                 )}
               </div>
               {labels && (
-                <button type="button" className="link rev-target" onClick={() => onOpen?.(rev.segment_id)}>
+                <button type="button" className="link rev-target" disabled={readOnly} onClick={() => onOpen?.(rev.segment_id)}>
                   {labels[rev.segment_id] ?? "段落"}
                 </button>
               )}

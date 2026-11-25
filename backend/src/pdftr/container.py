@@ -5,7 +5,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from pdftr.config import Settings, decode_config_secret_key
@@ -16,6 +16,7 @@ from pdftr.parsing.mineru_cloud import MinerUCloudParser, MinerUResourceLimits
 from pdftr.parsing.paddle_vl import PaddleVLParser
 from pdftr.parsing.port import LayoutParser
 from pdftr.pipeline.admin import AdminAuth
+from pdftr.pipeline.bundle import BundleRegistry
 from pdftr.pipeline.events import EventBus
 from pdftr.pipeline.runner import Pipeline, PipelineDeps
 from pdftr.pipeline.runtime_config import RuntimeConfigManager
@@ -309,6 +310,7 @@ class Container:
     pipeline: Pipeline
     admin: AdminAuth | None = None
     runtime_config: RuntimeConfigManager | None = None
+    bundles: BundleRegistry = field(default_factory=BundleRegistry)
 
     def secrets(
         self,
@@ -373,6 +375,7 @@ class Container:
 
     def close(self) -> None:
         """统一释放所有底层 SQLite 存储连接（Windows 下便于清理临时目录）。"""
+        self.bundles.close()
         for resource in (self.pipeline.deps.store, self.pipeline.deps.cache, self.pipeline.deps.layout_cache):
             closer = getattr(resource, "close", None)
             if callable(closer):

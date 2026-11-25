@@ -5,7 +5,9 @@ import pytest
 
 from pdftr.domain.ir import BlockType, Segment, SegmentStatus
 from pdftr.domain.llm import ChatError, ChatOptions, ChatResult, ChatUsage
+from pdftr.translation import service
 from pdftr.translation.batching import citation_problems, normalize_cjk_spacing
+from pdftr.translation.openai_compat import FallbackChat
 from pdftr.translation.prompt import DocContext
 from pdftr.translation.service import TranslateOptions, _target_problems, cache_key, translate
 
@@ -65,6 +67,53 @@ SEGS = [
     _seg(2, "A repeated sentence here."),
     _seg(3, "Some other text.", section="3 Results"),
 ]
+
+
+def test_custom_instruction_is_budgeted_and_sent_to_every_attempt_without_cache(monkeypatch):
+    instruction = "保持严谨的学术术语"
+    measured = []
+    estimate = service.estimate_tokens
+
+    def measure(text):
+        measured.append(text)
+        return estimate(text)
+
+    monkeypatch.setattr(service, "estimate_tokens", measure)
+
+    class NoCache(DictCache):
+        def get(self, key):
+            pytest.fail("带精修指令时读取了共享缓存")
+
+        def put(self, key, target):
+            pytest.fail("带精修指令时写入了共享缓存")
+
+    class Primary(FakeChat):
+        async def complete(self, system, user, opts):
+            self.calls.append((user, opts))
+            if opts.thinking == "low":
+                raise ChatError("合成上游拥塞", retryable=True)
+            return ChatResult(text="1|这是缺少公式的译文")
+
+    primary, fallback = Primary(), FakeChat()
+    source = _seg(0, "Let <m1/> be a function.", {"m1": "f(x)"})
+    outputs, report = asyncio.run(
+        translate(
+            [source],
+            chat=FallbackChat(primary, [fallback]),
+            cache=NoCache(),
+            ctx=DocContext(),
+            opts=TranslateOptions(
+                custom_instruction=instruction,
+                concurrency=1,
+            ),
+        )
+    )
+    assert outputs[0].status is SegmentStatus.DONE and report.used_fallback
+    assert any(instruction in text for text in measured)
+    assert len(primary.calls) >= 3 and fallback.calls
+    assert all(instruction in user for user, _ in primary.calls + fallback.calls)
+    assert any("上次翻译未通过校验" in user for user, _ in primary.calls)
+    assert any(opts.thinking == "low" for _, opts in fallback.calls)
 
 
 def test_translate_dedup_retry_and_cache():

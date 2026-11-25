@@ -11,6 +11,7 @@ import logging
 import sqlite3
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from pathlib import Path
 from typing import Literal, NamedTuple, Protocol, runtime_checkable
 
 from pdftr.domain.document_name import paper_title
+from pdftr.domain.expansion import ACTIVE_EXPANSION_STATUSES, ExpansionOp, ExpansionStatus
 from pdftr.domain.ir import BlockType, Document, PageKind, Segment, SegmentStatus
 from pdftr.domain.job import STAGES, Job, JobStatus
 from pdftr.domain.layout import LayoutResult
@@ -29,10 +31,11 @@ from pdftr.glossary.extract import Extraction, extract_acronym_definitions, extr
 from pdftr.glossary.matcher import TermMatcher, TermSelection
 from pdftr.glossary.normalize import normalize_terms
 from pdftr.parsing.mineru_plan import preview_requested_pages
-from pdftr.parsing.port import LayoutCache, LayoutParser, ParseError
+from pdftr.parsing.port import LayoutCache, LayoutParser, ParseError, ParseProgress
 from pdftr.pipeline.events import EventBus
 from pdftr.pipeline.memory import release_memory
 from pdftr.pipeline.secrets import Secrets, SecretStore
+from pdftr.pipeline.versions import version_artifact
 from pdftr.pipeline.workers import finish_on_cancel, run_thread
 from pdftr.rendering.background import make_background
 from pdftr.storage.port import ArtifactStore, JobStore
@@ -45,6 +48,10 @@ from pdftr.translation.service import TranslateOptions, default_concurrency, tra
 log = logging.getLogger(__name__)
 PROGRESS_MIN_INTERVAL_S = 1.5
 LAYOUT_CACHE_VERSION = 2
+
+
+def _mineru_queued(message: str) -> bool:
+    return message.startswith("MinerU 已接收") and "等待解析资源" in message
 
 
 def _parse_progress_kind(message: str) -> str:
@@ -152,8 +159,12 @@ def _write_json(path: Path, content: str) -> None:
         tmp.unlink(missing_ok=True)
 
 
-def load_document(deps: PipelineDeps, job_id: str) -> Document:
-    return Document.model_validate_json(deps.artifacts.path(job_id, "ir.json").read_text(encoding="utf-8"))
+def load_document(deps: PipelineDeps, job_id: str, version: int | None = None) -> Document:
+    if version is None:
+        job = deps.store.get_job(job_id)
+        version = job.content_version if job else 1
+    path = version_artifact(deps.artifacts, job_id, version, "ir.json")
+    return Document.model_validate_json(path.read_bytes())
 
 
 def glossary_texts(doc: Document, segments: Sequence[Segment]) -> tuple[list[str], list[str]]:
@@ -170,8 +181,11 @@ def glossary_texts(doc: Document, segments: Sequence[Segment]) -> tuple[list[str
     return body_sources, headings
 
 
-def load_context(deps: PipelineDeps, job_id: str, user_terms: dict[str, str]) -> tuple[DocContext, TermSelection]:
-    doc = load_document(deps, job_id)
+def load_context(
+    deps: PipelineDeps, job_id: str, user_terms: dict[str, str], doc: Document | None = None
+) -> tuple[DocContext, TermSelection]:
+    if doc is None:
+        doc = load_document(deps, job_id)
     glossary_file = deps.artifacts.path(job_id, "glossary.json")
     found = Extraction.model_validate_json(glossary_file.read_bytes()) if glossary_file.exists() else Extraction()
     selection = TermSelection(found, user_terms, deps.term_matcher)
@@ -268,6 +282,7 @@ class ExportResult(NamedTuple):
     size_bytes: int
     digest: str = ""
     overflow_pages: tuple[int, ...] = ()
+    crc32: int | None = None
 
 
 class Pipeline:
@@ -294,12 +309,14 @@ class Pipeline:
         self._task_channels: dict[str, Literal["byok", "free"]] = {}
         self._cancelling: set[str] = set()  # 用户要求取消的任务（与服务停止时的取消区分开）
         self._mutations: set[str] = set()  # 已完成任务的编辑/重翻/撤回互斥标记
-        self._mutation_guard = threading.Lock()
-        self._artifact_guard = threading.RLock()
-        self._admission_guard = threading.RLock()
+        self._state_guard = threading.RLock()
+        self._expansions: dict[str, tuple[str, asyncio.Task[None]]] = {}
+        self._expansion_channels: dict[str, Literal["byok", "free"]] = {}
+        self._cancelling_expansions: set[str] = set()
         self._exporting: dict[str, int] = {}
         self._deleting: set[str] = set()
         self._exports: dict[Path, asyncio.Task[ExportResult]] = {}
+        self._export_failures: OrderedDict[Path, tuple[float, str]] = OrderedDict()
         self._applied_limits_revision: int = -1
 
     @property
@@ -316,7 +333,7 @@ class Pipeline:
 
     def try_reserve_upload(self, channel_mode: Literal["byok", "free"], limit: int) -> bool:
         """在读取 multipart 请求体前原子预留 1 个通道名额，避免并发请求同时穿透预检。"""
-        with self._admission_guard:
+        with self._state_guard:
             if self.active_count(channel_mode) + self.receiving_for(channel_mode) >= limit:
                 return False
             if channel_mode == "free":
@@ -327,7 +344,7 @@ class Pipeline:
 
     def release_upload(self, channel_mode: Literal["byok", "free"]) -> None:
         """归还在上传中间件中预留的通道名额。"""
-        with self._admission_guard:
+        with self._state_guard:
             if channel_mode == "free":
                 self.receiving_free = max(0, self.receiving_free - 1)
             else:
@@ -368,8 +385,8 @@ class Pipeline:
     def active_jobs_summary(self) -> list[dict[str, object]]:
         """返回当前在途任务的运行信息（供管理员总览排查进度）。"""
         items: list[dict[str, object]] = []
-        with self._admission_guard:
-            job_ids = list(self._tasks)
+        with self._state_guard:
+            job_ids = self.active_job_ids()
         for job_id in job_ids:
             job = self.deps.store.get_job(job_id)
             if job is None:
@@ -391,37 +408,94 @@ class Pipeline:
 
     # ---- 调度 ----
     def submit(self, job: Job, secrets: Secrets) -> None:
-        self.deps.secrets.put(job.id, secrets)
-        task = asyncio.create_task(self._run(job.id))
-        with self._admission_guard:
+        with self._state_guard:
+            if job.id in self._deleting or job.id in self._tasks or job.id in self._expansions:
+                raise RuntimeError("任务已有在途操作")
+            self.deps.secrets.put(job.id, secrets)
+            task = asyncio.create_task(self._run(job.id))
             self._tasks[job.id] = task
             self._task_channels[job.id] = job.channel_mode
 
         def _cleanup(done: asyncio.Task[None]) -> None:
-            with self._admission_guard:
+            with self._state_guard:
                 if self._tasks.get(job.id) is done:
                     self._tasks.pop(job.id, None)
                     self._task_channels.pop(job.id, None)
 
         task.add_done_callback(_cleanup)
 
+    @contextmanager
+    def content_access(self) -> Iterator[None]:
+        """同步读取同一次发布提交内的任务、段落与操作指针。"""
+        with self._state_guard:
+            yield
+
+    def active_expansion(self, job_id: str) -> ExpansionOp | None:
+        return next(iter(self.deps.store.active_expansions(job_id)), None)
+
+    @contextmanager
+    def expansion_admission(self, job_id: str) -> Iterator[bool]:
+        with self._state_guard:
+            yield not (
+                job_id in self._deleting
+                or job_id in self._tasks
+                or job_id in self._expansions
+                or job_id in self._mutations
+                or self.active_expansion(job_id) is not None
+            )
+
+    def launch_expansion(self, job: Job, op: ExpansionOp, secrets: Secrets) -> None:
+        from pdftr.pipeline.expansion import run_expansion
+
+        with self._state_guard:
+            self.deps.store.create_expansion(op)
+            task = asyncio.create_task(run_expansion(self, job, op, secrets))
+            self._expansions[job.id] = (op.id, task)
+            self._expansion_channels[job.id] = job.channel_mode
+
+        def cleanup(done: asyncio.Task[None]) -> None:
+            with self._state_guard:
+                if self._expansions.get(job.id) == (op.id, done):
+                    del self._expansions[job.id]
+                    del self._expansion_channels[job.id]
+                    self._cancelling_expansions.discard(op.id)
+
+        task.add_done_callback(cleanup)
+        self.deps.events.publish(job)
+
+    def expansion_cancel_requested(self, op_id: str) -> bool:
+        with self._state_guard:
+            return op_id in self._cancelling_expansions
+
+    def cancel_expansion(self, op: ExpansionOp) -> None:
+        with self._state_guard:
+            active = self._expansions.get(op.job_id)
+            current = self.deps.store.expansion(op.job_id, op.id)
+            if current is None or current.status not in ACTIVE_EXPANSION_STATUSES or not active or active[0] != op.id:
+                return
+            if op.id in self._cancelling_expansions:
+                return
+            self._cancelling_expansions.add(op.id)
+            if current.status is ExpansionStatus.RUNNING:
+                active[1].cancel()
+
     def active_job_ids(self) -> set[str]:
-        with self._admission_guard:
-            return set(self._tasks)
+        with self._state_guard:
+            return self._tasks.keys() | self._expansions.keys()
 
     def is_running(self, job_id: str) -> bool:
-        with self._admission_guard:
-            return job_id in self._tasks
+        with self._state_guard:
+            return job_id in self._tasks or job_id in self._expansions
 
     def cancel(self, job_id: str) -> bool:
         """取消排队中或进行中的任务；返回是否有任务可取消。已完成的阶段与译文缓存保留，重试时从中断处继续。"""
-        with self._admission_guard:
+        with self._state_guard:
             task = self._tasks.get(job_id)
-        if task is None or task.done():
-            return False
-        self._cancelling.add(job_id)
-        task.cancel()
-        return True
+            if task is None or task.done():
+                return False
+            self._cancelling.add(job_id)
+            task.cancel()
+            return True
 
     @asynccontextmanager
     async def local_slot(self) -> AsyncIterator[None]:
@@ -441,24 +515,49 @@ class Pipeline:
         async with slot.hold(timeout=timeout):
             yield
 
-    async def export_once(self, path: Path, render: Callable[[], Coroutine[None, None, ExportResult]]) -> ExportResult:
+    def start_export(
+        self, path: Path, render: Callable[[], Coroutine[None, None, ExportResult]]
+    ) -> asyncio.Task[ExportResult]:
         task = self._exports.get(path)
         if task is None or task.done():
 
             def finished(done: asyncio.Task[ExportResult]) -> None:
                 if self._exports.get(path) is done:
                     self._exports.pop(path, None)
-                if not done.cancelled():
-                    done.exception()  # 超时或断开后可能已没有等待方
+                error = done.exception() if not done.cancelled() else None
+                if error is not None:
+                    # 内部异常文本可能含服务器路径，只给用户可读的失败提示。
+                    detail = "PDF 准备失败，请稍后重试"
+                    log.error("任务 %s 准备 PDF 失败", path.parent.parent.name, exc_info=error)
+                    self._export_failures[path] = (time.monotonic() + 300, detail)
+                    if len(self._export_failures) > 256:
+                        self._export_failures.popitem(last=False)
+
+            self._export_failures.pop(path, None)
 
             task = asyncio.create_task(render())
             self._exports[path] = task
             task.add_done_callback(finished)
-        return await asyncio.shield(task)
+        return task
+
+    async def export_once(self, path: Path, render: Callable[[], Coroutine[None, None, ExportResult]]) -> ExportResult:
+        return await asyncio.shield(self.start_export(path, render))
+
+    def export_task_state(self, path: Path) -> tuple[Literal["preparing", "failed", "expired"], str]:
+        task = self._exports.get(path)
+        if task is not None and not task.done():
+            return "preparing", ""
+        failure = self._export_failures.get(path)
+        if failure is not None:
+            if failure[0] > time.monotonic():
+                self._export_failures.move_to_end(path)
+                return "failed", failure[1]
+            del self._export_failures[path]
+        return "expired", ""
 
     @contextmanager
     def export_access(self, job_id: str) -> Iterator[bool]:
-        with self._artifact_guard:
+        with self._state_guard:
             allowed = job_id not in self._deleting
             if allowed:
                 self._exporting[job_id] = self._exporting.get(job_id, 0) + 1
@@ -466,7 +565,7 @@ class Pipeline:
             yield allowed
         finally:
             if allowed:
-                with self._artifact_guard:
+                with self._state_guard:
                     self._exporting[job_id] -= 1
                     if self._exporting[job_id] == 0:
                         del self._exporting[job_id]
@@ -474,28 +573,53 @@ class Pipeline:
     @contextmanager
     def export_cleanup_access(self, job_id: str) -> Iterator[bool]:
         """清旧缓存时短暂独占工件，下载或快照读取中的文件留待后续清理。"""
-        with self._artifact_guard:
+        with self._state_guard:
             yield self._exporting.get(job_id) == 1
 
     @contextmanager
+    def version_cleanup_access(self, job_id: str) -> Iterator[bool]:
+        with self._state_guard:
+            yield not any(
+                job_id in state
+                for state in (
+                    self._exporting,
+                    self._deleting,
+                    self._tasks,
+                    self._expansions,
+                    self._mutations,
+                )
+            )
+
+    @contextmanager
     def deletion_access(self, job_id: str) -> Iterator[bool]:
-        with self._artifact_guard:
-            allowed = job_id not in self._deleting and job_id not in self._exporting and not self.is_running(job_id)
+        with self._state_guard:
+            allowed = not any(
+                job_id in state
+                for state in (
+                    self._deleting,
+                    self._exporting,
+                    self._mutations,
+                )
+            ) and not self.is_running(job_id)
             if allowed:
                 self._deleting.add(job_id)
         try:
             yield allowed
         finally:
             if allowed:
-                with self._artifact_guard:
+                with self._state_guard:
                     self._deleting.remove(job_id)
 
     def active_count(self, channel_mode: Literal["byok", "free"] | None = None) -> int:
         """排队中与执行中的任务数，可按通道独立统计。"""
-        with self._admission_guard:
+        with self._state_guard:
             if channel_mode is None:
-                return len(self._tasks)
-            return sum(1 for mode in self._task_channels.values() if mode == channel_mode)
+                return len(self._tasks) + len(self._expansions)
+            return sum(
+                mode == channel_mode
+                for channels in (self._task_channels, self._expansion_channels)
+                for mode in channels.values()
+            )
 
     def pending_work_count(self) -> int:
         """停机时还需等待的流水线任务与导出。"""
@@ -503,28 +627,38 @@ class Pipeline:
 
     def begin_mutation(self, job_id: str) -> bool:
         """占用一个任务的用户修改槽，避免两个请求同时覆盖段落或修改记录。"""
-        with self._mutation_guard:
-            if job_id in self._mutations:
+        with self._state_guard:
+            if any(job_id in state for state in (self._mutations, self._deleting, self._tasks, self._expansions)):
                 return False
             self._mutations.add(job_id)
             return True
 
+    def mutation_blocked_message(self, job_id: str) -> str:
+        with self._state_guard:
+            if job_id in self._expansions or self.active_expansion(job_id) is not None:
+                return "正在补翻其余页，完成后即可继续编辑"
+            return "任务正在修改，请稍后再试"
+
     def end_mutation(self, job_id: str) -> None:
-        with self._mutation_guard:
+        with self._state_guard:
             self._mutations.discard(job_id)
 
     def recover_interrupted(self) -> None:
         """服务重启时，进行中的任务已没有密钥可用，标记失败，用户重新提供 Key 后可从断点重试。"""
-        self.deps.artifacts.purge_parser_tmp(set())
+        from pdftr.pipeline.expansion import recover_expansions
+
+        recover_expansions(self)
+        self.deps.artifacts.purge_parser_tmp(self.active_job_ids())
         for status in (JobStatus.RUNNING, JobStatus.QUEUED):
             for job in self.deps.store.jobs_with_status(status):
                 job.status, job.error = JobStatus.FAILED, "服务重启，任务中断，请点击重试"
+                job.parse_queue_started_at = None
                 self.deps.store.save_job(job)
 
     async def wait_all(self, timeout: float | None = None) -> bool:
         """等待在途的翻译和导出，超时返回 False。"""
-        with self._admission_guard:
-            tasks = [*self._tasks.values(), *self._exports.values()]
+        with self._state_guard:
+            tasks = [*self._tasks.values(), *(task for _, task in self._expansions.values()), *self._exports.values()]
         if not tasks:
             return True
         _, pending = await asyncio.wait(tasks, timeout=timeout)
@@ -534,6 +668,8 @@ class Pipeline:
     def _update(self, job: Job, **changes: object) -> None:
         for k, v in changes.items():
             setattr(job, k, v)
+        if job.status is not JobStatus.RUNNING or job.stage != "parse" or not _mineru_queued(job.message):
+            job.parse_queue_started_at = None
         self.deps.store.save_job(job)
         self.deps.events.publish(job)
 
@@ -543,7 +679,7 @@ class Pipeline:
         return self._slots[stage]
 
     @asynccontextmanager
-    async def _hold_group(
+    async def hold_stages(
         self, group: Sequence[str], job: Job, notify: Callable[[Job, str], None]
     ) -> AsyncIterator[None]:
         slots = self._slot_for(group[0], job.channel_mode)
@@ -568,8 +704,8 @@ class Pipeline:
                 n = next((i for i, s in enumerate(todo) if self._slot_for(s, job.channel_mode) is not slots), len(todo))
                 group, todo = todo[:n], todo[n:]
                 summary = job.message  # 排队说明会覆盖消息，先记下翻译阶段的总结
-                self._update(job, stage=group[0], progress=0.0)
-                async with self._hold_group(group, job, lambda j, msg: self._update(j, message=msg)):
+                self._update(job, stage=group[0], progress=0.0, parse_queue_started_at=None)
+                async with self.hold_stages(group, job, lambda j, msg: self._update(j, message=msg)):
                     if job.status is not JobStatus.RUNNING:
                         self._update(job, status=JobStatus.RUNNING, error="")
                     for stage in group:
@@ -599,9 +735,6 @@ class Pipeline:
         out = self.deps.artifacts.path(job.id, "layout.json")
         if out.exists():
             return
-        parser = self.deps.parser_factory(secrets, job.options.parser)
-        raw_dir = None if job.options.parser == "mineru-cloud" else self.deps.artifacts.job_dir(job.id) / "parser"
-
         last_written_at = 0.0
         last: tuple[str, str, float | None] | None = None
 
@@ -609,22 +742,49 @@ class Pipeline:
             nonlocal last_written_at, last
             now = time.monotonic()
             current = (_parse_progress_kind(message), message, fraction)
+            queued = job.options.parser == "mineru-cloud" and _mineru_queued(message)
+            queue_changed = queued != (job.parse_queue_started_at is not None)
             if (
                 last is None
+                or queue_changed
                 or current[0] != last[0]
                 or (fraction == 1.0 and last[2] != 1.0)
                 or any(warning in message for warning in ("超时", "重试", "准备重新提交"))
                 or (current != last and now - last_written_at >= PROGRESS_MIN_INTERVAL_S)
             ):
-                self._update(job, message=message, progress=job.progress if fraction is None else fraction)
+                self._update(
+                    job,
+                    message=message,
+                    progress=job.progress if fraction is None else fraction,
+                    parse_queue_started_at=(job.parse_queue_started_at or datetime.now(UTC)) if queued else None,
+                )
                 last_written_at, last = now, current
 
-        pdf = self.deps.artifacts.path(job.id, "original.pdf")
+        raw_dir = None if job.options.parser == "mineru-cloud" else self.deps.artifacts.job_dir(job.id) / "parser"
         pages = (
             job.options.pages
             if job.options.parser == "mineru-cloud" and self.deps.mineru_partial_pages_enabled
             else None
         )
+        result = await self.parse_layout(job, secrets, pages, raw_dir, progress)
+        if job.parse_queue_started_at is not None:
+            self._update(job, parse_queue_started_at=None)
+        attempted = set(result.requested_pages if result.requested_pages is not None else range(job.page_count))
+        result.attempted_pages = sorted(attempted | {page.index for page in result.pages})
+        _write_json(out, result.model_dump_json())
+
+    async def parse_layout(
+        self,
+        job: Job,
+        secrets: Secrets,
+        pages: list[int] | None,
+        raw_dir: Path | None,
+        progress: ParseProgress,
+        *,
+        require_cached_pages: bool = False,
+    ) -> LayoutResult:
+        pdf = self.deps.artifacts.path(job.id, "original.pdf")
+        parser = self.deps.parser_factory(secrets, job.options.parser)
         cache = self.deps.layout_cache
         cache_config = getattr(parser, "cache_config_sig", None)
         cache_ttl = self.deps.layout_cache_ttl_hours
@@ -645,10 +805,14 @@ class Pipeline:
             cache_identity = (scope, pdf_hash, cache_config)
             key = _layout_cache_key(*cache_identity, wanted)
             hit = None
+            required = set(pages or []) if require_cached_pages else set()
+            keys = (key,) if wanted is None else (key, _layout_cache_key(*cache_identity, None))
             try:
-                hit = await run_thread(cache.get, key, job_id=job.id)
-                if hit is None and wanted is not None:
-                    hit = await run_thread(cache.get, _layout_cache_key(*cache_identity, None), job_id=job.id)
+                for lookup_key in keys:
+                    cached = await run_thread(cache.get, lookup_key, job_id=job.id)
+                    if cached is not None and required <= {page.index for page in cached.pages}:
+                        hit = cached
+                        break
             except (OSError, sqlite3.Error):
                 log.warning("任务 %s 读取版面缓存失败，将向 MinerU 解析", job.id)
             if hit is not None:
@@ -659,21 +823,25 @@ class Pipeline:
                     (time.monotonic() - started) * 1000,
                 )
                 progress("已复用近期版面解析结果（跳过 MinerU 请求）", 1.0)
-                _write_json(out, hit.model_dump_json())
-                return
+                return hit
 
         result = await self._parse_with_retry(
-            job, lambda: parser.parse(pdf, pages=pages, raw_dir=raw_dir, on_progress=progress)
+            job, lambda: parser.parse(pdf, pages=pages, raw_dir=raw_dir, on_progress=progress), progress
         )
-        _write_json(out, result.model_dump_json())
         if cache is not None and cache_identity is not None:
             try:
                 key = _layout_cache_key(*cache_identity, result.requested_pages)
                 await run_thread(cache.put, key, result, job_id=job.id, ttl_seconds=cache_ttl * 3600)
             except Exception:
                 log.warning("任务 %s 写入版面缓存失败", job.id)
+        return result
 
-    async def _parse_with_retry(self, job: Job, attempt_parse: Callable[[], Awaitable[LayoutResult]]) -> LayoutResult:
+    async def _parse_with_retry(
+        self,
+        job: Job,
+        attempt_parse: Callable[[], Awaitable[LayoutResult]],
+        progress: ParseProgress | None = None,
+    ) -> LayoutResult:
         """网络错误或 MinerU 云端解析超时自动重试，最多使用配置的重试机会。"""
         delays = self.deps.parse_retry_delays
         retry_limit = len(delays)
@@ -690,14 +858,17 @@ class Pipeline:
                     message = f"MinerU 解析超时，{delay:.0f} 秒后重新提交（第 {attempt}/{retry_limit} 次重试）"
                 else:
                     message = f"网络不稳定，{delay:.0f} 秒后自动重试（第 {attempt}/{retry_limit} 次）：{e}"
-                self._update(job, message=message, progress=0.0)
+                if progress is None:
+                    self._update(job, message=message, progress=0.0)
+                else:
+                    progress(message, 0.0)
                 await asyncio.sleep(delay)
         return await attempt_parse()
 
     async def _fuse(self, job: Job, _: Secrets) -> None:
         out = self.deps.artifacts.path(job.id, "ir.json")
         if out.exists():
-            doc = load_document(self.deps, job.id)
+            doc = load_document(self.deps, job.id, job.content_version)
             self.deps.store.update_submission_title(job.id, paper_title(doc.pages, fallback=doc.meta.title))
             return
         layout = LayoutResult.model_validate_json(self.deps.artifacts.path(job.id, "layout.json").read_text("utf-8"))
@@ -727,7 +898,7 @@ class Pipeline:
     async def _segment(self, job: Job, _: Secrets) -> None:
         if self.deps.store.segments(job.id):
             return  # 已切分过（重试时保留已有译文和用户修改）
-        doc = load_document(self.deps, job.id)
+        doc = load_document(self.deps, job.id, job.content_version)
         usable = {p.index for p in doc.pages if p.kind in TRANSLATED_KINDS}
         pages = usable if job.options.pages is None else usable & set(job.options.pages)
         segs = segment(doc, include_references=job.options.include_references,
@@ -740,7 +911,7 @@ class Pipeline:
         out = self.deps.artifacts.path(job.id, "glossary.json")
         if out.exists():
             return
-        doc = load_document(self.deps, job.id)
+        doc = load_document(self.deps, job.id, job.content_version)
         segs = self.deps.store.segments(job.id)
         if bad_source(segs):
             raise StageError(BAD_SOURCE_MESSAGE)
@@ -814,13 +985,13 @@ class Pipeline:
         return self.deps.llm_concurrency or default_concurrency(secrets.llm_base_url)
 
     async def _render(self, job: Job, _: Secrets) -> None:
-        doc = load_document(self.deps, job.id)
+        doc = load_document(self.deps, job.id, job.content_version)
         segments = self.deps.store.segments(job.id)
         ids = {bid for s in segments for bid in s.block_ids}
         blocks = [b for b in doc.blocks() if b.id in ids]
         scanned = {p.index for p in doc.pages if p.kind is PageKind.SCANNED}
-        await run_thread(make_background, self.deps.artifacts.path(job.id, "original.pdf"), blocks,
-                                self.deps.artifacts.path(job.id, "background.pdf"), scanned)  # fmt: skip
+        background = version_artifact(self.deps.artifacts, job.id, job.content_version, "background.pdf")
+        await run_thread(make_background, self.deps.artifacts.path(job.id, "original.pdf"), blocks, background, scanned)
         self._update(job, message=_translation_summary(segments) + _missing_layout_note(doc))
 
 

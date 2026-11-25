@@ -17,7 +17,7 @@ import {
   uploadAuthHeaders,
 } from "@/entities/settings/model";
 import type { ServerConfig } from "@/shared/api/client";
-import { readJSON } from "@/shared/storage/local";
+import { CREDENTIALS_KEY, PREFS_KEY } from "./vault";
 
 function makeConfig(overrides: Partial<ServerConfig> = {}): ServerConfig {
   return {
@@ -75,7 +75,7 @@ describe("settings", () => {
         model: "claude-test",
         parserKey: "tok-bound",
         parserKeyBoundUrl: "https://mineru.example.invalid/",
-      }),
+      }, makeConfig({ default_base_url: "https://bound.example.invalid", default_protocol: "anthropic", default_mineru_base_url: "https://mineru.example.invalid" })),
     ).toEqual({
       "X-LLM-Protocol": "anthropic",
       "X-LLM-Base-URL": "https://bound.example.invalid",
@@ -100,6 +100,13 @@ describe("settings", () => {
     });
   });
 
+  it("目标 B 搭配绑定到目标 A 的 Key 时只发目标信息", () => {
+    const settings = { ...DEFAULTS, protocol: "openai" as const, baseUrl: "https://b.example.invalid/v1",
+      llmKey: "synthetic-a", llmKeyBoundUrl: "https://a.example.invalid/v1", llmKeyBoundProtocol: "openai" as const };
+    expect(llmKeyNeedsRebind(settings)).toBe(true);
+    expect(authHeaders(settings)).toEqual({ "X-LLM-Protocol": "openai", "X-LLM-Base-URL": "https://b.example.invalid/v1" });
+  });
+
   it("不记住 Key 时，Key 与绑定字段均不写入浏览器存储但本页仍可用；clearKeys 一并清空绑定字段", () => {
     saveSettings({
       ...DEFAULTS,
@@ -112,12 +119,8 @@ describe("settings", () => {
     });
     expect(getSettings().llmKey).toBe("secret");
     expect(getSettings().llmKeyBoundUrl).toBe("https://example.invalid");
-    const persisted = readJSON<Record<string, unknown>>("pdftr.settings.v1", {});
-    expect(persisted.llmKey).toBe("");
-    expect(persisted.llmKeyBoundUrl).toBe("");
-    expect(persisted.llmKeyBoundProtocol).toBe("");
-    expect(persisted.parserKey).toBe("");
-    expect(persisted.parserKeyBoundUrl).toBe("");
+    expect(localStorage.getItem(CREDENTIALS_KEY)).toBeNull();
+    expect(JSON.parse(localStorage.getItem(PREFS_KEY)!)).not.toHaveProperty("llmKey");
 
     saveSettings({
       ...DEFAULTS,
@@ -128,8 +131,7 @@ describe("settings", () => {
       parserKeyBoundUrl: "mineru-cloud",
       rememberKeys: true,
     });
-    expect(readJSON<Record<string, unknown>>("pdftr.settings.v1", {}).llmKey).toBe("secret");
-    expect(readJSON<Record<string, unknown>>("pdftr.settings.v1", {}).llmKeyBoundUrl).toBe("https://example.invalid");
+    expect(JSON.parse(localStorage.getItem(CREDENTIALS_KEY)!)).toMatchObject({ llmKey: "secret", llmKeyBoundUrl: "https://example.invalid" });
 
     clearKeys();
     expect(getSettings().llmKey).toBe("");
@@ -185,12 +187,13 @@ describe("settings", () => {
       ),
     ).toBe(false);
     expect(llmKeyNeedsRebind({ ...DEFAULTS, llmKey: "sk-user", baseUrl: "https://custom.example.invalid" }, cfg)).toBe(
-      false,
+      true,
     );
 
     // 显式确认后写入绑定并解除阻断
     saveSettings(movedUrl);
-    const confirmed = confirmLlmKeyBinding(cfg);
+    expect(confirmLlmKeyBinding(cfg).ok).toBe(true);
+    const confirmed = getSettings();
     expect(confirmed.llmKeyBoundUrl).toBe("https://api.deepseek.com");
     expect(confirmed.llmKeyBoundProtocol).toBe("openai");
     expect(llmKeyNeedsRebind(getSettings(), cfg)).toBe(false);
@@ -254,7 +257,9 @@ describe("settings", () => {
       protocol: "anthropic" as const,
       baseUrl: "https://custom.example.invalid",
       model: "claude-test",
-      llmKey: "sk-personal",
+      llmKey: "synthetic-personal",
+      llmKeyBoundUrl: "https://custom.example.invalid",
+      llmKeyBoundProtocol: "anthropic" as const,
       parserKey: "mineru-personal",
       parserKeyBoundUrl: "https://mineru.net",
     };
@@ -273,7 +278,7 @@ describe("settings", () => {
       "X-LLM-Protocol": "anthropic",
       "X-LLM-Base-URL": "https://custom.example.invalid",
       "X-LLM-Model": "claude-test",
-      "X-LLM-Key": "sk-personal",
+      "X-LLM-Key": "synthetic-personal",
       "X-Parser-Key": "mineru-personal",
       "X-Parser-Base-URL": "https://mineru.net",
       "X-Translation-Mode": "byok",

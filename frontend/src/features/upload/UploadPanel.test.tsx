@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { addHistory, clearHistory } from "@/entities/history/model";
 import { DEFAULTS, getSettings, saveSettings } from "@/entities/settings/model";
 import { api, type Job, type ServerConfig } from "@/shared/api/client";
 import { fingerprint } from "@/shared/file/fingerprint";
@@ -89,6 +90,7 @@ describe("共享 MinerU 上传流程", () => {
     await act(async () => {
       const input = host.querySelector('input[type="file"]')!;
       Object.defineProperty(input, "files", {
+        configurable: true,
         value: [new File(["synthetic"], "synthetic.pdf", { type: "application/pdf" })],
       });
       input.dispatchEvent(new Event("change", { bubbles: true }));
@@ -108,6 +110,56 @@ describe("共享 MinerU 上传流程", () => {
     expect(host.querySelector('[role="note"]')?.textContent).toContain("User-Agent");
     expect(host.querySelector('[role="note"]')?.textContent).toContain("公开统计仅展示聚合数量");
     expect(host.querySelector('a[href="/guide#privacy"]')).not.toBeNull();
+  });
+
+  it("指纹和历史查询期间禁止提交，忙态冻结拖放与选文件并拦截双击", async () => {
+    let finishHash!: (hash: string) => void;
+    vi.mocked(fingerprint).mockImplementationOnce(() => new Promise((resolve) => { finishHash = resolve; }));
+    addHistory({ id: "history", hash: "synthetic-hash", filename: "旧样本.pdf", pages: 3, createdAt: "2026-01-01" });
+    let finishHistory!: (job: Job) => void;
+    const history = vi.spyOn(api, "job").mockImplementationOnce(() => new Promise((resolve) => { finishHistory = resolve; }));
+    let finishUpload!: (job: Job) => void;
+    const create = vi.spyOn(api, "createJob").mockImplementationOnce(() => new Promise((resolve) => { finishUpload = resolve; }));
+    try {
+      await render(true);
+      await vi.waitFor(() => expect(host.textContent).toContain("3 页 · 检查历史…"));
+      const forceClick = async () => {
+        const button = startButton();
+        expect(button.disabled).toBe(true);
+        await act(() => {
+          button.disabled = false;
+          button.click();
+          button.disabled = true;
+        });
+      };
+      await forceClick();
+      expect(create).not.toHaveBeenCalled();
+      await act(() => finishHash("synthetic-hash"));
+      expect(history).toHaveBeenCalledExactlyOnceWith("history");
+      await forceClick();
+      expect(create).not.toHaveBeenCalled();
+      await act(() => finishHistory({ id: "history" } as Job));
+      await act(() => findButton("仍要重新翻译")!.click());
+      const start = startButton();
+      await act(() => { start.click(); start.click(); });
+      expect(create).toHaveBeenCalledTimes(1);
+      const fileInput = host.querySelector<HTMLInputElement>('input[type="file"]')!;
+      expect(fileInput.disabled).toBe(true);
+      const next = new File(["next"], "第二篇.pdf", { type: "application/pdf" });
+      const drop = new Event("drop", { bubbles: true, cancelable: true });
+      Object.defineProperty(drop, "dataTransfer", { value: { files: [next] } });
+      await act(() => {
+        fileInput.closest("label")!.dispatchEvent(drop);
+        Object.defineProperty(fileInput, "files", { configurable: true, value: [next] });
+        fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      expect(drop.defaultPrevented).toBe(true);
+      expect(vi.mocked(countPages)).toHaveBeenCalledTimes(1);
+      expect(host.textContent).not.toContain("第二篇.pdf");
+      await act(() => finishUpload({ id: "created" } as Job));
+    } finally {
+      clearHistory();
+    }
   });
 
   it("共享 Token 可用时只填写翻译 Key 即可提交 PDF", async () => {

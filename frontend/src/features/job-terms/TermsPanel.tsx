@@ -8,6 +8,8 @@ import { useMemo, useRef, useState } from "react";
 import { termMap, upsertTerms, useTerms } from "@/entities/glossary/model";
 import { api, type DocumentData, type SegmentData, type TranslationMode } from "@/shared/api/client";
 
+import { useToast } from "@/shared/feedback/Toast";
+
 import { ORIGIN_LABELS, termRows, type TermRow } from "./terms";
 
 const CHUNK = 20; // 与后端一次重翻的上限一致
@@ -16,14 +18,15 @@ interface Props {
   jobId: string;
   doc: DocumentData;
   channelMode?: TranslationMode;
+  readOnly?: boolean;
   onChange: (seg: SegmentData) => void;
   onSpot: (segmentId: string, term?: { source: string; target: string }) => void; // 滚到术语所在词并短暂高亮
   onMark: (segmentIds: string[]) => void; // 标出当前术语出现的所有段落
   onClose: () => void;
 }
 
-export function TermsPanel({ jobId, doc, channelMode, onChange, onSpot, onMark, onClose }: Props) {
-  const { data: uses, error } = useQuery({ queryKey: ["terms", jobId], queryFn: () => api.jobTerms(jobId) });
+export function TermsPanel({ jobId, doc, channelMode, readOnly = false, onChange, onSpot, onMark, onClose }: Props) {
+  const { data: uses, error } = useQuery({ queryKey: ["terms", jobId, doc.job.content_version ?? 1], queryFn: () => api.jobTerms(jobId) });
   const mine = useTerms();
   const rows = useMemo(() => termRows(uses ?? [], mine, doc.segments), [uses, mine, doc.segments]);
   const [query, setQuery] = useState("");
@@ -118,6 +121,7 @@ export function TermsPanel({ jobId, doc, channelMode, onChange, onSpot, onMark, 
                 jobId={jobId}
                 doc={doc}
                 channelMode={channelMode}
+                readOnly={readOnly}
                 onChange={onChange}
                 onSpot={onSpot}
               />
@@ -134,6 +138,7 @@ function TermDetail({
   jobId,
   doc,
   channelMode,
+  readOnly,
   onChange,
   onSpot,
 }: {
@@ -141,9 +146,11 @@ function TermDetail({
   jobId: string;
   doc: DocumentData;
   channelMode?: TranslationMode;
+  readOnly: boolean;
   onChange: (seg: SegmentData) => void;
   onSpot: (segmentId: string, term?: { source: string; target: string }) => void;
 }) {
+  const toast = useToast();
   const [at, setAt] = useState(0);
   const [target, setTarget] = useState(row.target);
   const [busy, setBusy] = useState<string | null>(null);
@@ -171,7 +178,7 @@ function TermDetail({
   };
 
   const retranslate = async (list: string[]) => {
-    if (inFlight.current) return;
+    if (readOnly || inFlight.current) return;
     inFlight.current = true;
     setError(null);
     setMessage(null);
@@ -198,12 +205,16 @@ function TermDetail({
         }
         processed += batch.length;
       }
+      if (failed > 0) toast.info(`重翻完成：${succeeded} 段成功，${failed} 段未成功`);
+      else toast.success(`已重翻 ${succeeded} 段`);
       setHasFailures(failed > 0);
       setMessage(
         `重翻完成：${succeeded} 段成功，${failed} 段未成功${failed > 0 ? "，请定位段落查看原因。" : "，可以在修改记录里逐段撤回。"}`,
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const failure = e instanceof Error ? e.message : String(e);
+      setError(failure);
+      toast.error(failure);
       if (processed > 0) {
         setHasFailures(true);
         setMessage(
@@ -246,13 +257,13 @@ function TermDetail({
       {(redoMismatch.length > 0 || redoAll.length > 0) && (
         <div className="term-redo">
           {redoMismatch.length > 0 && redoMismatch.length < redoAll.length && (
-            <button type="button" disabled={busy !== null} onClick={() => void retranslate(redoMismatch)}>
+            <button type="button" disabled={readOnly || busy !== null} onClick={() => void retranslate(redoMismatch)}>
               重翻不一致的 {redoMismatch.length} 段
             </button>
           )}
           <button
             type="button"
-            disabled={busy !== null || redoAll.length === 0}
+            disabled={readOnly || busy !== null || redoAll.length === 0}
             onClick={() => void retranslate(redoAll)}
           >
             重翻全部 {redoAll.length} 段

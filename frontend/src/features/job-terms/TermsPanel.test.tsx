@@ -47,7 +47,7 @@ describe("术语批量重翻结果", () => {
     const uses = [
       { source: "Synthetic", target: "合成术语", origin: "paper" as const, segment_ids: segments.map((s) => s.id) },
     ];
-    client.setQueryData(["terms", "synthetic"], uses);
+    client.setQueryData(["terms", "synthetic", 1], uses);
     vi.spyOn(api, "jobTerms").mockResolvedValue(uses);
     const doc: DocumentData = {
       job: {} as DocumentData["job"],

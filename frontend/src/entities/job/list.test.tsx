@@ -21,6 +21,7 @@ function job(id: string): Job {
     progress: 1,
     message: "",
     error: "",
+    content_version: 1,
     page_count: 1,
     options: {
       parser: "mineru-cloud",

@@ -1,15 +1,17 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { readBatches, rememberBatch, removeBatch, type BatchEntry } from "@/entities/batch/model";
-import { clearHistory, removeHistory, useHistory } from "@/entities/history/model";
+import { clearHistory, readHistory, removeHistory, useHistory } from "@/entities/history/model";
 import { deleteJob, MY_JOBS_QUERY, myJobIds, restoreMyJobs, useMyJobs } from "@/entities/job/model";
 import { TermsModal } from "@/features/legal/TermsModal";
 import { UploadPanel } from "@/features/upload/UploadPanel";
 import { HomeTaskCard } from "@/pages/HomeBatch";
 import { api, type Job } from "@/shared/api/client";
 import { APP_TITLE, notify } from "@/shared/attention/attention";
+import { useConfirm } from "@/shared/feedback/ConfirmDialog";
+import { useToast } from "@/shared/feedback/Toast";
 
 interface TaskEntry {
   key: string;
@@ -24,12 +26,13 @@ function uploadTimestamp(entry: TaskEntry): number {
 
 export function HomePage({ openSettings }: { openSettings: () => void }) {
   const navigate = useNavigate();
+  const confirm = useConfirm();
+  const toast = useToast();
   const queryClient = useQueryClient();
   const { data: config } = useQuery({
     queryKey: ["config"],
     queryFn: api.config,
   });
-  const [notice, setNotice] = useState<string | null>(null);
   const [termsOpen, setTermsOpen] = useState(false);
   const history = useHistory();
   const [batches, setBatches] = useState<BatchEntry[]>(readBatches);
@@ -38,6 +41,8 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
   const jobsById = new Map(jobsResult.jobs.map((job) => [job.id, job]));
   const filenames = new Map(history.map((entry) => [entry.id, entry.filename]));
   const unavailable = new Set(jobsResult.unavailableIds);
+  const unavailableRef = useRef(jobsResult.unavailableIds);
+  useLayoutEffect(() => { unavailableRef.current = jobsResult.unavailableIds; }, [jobsResult.unavailableIds]);
   const unreadable = new Set(jobsResult.failedIds);
   const trackedIds = new Set(myJobIds());
   const historyById = new Map(history.map((entry) => [entry.id, entry]));
@@ -79,28 +84,44 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
   };
 
   const cancel = async (id: string, filename: string) => {
-    if (!window.confirm(`取消“${filename}”？已完成的步骤会保留，之后可以重新开始。`)) return;
+    if (!(await confirm({ title: "取消翻译", message: `取消“${filename}”？已完成的步骤会保留，之后可以重新开始。`, confirmLabel: "确认取消" }))) return;
+    const job = queryClient.getQueryData<Job>([...MY_JOBS_QUERY, id]);
+    if (job?.status !== "queued" && job?.status !== "running") return;
     await updateJob(id, await api.cancelJob(id));
+    toast.info("已提交取消请求，正在停止任务…");
   };
 
   const remove = async (id: string, filename: string) => {
-    if (!window.confirm(`删除“${filename}”的原文与译文？删除后无法恢复。`)) return;
+    if (!(await confirm({ title: "删除任务", message: `删除“${filename}”的原文与译文？删除后无法恢复。`, confirmLabel: "确认删除", tone: "danger" }))) return;
+    const job = queryClient.getQueryData<Job>([...MY_JOBS_QUERY, id]);
+    if (!job || job.status === "running" || job.status === "queued") return;
     await deleteJob(id);
     await updateJob(id, null);
+    toast.success("已删除任务");
   };
 
   const retry = async (id: string) => {
     const job = jobsById.get(id);
     const next = job?.channel_mode === "free" ? await api.retryJob(id, { mode: "free" }) : await api.retryJob(id);
     await updateJob(id, next);
+    toast.info("已提交重试请求");
   };
 
-  const ungroup = (batch: BatchEntry) => {
-    if (!window.confirm("将这次上传的论文分开显示？每篇仍可单独打开和下载。")) return;
-    restoreMyJobs(batch.jobIds.filter((id) => !unavailable.has(id)));
-    removeBatch(batch.id);
+  const ungroup = async (id: string) => {
+    if (!(await confirm({ title: "取消分组", message: "将这次上传的论文分开显示？每篇仍可单独打开和下载。", confirmLabel: "分开显示" }))) return;
+    const batch = readBatches().find((entry) => entry.id === id);
+    if (!batch) return;
+    restoreMyJobs(batch.jobIds.filter((jobId) => !unavailableRef.current.includes(jobId)));
+    removeBatch(id);
     setBatches(readBatches());
-    setNotice(null);
+    toast.success("已分开显示本批任务");
+  };
+
+  const clearAllHistory = async () => {
+    if (!(await confirm({ title: "清除翻译历史", message: "清除这个浏览器里的全部翻译历史？", confirmLabel: "全部清除", tone: "danger" }))) return;
+    if (readHistory().length === 0) return;
+    clearHistory();
+    toast.success("已清除翻译历史");
   };
 
   return (
@@ -138,17 +159,12 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
             rememberBatch(created.map((job) => job.id));
             for (const job of created) queryClient.setQueryData([...MY_JOBS_QUERY, job.id], job);
             setBatches(readBatches());
-            setNotice(`已提交 ${created.length} 篇论文。`);
+            toast.success(`已提交 ${created.length} 篇论文。`);
           }}
           onNeedSettings={openSettings}
           onOpenTerms={() => setTermsOpen(true)}
         />
       </div>
-      {notice && (
-        <p className="home-feedback check-ok" role="status">
-          {notice}
-        </p>
-      )}
       {tasks.length > 0 && (
         <section className="jobs current-jobs" aria-labelledby="jobs-title">
           <div className="jobs-head">
@@ -168,7 +184,7 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
                 onCancelJob={cancel}
                 onDeleteJob={remove}
                 onRetryJob={retry}
-                onUngroup={batch ? () => ungroup(batch) : undefined}
+                onUngroup={batch ? () => void ungroup(batch.id) : undefined}
               />
             ))}
           </ul>
@@ -183,7 +199,7 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
             <button
               type="button"
               className="quiet"
-              onClick={() => window.confirm("清除这个浏览器里的全部翻译历史？") && clearHistory()}
+              onClick={() => void clearAllHistory()}
             >
               全部清除
             </button>

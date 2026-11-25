@@ -4,6 +4,7 @@ import { Link } from "react-router";
 import { STAGE_LABELS } from "@/entities/job/model";
 import { ExportDownloadLink } from "@/features/export/ExportDownloadLink";
 import type { ExportMode, Job } from "@/shared/api/client";
+import { useToast } from "@/shared/feedback/Toast";
 import { expiresSoon, formatRemaining } from "@/shared/time/elapsed";
 
 const STATUS_LABELS: Record<Job["status"], string> = {
@@ -48,6 +49,7 @@ export function HomeJobRow({
   onDeleteJob,
   onRetryJob,
 }: Props) {
+  const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState("");
   const inFlight = useRef(false);
@@ -66,7 +68,9 @@ export function HomeJobRow({
     try {
       await action(id, filename);
     } catch (cause) {
-      setActionError(cause instanceof Error ? cause.message : "操作未完成，请重试");
+      const message = cause instanceof Error ? cause.message : "操作未完成，请重试";
+      setActionError(message);
+      toast.error(message);
     } finally {
       inFlight.current = false;
       setBusy(false);
@@ -114,6 +118,7 @@ export function HomeJobRow({
                   jobId={id}
                   mode={downloadMode}
                   onPreparingChange={onPreparingChange}
+                  renderOverflowPage={(page) => <Link to={`/jobs/${id}?page=${page}`}>{page}</Link>}
                 >
                   下载 PDF
                 </ExportDownloadLink>
@@ -121,14 +126,14 @@ export function HomeJobRow({
             </>
           )}
           {canRetry && (
-            <button type="button" className="job-retry" disabled={busy} onClick={() => void actOnJob(onRetryJob)}>
+            <button type="button" className="job-retry" aria-disabled={busy} onClick={() => void actOnJob(onRetryJob)}>
               {job.status === "failed" ? "重试" : "重新开始"}
             </button>
           )}
           <button
             type="button"
             className="quiet job-secondary"
-            disabled={busy}
+            aria-disabled={busy}
             onClick={() => void actOnJob(active ? onCancelJob : onDeleteJob)}
           >
             {active ? "取消" : "删除"}

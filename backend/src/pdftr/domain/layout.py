@@ -53,3 +53,4 @@ class LayoutResult(BaseModel):
     parser_version: str = ""
     pages: list[LayoutPage]
     requested_pages: list[int] | None = None  # 实际请求的原始页号，None 表示全页
+    attempted_pages: list[int] | None = None

@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import time
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
@@ -198,7 +199,12 @@ def test_export_rebuilds_invalid_pair_and_reuses_repaired_cache(cached_export, i
         meta.write_bytes(invalid_meta if isinstance(invalid_meta, bytes) else invalid_meta.encode())
 
     assert usecases.export_job(pipeline, JOB_ID, "mono") == ("synthetic_译文.pdf", pdf)
-    assert json.loads(meta.read_text(encoding="utf-8")) == {"v": EXPORT_CACHE_VERSION, "overflow_pages": [3, 7]}
+    assert json.loads(meta.read_text(encoding="utf-8")) == {
+        "v": EXPORT_CACHE_VERSION,
+        "overflow_pages": [3, 7],
+        "size_bytes": len(b"%PDF synthetic"),
+        "crc32": zlib.crc32(b"%PDF synthetic"),
+    }
     assert usecases.export_job(pipeline, JOB_ID, "mono")[1] == pdf
     assert pdf.read_bytes() == b"%PDF synthetic" and renders == [pdf]
 
@@ -250,7 +256,7 @@ def test_snapshot_is_downloadable_only_after_both_files_are_published(cached_exp
     def block_publish(pdf, pages):
         pdf_published.set()
         assert resume.wait(4)
-        write_meta(pdf, pages)
+        return write_meta(pdf, pages)
 
     monkeypatch.setattr(usecases, "_write_export_meta", block_publish)
     with TestClient(create_app(container)) as client, ThreadPoolExecutor(max_workers=1) as threads:
@@ -281,11 +287,13 @@ def test_old_pairs_and_expired_orphans_are_cleaned_with_commit_marker_first(cach
     orphan = folder / "dual-left-0000000000000000.meta.json"
     partial = folder / ".mono-right-interrupted.part"
     fresh = folder / ".mono-right-in-progress.part"
-    old = time.time() - 120
+    old = time.time() - 901
     for path in (old_pdf, old_meta, orphan, partial, fresh):
         path.touch()
         if path != fresh:
             os.utime(path, (old, old))
+    within_grace = time.time() - 120
+    os.utime(fresh, (within_grace, within_grace))
     removed = []
     unlink = type(old_pdf).unlink
 
@@ -372,9 +380,8 @@ def test_runner_and_retranslation_share_context_and_concurrency(stored_job, monk
     assert (returned[0].target, returned[0].status, returned[0].quality) == ("旧译文", SegmentStatus.EDITED, "careful")
     assert returned[0].failure_reason and returned[1].status is SegmentStatus.DONE
     revisions = {r.segment_id: r for r in usecases.revisions(pipeline, JOB_ID)}
-    assert set(revisions) == {"s1", "s3"}
-    assert revisions["s3"].before == revisions["s3"].after == "旧译文"
-    assert revisions["s3"].action == "retranslate"
+    assert set(revisions) == {"s1"}
+    assert revisions["s1"].action == "retranslate"
 
 
 def test_job_terms_groups_spelling_variants_across_sources(stored_job, monkeypatch):
