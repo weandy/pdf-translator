@@ -56,6 +56,7 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 [tool.pyright]
 include = ["src", "tests"]
 pythonVersion = "3.12"
+pythonPlatform = "Linux"
 typeCheckingMode = "standard"
 venvPath = "."
 venv = ".venv"

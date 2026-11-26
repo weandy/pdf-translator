@@ -56,9 +56,7 @@ def load_or_create_local_secret_key(path: Path) -> tuple[bytes | None, str]:
         path.parent.mkdir(parents=True, exist_ok=True)
         raw_key = os.urandom(32)
         encoded = (base64.urlsafe_b64encode(raw_key).decode("ascii") + "\n").encode("ascii")
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        if hasattr(os, "O_BINARY"):
-            flags |= os.O_BINARY
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
         fd = os.open(path, flags, 0o600)
         try:
             os.write(fd, encoded)
