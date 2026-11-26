@@ -97,12 +97,17 @@ class TranslateReport(BaseModel):
     fallback_models: list[str] = Field(default_factory=list)
 
 
-_PROTOCOL_TAG = re.compile(r"</?translations\b[^>]*>", re.I)
-# 先匹配完整 XML/HTML 风格标签并提取完整标签名（允许 : 与 .），仅当完整标签名严格匹配 ^m\d+$ 时再做公式占位符检查
-_GENERIC_TAG = re.compile(r"<(?P<close>/)?\s*(?P<name>[A-Za-z0-9_.:-]+)(?P<rest>[^<>\r\n]*)>")
+_PROTOCOL_TAG = re.compile(r"</?translations\b(?:[^<>\r\n]*+>)?", re.I)
+_TAG_NAME = r"[A-Za-z_:][\w:.-]*+"
+# 逐个尖括号扫描，引号内允许 >。占有量词避免在缺失 > 或属性残缺时反复拆分同一串字符。
+_GENERIC_TAG = re.compile(
+    rf"<(?P<close>/)?(?P<space>[^\S\r\n]*+)(?P<name>{_TAG_NAME})"
+    r"""(?P<rest>(?:[^<>"'\r\n]++|"[^"<\r\n]*+"|'[^'<\r\n]*+')*+)>"""
+)
 _FORMULA_NAME = re.compile(r"^m\d+$", re.I)
-_VALID_FORMULA_TAG = re.compile(r"^<m\d+/>$")
-_OPEN_TAG_ATTRS = re.compile(r'^(?:\s+[A-Za-z_:][\w:.-]*(?:\s*=\s*(?:"[^"\r\n]*"|\'[^\'\r\n]*\'|[^<>\s"\']+))?)*\s*$')
+_VALID_FORMULA_TAG = re.compile(r"<m\d+/>")
+_ATTR_VALUE = r"""(?:"[^"]*+"|'[^']*+'|[^<>\s"']++)"""
+_OPEN_TAG_ATTRS = re.compile(rf"(?:\s++{_TAG_NAME}(?:\s*+=\s*+{_ATTR_VALUE})?+)*+\s*+")
 _MATH_LOGIC_OP = re.compile(r"^\s+(?:and|or)\b", re.I)
 _FORMULA_FOLLOWED_BY_EQ = re.compile(r"<(m\d+)/>\s*[=＝]")
 _PAREN_NUM_BEFORE_FORMULA = re.compile(r"\(\s*(\d+(?:\.\d+)?)\s*[+\-−×*/]?\s*<(m\d+)/>\s*\)")
@@ -267,36 +272,45 @@ def _leaked_latex_command_problems(source: str, target: str) -> list[str]:
     return [f"译文意外泄漏了 LaTeX 命令（{sample}），公式请仅保留 <mN/> 占位符"]
 
 
-def _is_malformed_formula_tag(match: re.Match[str]) -> bool:
-    raw = match.group(0)
-    if _VALID_FORMULA_TAG.match(raw):
-        return False
-    name = match.group("name")
-    if not _FORMULA_NAME.match(name):
-        return False
-    if match.group("close"):
-        return True
+def _is_unexpected_tag(match: re.Match[str], *, formula: bool) -> bool:
     rest = match.group("rest")
-    if rest.rstrip().endswith("/"):
-        return True
-    if not _OPEN_TAG_ATTRS.match(rest):
+    body = rest.rstrip()
+    if match.group("close") or body.endswith("/"):
+        return formula or _OPEN_TAG_ATTRS.fullmatch(body.rstrip("/").rstrip()) is not None
+    if _OPEN_TAG_ATTRS.fullmatch(rest) is None:
         return False
-    if not rest.strip():
-        return True
-    # 避开 a<m1 and b>0、x < m1 or b > 0 等数学/逻辑比较，但拦截 A<m1 disabled>B 等带属性畸形标签
-    return _MATH_LOGIC_OP.match(rest) is None
+    if formula:
+        # 保留 a<m1 and b>0 等数学比较，同时识别公式名后误带的布尔属性。
+        return _MATH_LOGIC_OP.match(rest) is None
+    if body:
+        return "=" in body
+    # 裸开标签和数学、泛型记号可能同形。保留尖括号内左侧留空、单字符及紧接 ASCII 标识符的写法。
+    before = match.string[match.start() - 1 : match.start()]
+    return not match.group("space") and len(match.group("name")) > 1 and not re.fullmatch(r"\w", before, re.ASCII)
 
 
 def _protocol_tag_problems(source: str, target: str) -> list[str]:
     problems: list[str] = []
     if any(m[0] not in source for m in _PROTOCOL_TAG.finditer(target)):
         problems.append("译文包含协议标签（如 </translations>），请移除后重新输出")
-    bad_formulas = [
-        m.group(0) for m in _GENERIC_TAG.finditer(target) if _is_malformed_formula_tag(m) and m.group(0) not in source
-    ]
+    bad_formulas: dict[str, None] = {}
+    fake_tags: dict[str, None] = {}
+    source_tags = {m[0] for m in _GENERIC_TAG.finditer(source)} if "<" in target else set()
+    for match in _GENERIC_TAG.finditer(target):
+        raw = match[0]
+        if raw in source_tags or _VALID_FORMULA_TAG.fullmatch(raw) or RICH_TAG.fullmatch(raw):
+            continue
+        if _PROTOCOL_TAG.match(raw):
+            continue
+        formula = _FORMULA_NAME.fullmatch(match.group("name")) is not None
+        if _is_unexpected_tag(match, formula=formula):
+            (bad_formulas if formula else fake_tags)[raw] = None
     if bad_formulas:
-        sample = "、".join(dict.fromkeys(bad_formulas))
+        sample = "、".join(bad_formulas)
         problems.append(f"公式标签格式错误（{sample}），请使用自闭合占位符如 <m1/>")
+    if fake_tags:
+        sample = "、".join(tag if len(tag) <= 80 else tag[:77] + "..." for tag in list(fake_tags)[:3])
+        problems.append(f"译文含有原文未出现的伪造标签（{sample}），请移除这些标签并保留正文")
     return problems
 
 

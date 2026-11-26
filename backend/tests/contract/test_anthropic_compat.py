@@ -57,9 +57,11 @@ def _chat(
     [
         ("claude-opus-5-5", "off", {"output_config": {"effort": "low"}}, ["thinking", "temperature"]),
         ("claude-sonnet-4-6", "low", {"thinking": {"type": "adaptive"}, "output_config": {"effort": "medium"}}, []),
+        ("claude-sonnet-4-6", "xhigh", {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}, []),
         ("claude-sonnet-4.6-20260217", "off", {"output_config": {"effort": "low"}}, ["thinking"]),
         # 认不出的模型（第三方兼容接口、旧模型）不发送思考参数
         ("deepseek-flash", "low", {}, ["thinking", "output_config", "temperature"]),
+        ("deepseek-flash", "xhigh", {}, ["thinking", "output_config", "temperature"]),
         ("claude-haiku-4-5", "low", {}, ["thinking", "output_config"]),
         ("claude-opus-50", "low", {}, ["thinking", "output_config"]),
         ("claude-sonnet-4-61", "low", {}, ["thinking", "output_config"]),

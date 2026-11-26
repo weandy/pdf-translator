@@ -5,8 +5,7 @@ from __future__ import annotations
 import unittest
 
 from pydantic import ValidationError
-
-from ..contract import (
+from spikes.batch_d.contract import (
     BASELINE_CACHE_GOLD_SHA256,
     BASELINE_EXTRACT_PROMPT_SHA256,
     BASELINE_RULES_SHA256,
@@ -153,6 +152,7 @@ class ContractTest(unittest.TestCase):
         budget = BudgetConfig(max_requests=500, max_cost_cny=20.0, max_seconds_per_stage=600.0)
         cfg = LiveConfig(generator=gen, codex=codex, neon=neon, budget=budget)
         self.assertEqual(cfg.codex.model_family, "openai")
+        self.assertIs(cfg.generator.allow_private, False)
 
         with self.assertRaises(ValidationError):
             LiveConfig(

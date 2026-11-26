@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 
 from pydantic import BaseModel, Field
 
-from pdftr.domain.llm import ChatError, ChatModel, ChatOptions, ChatUsage
+from pdftr.domain.llm import ChatError, ChatModel, ChatOptions, ChatUsage, Thinking
 from pdftr.domain.text import RICH_TAG, normalize_term_key
 from pdftr.glossary.filters import is_lazy_english_self_map
 from pdftr.glossary.matcher import HORIZONTAL_SPACE, TERM_TOKEN, mask_term_boundaries
@@ -27,6 +27,12 @@ _MAX_CANDIDATES = 60
 _MAX_CANDIDATE_CHARS = 1200
 _MAX_TERM_LENGTH = 80
 _MAX_EXTRACTED_TERMS = 45
+_MAX_CONTEXT_SENTENCES = 12
+_MAX_CONTEXT_CHARS = 2400
+_EXTRACT_MAX_TOKENS = 8000
+_EXTRACT_THINKING: Thinking = "xhigh"
+_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9<])")
+_INLINE_TAG = re.compile(r"<m\d+/>|</?(?:b|i|sup|sub)>")
 _STOP_WORDS = frozenset({
     "about", "above", "across", "after", "again", "against", "all", "also", "am", "among", "an", "and", "any",
     "are", "around", "as", "at", "be", "been", "before", "behind", "being", "below", "between", "both",
@@ -334,6 +340,82 @@ def parse(text: str, *, truncated: bool = False) -> Extraction:
     return Extraction(domain=domain, terms=terms, use_library=use_library)
 
 
+def _clean_context_text(text: str) -> str:
+    return " ".join(_INLINE_TAG.sub(" ", RICH_TAG.sub("", text)).split()).strip()
+
+
+def select_candidate_contexts(
+    body_sources: Sequence[str],
+    candidates: Sequence[str],
+    *,
+    already_shown: str = "",
+    max_sentences: int = _MAX_CONTEXT_SENTENCES,
+    max_chars: int = _MAX_CONTEXT_CHARS,
+) -> list[str]:
+    """用贪心最小集合覆盖从正文抽取最精炼的语境短例句，优先覆盖标题/摘要/正文开头未出现的候选词。"""
+    if not body_sources or not candidates or max_sentences <= 0 or max_chars <= 0:
+        return []
+    shown_low = _clean_context_text(already_shown).lower()
+    cand_lows = list(dict.fromkeys(c.strip().lower() for c in candidates if c.strip()))
+    if not cand_lows:
+        return []
+    uncovered_pri = {cl for cl in cand_lows if cl not in shown_low}
+    uncovered_all = set(cand_lows)
+
+    sentences: list[str] = []
+    seen_s: set[str] = set()
+    for seg in body_sources:
+        cleaned = _clean_context_text(seg)
+        if not cleaned:
+            continue
+        for sent in _SENT_SPLIT.split(cleaned):
+            s = sent.strip()
+            if len(s) < 20:
+                continue
+            if len(s) > 220:
+                s = s[:217].rstrip() + "..."
+            if s not in seen_s and s.lower() not in shown_low:
+                seen_s.add(s)
+                sentences.append(s)
+    if not sentences:
+        return []
+
+    cand_patterns = [(cl, re.compile(rf"(?<![A-Za-z0-9]){re.escape(cl)}(?![A-Za-z0-9])")) for cl in cand_lows]
+    sent_hits: list[set[str]] = []
+    for s in sentences:
+        s_low = s.lower()
+        sent_hits.append({cl for cl, pat in cand_patterns if cl in s_low and pat.search(s_low)})
+
+    picked: list[str] = []
+    used: set[int] = set()
+    total_chars = 0
+    rem_pri, rem_all = set(uncovered_pri), set(uncovered_all)
+    while len(picked) < max_sentences and (rem_pri or rem_all):
+        best_i, best_score = -1, (0, 0, 0)
+        for i, hits in enumerate(sent_hits):
+            if i in used:
+                continue
+            pg, ag = len(hits & rem_pri), len(hits & rem_all)
+            if pg == 0 and ag == 0:
+                continue
+            sc = (pg, ag, -len(sentences[i]))
+            if sc > best_score:
+                best_score, best_i = sc, i
+        if best_i < 0:
+            break
+        s = sentences[best_i]
+        if total_chars + len(s) > max_chars and picked:
+            break
+        used.add(best_i)
+        picked.append(s)
+        total_chars += len(s)
+        rem_pri -= sent_hits[best_i]
+        rem_all -= sent_hits[best_i]
+        if not rem_pri and len(picked) >= 6:
+            break
+    return picked
+
+
 async def extract_terms(
     chat: ChatModel,
     *,
@@ -342,8 +424,10 @@ async def extract_terms(
     intro: str,
     headings: list[str],
     candidates: Sequence[str] = (),
+    contexts: Sequence[str] = (),
     definitions: Mapping[str, str] | None = None,
     user_terms: Mapping[str, str] | None = None,
+    thinking: Thinking = _EXTRACT_THINKING,
 ) -> Extraction:
     prompt = PROMPT.format(title=title, abstract=abstract, intro=intro[:1500], headings="; ".join(headings))
     if candidates:
@@ -351,6 +435,12 @@ async def extract_terms(
             "\n正文高频候选词（仅供参考，仅筛选需要全文统一译法的领域术语与高频核心对象词，忽略普通词汇）："
             + "、".join(candidates)
         )
+    if contexts:
+        cleaned_contexts = [c.strip() for c in contexts if c.strip()]
+        if cleaned_contexts:
+            prompt += "\n正文语境例句（供结合具体学科语境确定准确中文译法，避免按日常词义误译）：\n" + "\n".join(
+                f"- {s}" for s in cleaned_contexts
+            )
     if definitions:
         formatted_defs = "；".join(f"{k} = {v}" for k, v in definitions.items() if k.strip() and v.strip())
         if formatted_defs:
@@ -362,17 +452,18 @@ async def extract_terms(
         formatted = "；".join(f"{k}={v}" for k, v in user_terms.items() if k.strip() and v.strip())
         if formatted:
             prompt += "\n用户已指定术语（若抽取包含这些词的复合术语，译法须与之保持一致）：" + formatted
+    opts = ChatOptions(max_tokens=_EXTRACT_MAX_TOKENS, thinking=thinking)
     chain_timeout = getattr(chat, "total_timeout_s", None) or getattr(chat, "call_timeout_s", None)
     if isinstance(chain_timeout, (int, float)) and chain_timeout > 0:
         try:
             result = await asyncio.wait_for(
-                chat.complete("你是学术术语专家。", prompt, ChatOptions(max_tokens=1500)),
+                chat.complete("你是学术术语专家。", prompt, opts),
                 float(chain_timeout),
             )
         except TimeoutError as exc:
             raise ChatError("术语抽取请求超时", retryable=True) from exc
     else:
-        result = await chat.complete("你是学术术语专家。", prompt, ChatOptions(max_tokens=1500))
+        result = await chat.complete("你是学术术语专家。", prompt, opts)
     truncated = result.finish_reason in ("length", "max_tokens")
     found = (
         Extraction()

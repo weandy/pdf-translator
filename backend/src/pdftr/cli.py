@@ -18,7 +18,12 @@ from pdftr.domain.ids import new_job_id
 from pdftr.extraction.chars import extract
 from pdftr.fusion.build import fuse
 from pdftr.glossary import sources as glossary_sources
-from pdftr.glossary.extract import extract_acronym_definitions, extract_terms, frequent_candidates
+from pdftr.glossary.extract import (
+    extract_acronym_definitions,
+    extract_terms,
+    frequent_candidates,
+    select_candidate_contexts,
+)
 from pdftr.glossary.matcher import TermMatcher, TermSelection
 from pdftr.glossary.normalize import normalize_terms
 from pdftr.parsing.mineru_cloud import MinerUCloudParser
@@ -78,10 +83,13 @@ async def _translate_async(args: argparse.Namespace) -> None:
     model = chat_class(base_url=settings.llm_base_url, api_key=settings.llm_api_key, model=settings.llm_model)
     candidates = frequent_candidates(body_sources)
     definitions = extract_acronym_definitions(body_sources, candidates)
+    contexts = select_candidate_contexts(
+        body_sources, candidates, already_shown=f"{doc.meta.title}\n{doc.meta.abstract}\n{intro[:1500]}"
+    )
     async with chat_session(model) as chat:
         found = await extract_terms(
             chat, title=doc.meta.title, abstract=doc.meta.abstract, intro=intro, headings=headings,
-            candidates=candidates, definitions=definitions,
+            candidates=candidates, contexts=contexts, definitions=definitions,
         )  # fmt: skip
         found.terms = normalize_terms(found.terms, body_sources, headings)
         selection = TermSelection(found, {}, load_library)

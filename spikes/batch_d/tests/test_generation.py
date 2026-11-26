@@ -15,9 +15,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import httpx2
-
-from .. import generate
-from ..contract import (
+from spikes.batch_d import generate
+from spikes.batch_d.contract import (
     ALL_GROUPS,
     BASELINE_EXTRACT_PROMPT_SHA256,
     BASELINE_RULES_SHA256,
@@ -30,7 +29,7 @@ from ..contract import (
     load_policy,
     sha256_text,
 )
-from ..generate import ForbiddenCache, prepare_trees, run_generation
+from spikes.batch_d.generate import ForbiddenCache, prepare_trees, run_generation
 
 _REPO = Path(__file__).resolve().parents[3]
 _SPIKE = _REPO / "spikes/batch_d"
@@ -339,17 +338,18 @@ class GenerationTest(unittest.TestCase):
                 self.assertIn("模型拒绝翻译", rows["refused"].failure_reason)
                 self.assertIn("截断", rows["truncated"].failure_reason)
 
-    def test_live_adapter_observes_wire_without_network(self) -> None:
+    def test_live_adapter_observes_wire_and_passes_allow_private_without_network(self) -> None:
         from pdftr.domain.llm import ChatOptions
 
         doc = _docs()[0]
         endpoint = EndpointConfig(
             protocol="openai_compat",
-            base_url="https://synthetic.example/v1",
+            base_url="http://127.0.0.1:31001/v1",
             model="alias",
             model_family="synthetic",
             key_env="BATCH_D_TEST_KEY",
             extra_headers={"X-Run": "probe"},
+            allow_private=True,
         )
         task = {
             "pricing": {"served": {"cache_hit_cny_per_m": 1, "cache_miss_cny_per_m": 2, "output_cny_per_m": 3}},
@@ -372,10 +372,13 @@ class GenerationTest(unittest.TestCase):
         async def probe():
             with (
                 patch.dict(os.environ, {endpoint.key_env: "offline-probe"}),
-                patch("pdftr.domain.url_guard.build_safe_async_transport", return_value=httpx2.MockTransport(reply)),
+                patch(
+                    "pdftr.domain.url_guard.build_safe_async_transport", return_value=httpx2.MockTransport(reply)
+                ) as build_transport,
             ):
                 chat = generate._chat("live", task, doc)
                 try:
+                    build_transport.assert_called_once_with(allow_private=True)
                     await chat.complete("系统", "段落", ChatOptions())
                     metrics = chat.metrics()
                     self.assertEqual(metrics["actual_model"], "served")

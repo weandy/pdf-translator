@@ -92,10 +92,58 @@ def test_formula_tag_guard_rejects_malformed_formula_tags(source: str, target: s
     assert problems and any("公式标签格式错误" in p for p in problems)
 
 
-def test_formula_tag_guard_no_catastrophic_backtracking() -> None:
-    evil = "<m1 " + "attr " * 2000 + "unclosed"
+@pytest.mark.parametrize("tag", ["</translations", "<translations", "</TRANSLATIONS", "<translations>"])
+def test_protocol_tag_guard_rejects_complete_and_truncated_tags(tag: str) -> None:
+    problems = _protocol_tag_problems("A plain sentence.", f"一句译文。{tag}")
+    assert len(problems) == 1 and "协议标签" in problems[0]
+    assert _protocol_tag_problems(f"The literal fragment is {tag}", f"字面片段为 {tag}") == []
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "<mark/>",
+        "<sampling pitch/>",
+        "<aperture width/>",
+        "<foo_bar />",
+        "</term>",
+        "</sampling pitch>",
+        "<widget>",
+        "<x-node>内容</x-node>",
+        '<node title="a > b">',
+        "<node hidden data-kind=label>",
+        "<b/>",
+    ],
+)
+def test_unexpected_tag_guard_requires_exact_source_literal(tag: str) -> None:
+    problems = _protocol_tag_problems("A plain sentence.", f"一句{tag}译文。")
+    assert len(problems) == 1 and "伪造标签" in problems[0] and "移除" in problems[0]
+    assert tag.split(">")[0] in problems[0]
+    assert _protocol_tag_problems(f"Literal markup: {tag}", f"字面标记为{tag}。") == []
+
+
+@pytest.mark.parametrize(
+    "expression",
+    ["a < b > c", "x < y and z > 0", "P(X < k)", "<m1, m2>", "a<b>c", "Vec<Item>", "<https://example.org/>"],
+)
+def test_unexpected_tag_guard_preserves_angle_bracket_notation(expression: str) -> None:
+    assert _protocol_tag_problems("Evaluate the expression.", f"计算 {expression}。") == []
+
+
+@pytest.mark.parametrize(
+    ("target", "valid"),
+    [
+        ("<m1 " + "attr " * 2000 + "unclosed", True),
+        ("<widget " + "attr " * 20000 + "unclosed", True),
+        ("<widget " + 'attr="value" ' * 20000 + "unclosed", True),
+        ("<m1 " + "attr " * 2000 + "unclosed!>", True),
+        ("<widget " + " " * 20000 + "hidden>", True),
+        ("<widget " + "attr " * 2000 + "unclosed" + "><mark/>", False),
+    ],
+)
+def test_formula_tag_guard_no_catastrophic_backtracking(target: str, valid: bool) -> None:
     started = time.perf_counter()
-    assert _protocol_tag_problems("plain", evil) == []
+    assert (not _protocol_tag_problems("plain", target)) is valid
     assert (time.perf_counter() - started) < 0.5
 
 
@@ -156,6 +204,39 @@ class _StubChat:
 
 def _seg(idx: int, source: str, formulas: dict[str, str] | None = None) -> Segment:
     return Segment(id=f"job-s{idx}", job_id="job", block_ids=[f"p0-b{idx}"], source=source, formulas=formulas or {})
+
+
+@pytest.mark.parametrize(
+    ("suffix", "hint"),
+    [("</translations", "协议标签"), ("<translations", "协议标签"), ("<sampling pitch/>", "<sampling pitch/>")],
+)
+def test_translate_retries_only_the_segment_with_a_leaked_tag(suffix: str, hint: str) -> None:
+    class _LeakingChat(_StubChat):
+        users: list[str]
+
+        async def complete(self, system: str, user: str, opts: ChatOptions) -> ChatResult:
+            del system, opts
+            self.users.append(user)
+            if len(self.users) == 1:
+                return ChatResult(text=f"1|记录<m1/>处的读数。{suffix}\n2|保持仪表水平。\n</translations>")
+            return ChatResult(text="1|记录<m1/>处的读数。\n</translations>")
+
+    chat = _LeakingChat("synthetic-model")
+    chat.users = []
+    cache = _DictCache()
+    segments = [_seg(0, "Record the reading at <m1/>.", {"m1": "x"}), _seg(1, "Keep the gauge level.")]
+    out, report = asyncio.run(
+        translate(
+            segments, chat=chat, cache=cache, ctx=DocContext(title="Paper"), opts=TranslateOptions(use_cache=True)
+        )
+    )
+    assert [s.status for s in out] == [SegmentStatus.DONE, SegmentStatus.DONE]
+    assert [s.target for s in out] == ["记录<m1/>处的读数。", "保持仪表水平。"]
+    assert report.requests == 2 and report.attempts == {"job-s0": 2, "job-s1": 1}
+    assert "2|Keep the gauge level." in chat.users[0]
+    assert "Keep the gauge level." not in chat.users[1]
+    assert "上次翻译未通过校验" in chat.users[1] and hint in chat.users[1]
+    assert sorted(cache.data.values()) == ["保持仪表水平。", "记录<m1/>处的读数。"]
 
 
 def test_translate_fallback_skips_primary_cache_and_records_actual_model_cost() -> None:

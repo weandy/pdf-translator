@@ -7,7 +7,7 @@ from pdftr.config import Settings
 from pdftr.domain.llm import ChatOptions, ChatResult
 from pdftr.glossary import sources
 from pdftr.glossary.extract import PROMPT as EXTRACT_PROMPT
-from pdftr.glossary.extract import Extraction, extract_terms, frequent_candidates, parse
+from pdftr.glossary.extract import Extraction, extract_terms, frequent_candidates, parse, select_candidate_contexts
 from pdftr.glossary.filters import is_lazy_english_self_map
 from pdftr.glossary.gist import parse as parse_gist
 from pdftr.glossary.matcher import TermMatcher, TermSelection
@@ -121,7 +121,7 @@ def test_extract_terms_with_fake_model(candidates):
         model = "fake"
 
         async def complete(self, system: str, user: str, opts: ChatOptions) -> ChatResult:
-            assert "标题：Synthetic study" in user and opts.thinking == "off"
+            assert "标题：Synthetic study" in user and opts.thinking == "xhigh" and opts.max_tokens == 8000
             assert "第二行" in user and "最多 45 个" in user and "Transformer、BERT、ResNet" in user
             assert ("正文高频候选词" in user) is bool(candidates)
             if candidates:
@@ -135,6 +135,64 @@ def test_extract_terms_with_fake_model(candidates):
         extract_terms(Chat(), title="Synthetic study", abstract="", intro="", headings=[], candidates=candidates)
     )
     assert got.domain == "测量" and not got.use_library and got.terms == {"carrier": "载体"}
+
+
+def test_select_candidate_contexts_prefers_uncovered_and_cleans_markup():
+    body = [
+        "The <b>capsule</b> deflects under pressure <m1/> while the vent opens cleanly.",
+        "This sentence mentions only already shown tokens like carrier in passing for context.",
+        "Short.",
+        "A dedicated stylus carriage slides along the screw to record surface backlash.",
+        "The capsule deflects under pressure while the vent opens cleanly.",
+    ]
+    picked = select_candidate_contexts(
+        body,
+        ("carrier", "capsule", "stylus carriage", "backlash"),
+        already_shown="Abstract discusses carrier allocation in detail.",
+        max_sentences=2,
+    )
+    assert len(picked) == 2
+    assert picked[0] == "A dedicated stylus carriage slides along the screw to record surface backlash."
+    assert picked[1] == "The capsule deflects under pressure while the vent opens cleanly."
+    assert all("<" not in s for s in picked)
+
+
+def test_extract_terms_injects_contexts_before_definitions():
+    seen: list[tuple[str, ChatOptions]] = []
+
+    class Chat:
+        model = "fake"
+
+        async def complete(self, system: str, user: str, opts: ChatOptions) -> ChatResult:
+            seen.append((user, opts))
+            return ChatResult(text="领域：计量\nAI公共词库：停用\ncapsule=膜盒")
+
+        async def list_models(self) -> list[str]:
+            return []
+
+    got = asyncio.run(
+        extract_terms(
+            Chat(),
+            title="Pressure Gauge",
+            abstract="A diaphragm sensor.",
+            intro="",
+            headings=["Setup"],
+            candidates=("capsule", "LCM"),
+            contexts=("The capsule deflects under differential pressure.", "  "),
+            definitions={"LCM": "lamp circuit monitor"},
+            user_terms={"vent": "通气口"},
+        )
+    )
+    assert got.terms == {"capsule": "膜盒"}
+    prompt, opts = seen[0]
+    assert opts.thinking == "xhigh" and opts.max_tokens == 8000
+    assert "- The capsule deflects under differential pressure." in prompt
+    assert (
+        prompt.index("正文高频候选词")
+        < prompt.index("正文语境例句")
+        < prompt.index("文中明确定义的缩写")
+        < prompt.index("用户已指定术语")
+    )
 
 
 def test_frequent_candidates_clean_and_merge_without_bridging_boundaries():

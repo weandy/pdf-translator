@@ -68,8 +68,11 @@ def test_guess_dialect():
     [
         ("deepseek", "off", {"thinking": {"type": "disabled"}, "temperature": 0.3}, ["reasoning_effort"]),
         ("deepseek", "low", {"thinking": {"type": "enabled"}, "reasoning_effort": "low"}, ["temperature"]),
+        ("deepseek", "xhigh", {"thinking": {"type": "enabled"}, "reasoning_effort": "xhigh"}, ["temperature"]),
         ("openai", "off", {"reasoning_effort": "none"}, ["temperature", "thinking"]),
+        ("openai", "xhigh", {"reasoning_effort": "high"}, ["temperature", "thinking"]),
         ("generic", "low", {"temperature": 0.3}, ["thinking", "reasoning_effort"]),
+        ("generic", "xhigh", {"temperature": 0.3}, ["thinking", "reasoning_effort"]),
     ],
 )
 def test_request_body(dialect, thinking, expect, absent):
@@ -295,6 +298,7 @@ def test_guess_dialect_nim_and_nemotron_models(base_url, model, expected):
             ["reasoning_effort"],
         ),
         ("nemotron", "low", {"reasoning_effort": "low"}, ["chat_template_kwargs", "temperature"]),
+        ("nemotron", "xhigh", {"reasoning_effort": "high"}, ["chat_template_kwargs", "temperature"]),
         (
             "nemotron_off",
             "off",
@@ -304,6 +308,12 @@ def test_guess_dialect_nim_and_nemotron_models(base_url, model, expected):
         (
             "nemotron_off",
             "low",
+            {"chat_template_kwargs": {"enable_thinking": False}, "temperature": 0.3},
+            ["reasoning_effort"],
+        ),
+        (
+            "nemotron_off",
+            "xhigh",
             {"chat_template_kwargs": {"enable_thinking": False}, "temperature": 0.3},
             ["reasoning_effort"],
         ),

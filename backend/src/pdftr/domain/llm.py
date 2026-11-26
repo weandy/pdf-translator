@@ -8,7 +8,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-Thinking = Literal["off", "low"]  # S8–S11：默认不思考，“精翻”用 low
+Thinking = Literal["off", "low", "xhigh"]  # 默认不思考，“精翻”用 low，术语抽取用 xhigh
 
 
 class ChatOptions(BaseModel):

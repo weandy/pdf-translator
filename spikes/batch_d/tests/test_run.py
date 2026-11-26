@@ -8,14 +8,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ..contract import (
+from spikes.batch_d.contract import (
     BudgetConfig,
     DecisionRecord,
     EndpointConfig,
     LiveConfig,
     sha256_text,
 )
-from ..run import execute_live, execute_report, execute_selftest, exit_code_for_state, main
+from spikes.batch_d.run import execute_live, execute_report, execute_selftest, exit_code_for_state, main
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 

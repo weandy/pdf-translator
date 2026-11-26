@@ -585,6 +585,7 @@ def test_r5_5a_extract_acronym_definitions_and_prompt_injection(tmp_path: Path):
         cache.close()
         store.close()
     assert seen_prompts and "TCM = Typed Comparison Method" in seen_prompts[0]
+    assert "正文语境例句" in seen_prompts[0] and "- TCM improves recall." in seen_prompts[0]
 
 
 def test_r5_5a_cli_translate_passes_definitions_to_extract_terms(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -662,6 +663,7 @@ def test_r5_5a_cli_translate_passes_definitions_to_extract_terms(tmp_path: Path,
     args = argparse.Namespace(pdf=str(pdf), layout=str(layout_path), refs=False, quality="default", out=None)
     asyncio.run(cli_mod._translate_async(args))
     assert captured["definitions"] == {"TCM": "Typed Comparison Method"}
+    assert captured["contexts"] == ["TCM improves recall."]
 
 
 def test_r5_5b_skip_singular_plural_self_mapping_and_keep_legitimate_terms():

@@ -1,9 +1,10 @@
 """OpenAI 兼容接口适配器。
 
 各家“思考”开关的写法不同（参考 zotero-pdf-translate、KISS Translator 的做法）：
-- deepseek：extra_body.thinking = {"type": "enabled"|"disabled"}，开启时 reasoning_effort=low
-- openai：reasoning_effort = "none"|"low"，推理模型不接受 temperature
-- nemotron：关思考时 extra_body.chat_template_kwargs = {"enable_thinking": False} + temperature，开启时 reasoning_effort
+- deepseek：extra_body.thinking = {"type": "enabled"|"disabled"}，开启时透传 reasoning_effort（low/xhigh）
+- openai：reasoning_effort = "none"|"low"|"high"（xhigh 映射为标准枚举 high），推理模型不接受 temperature
+- nemotron：关思考时 extra_body.chat_template_kwargs = {"enable_thinking": False} + temperature，
+  开启时透传 reasoning_effort（xhigh 映射为 high）
 - nemotron_off：全阶段强制关闭思考，extra_body.chat_template_kwargs = {"enable_thinking": False} + temperature
 - generic：不发送任何思考参数，交给接口默认（未知服务发了不认识的参数可能报错）
 """
@@ -199,7 +200,9 @@ class OpenAICompatChat:
                 kw["extra_body"] = {"thinking": {"type": "enabled"}}
                 kw["reasoning_effort"] = opts.thinking
         elif self.dialect == "openai":
-            kw["reasoning_effort"] = "none" if opts.thinking == "off" else opts.thinking
+            kw["reasoning_effort"] = (
+                "none" if opts.thinking == "off" else ("high" if opts.thinking == "xhigh" else opts.thinking)
+            )
         elif self.dialect == "nemotron_off":
             kw["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
             kw["temperature"] = opts.temperature
@@ -208,7 +211,7 @@ class OpenAICompatChat:
                 kw["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
                 kw["temperature"] = opts.temperature
             else:
-                kw["reasoning_effort"] = opts.thinking
+                kw["reasoning_effort"] = "high" if opts.thinking == "xhigh" else opts.thinking
         else:
             kw["temperature"] = opts.temperature
         return kw

@@ -122,7 +122,7 @@ def test_parse_numbered_strips_inline_closing_and_leading_protocol_tags():
 
 
 def test_target_problems_rejects_protocol_and_malformed_formula_tags():
-    assert VALIDATION_VERSION == 7
+    assert VALIDATION_VERSION == 8
     assert any("协议标签" in p for p in _target_problems("A sentence.", "一句译文。</translations>"))
     assert any("协议标签" in p for p in _target_problems("A sentence.", "<translations>一句译文。"))
     assert any("公式标签" in p for p in _target_problems("Let <m1/> be x.", "设<m1>x</m1>为输入。"))

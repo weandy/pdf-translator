@@ -10,21 +10,22 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from spikes.batch_d.contract import (
+    BASELINE_CACHE_GOLD_SHA256,
+    BASELINE_EXTRACT_PROMPT_SHA256,
+    BASELINE_RULES_SHA256,
+    BASELINE_SHA,
+    BASELINE_VALIDATION_VERSION,
+    TR012_EXACT_CHAR_DELTA,
+    TR012_MAX_CHAR_DELTA,
+    sha256_text,
+)
+
 import pdftr
 from pdftr.domain.ir import Segment
 from pdftr.glossary import extract
 from pdftr.translation import prompt, service
 from pdftr.translation.batching import VALIDATION_VERSION
-
-from ..contract import (
-    BASELINE_CACHE_GOLD_SHA256,
-    BASELINE_EXTRACT_PROMPT_SHA256,
-    BASELINE_RULES_SHA256,
-    BASELINE_SHA,
-    TR012_EXACT_CHAR_DELTA,
-    TR012_MAX_CHAR_DELTA,
-    sha256_text,
-)
 
 _REPO = Path(__file__).resolve().parents[3]
 _TARGET = "backend/src/pdftr/translation/prompt.py"
@@ -38,12 +39,12 @@ def _assert_imports_from(src: Path) -> None:
         assert module.__file__ and Path(module.__file__).resolve().is_relative_to(src), module.__file__
 
 
-def _gold_cache_key() -> str:
+def _gold_cache_key(*, validation_version: int = VALIDATION_VERSION) -> str:
     # 金样输入含 order，当前生产 Segment 会在验证时忽略这个额外字段。
     seg = Segment.model_validate(
         {"id": "s0", "job_id": "j0", "order": 0, "source": "Inspect the sample.", "block_ids": ["p0-b0"]}
     )
-    return service.cache_key(seg, "synthetic-model", {}, "default")
+    return service.cache_key(seg, "synthetic-model", {}, "default", validation_version=validation_version)
 
 
 def _check_candidate_rules(baseline: str) -> None:
@@ -114,7 +115,7 @@ def _check_candidate(src: Path, baseline: str) -> None:
     _assert_imports_from(src)
     assert (prompt.__doc__ or "").startswith("翻译提示词 v8")
     assert prompt.PROMPT_VERSION == service.PROMPT_VERSION == "v8"
-    assert VALIDATION_VERSION == service.VALIDATION_VERSION == 7
+    assert VALIDATION_VERSION == service.VALIDATION_VERSION == BASELINE_VALIDATION_VERSION
     assert _gold_cache_key() != BASELINE_CACHE_GOLD_SHA256
     _check_candidate_rules(baseline)
     _check_candidate_behavior()
@@ -124,10 +125,11 @@ class PromptTest(unittest.TestCase):
     def test_production_gold(self) -> None:
         _assert_imports_from(_REPO / "backend/src")
         self.assertEqual(prompt.PROMPT_VERSION, "v7")
-        self.assertEqual(VALIDATION_VERSION, 7)
+        self.assertEqual(VALIDATION_VERSION, 8)
         self.assertEqual(sha256_text(extract.PROMPT), BASELINE_EXTRACT_PROMPT_SHA256)
         self.assertEqual(sha256_text(prompt.RULES), BASELINE_RULES_SHA256)
-        self.assertEqual(_gold_cache_key(), BASELINE_CACHE_GOLD_SHA256)
+        self.assertEqual(_gold_cache_key(validation_version=BASELINE_VALIDATION_VERSION), BASELINE_CACHE_GOLD_SHA256)
+        self.assertNotEqual(_gold_cache_key(), BASELINE_CACHE_GOLD_SHA256)
 
     def test_patch_scope_and_lf(self) -> None:
         patch = _PATCH.read_bytes()

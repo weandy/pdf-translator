@@ -10,11 +10,11 @@ from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 
+from spikes.batch_d.contract import ALL_CATEGORIES, ALL_DISCIPLINES, CaseDoc, contains_emoji, sha256_text
+
 from pdftr.domain.text import RICH_TAG, normalize_term_key
 from pdftr.glossary.extract import extract_acronym_definitions, parse
 from pdftr.glossary.normalize import normalize_terms
-
-from ..contract import ALL_CATEGORIES, ALL_DISCIPLINES, CaseDoc, contains_emoji, sha256_text
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 ROOT = FIXTURES.parents[2]

@@ -444,6 +444,7 @@ def _chat(mode: RunMode, task: dict[str, Any], doc: CaseDoc) -> _ObservedChat:
         wire = _Transport(httpx2.MockTransport(_SyntheticEndpoint(scope)), {})
         url, key, model = "https://synthetic.example/v1", "offline", "synthetic-model"
         allowed_models = [model]
+        allow_private = False
         prices.setdefault(model, Price(cache_hit=0, cache_miss=1, output=1))
     else:
         endpoint = EndpointConfig.model_validate(task["endpoint"])
@@ -451,8 +452,11 @@ def _chat(mode: RunMode, task: dict[str, Any], doc: CaseDoc) -> _ObservedChat:
             raise ValueError("在线生成要求 openai_compat 端点")
         url, key, model = endpoint.base_url, os.environ[endpoint.key_env], endpoint.model
         allowed_models = endpoint.allowed_model_ids
-        wire = _Transport(build_safe_async_transport(), endpoint.extra_headers)
-    adapter = OpenAICompatChat(base_url=url, api_key=key, model=model, transport=wire, default_max_retries=0)
+        allow_private = endpoint.allow_private
+        wire = _Transport(build_safe_async_transport(allow_private=endpoint.allow_private), endpoint.extra_headers)
+    adapter = OpenAICompatChat(
+        base_url=url, api_key=key, model=model, transport=wire, default_max_retries=0, allow_private=allow_private
+    )
     return _ObservedChat(adapter, wire, mode, prices, allowed_models)
 
 

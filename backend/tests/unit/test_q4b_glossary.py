@@ -197,7 +197,7 @@ def test_extract_terms_uses_finish_reason_and_keeps_usage(finish_reason):
 
         async def complete(self, system: str, user: str, opts: ChatOptions) -> ChatResult:
             self.calls += 1
-            assert opts.max_tokens == 1500
+            assert opts.max_tokens == 8000 and opts.thinking == "xhigh"
             return ChatResult(text="AI公共词库：启用\nnode=节点\nedge=边", finish_reason=finish_reason, usage=usage)
 
         async def list_models(self) -> list[str]:

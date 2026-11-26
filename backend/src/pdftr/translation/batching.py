@@ -13,7 +13,7 @@ from pdftr.domain.ir import BlockType
 from pdftr.domain.text import RICH_TAG
 
 BATCH_TOKENS = 1500
-VALIDATION_VERSION = 7
+VALIDATION_VERSION = 8
 _PLACEHOLDER = re.compile(r"<m\d+/>")
 _SPACED_FORMULA_PLACEHOLDER = re.compile(r"<(m\d+)\s+/>")
 _RICH_TAG = re.compile(r"<(/?)(b|i|sup|sub)>")
@@ -103,6 +103,7 @@ class NumberedResponseError(ValueError):
 _NUMBERED = re.compile(r"^(\d+)\s*[|｜]\s*(.*)$")
 _PIPE_CONTINUATION = re.compile(r"^\d+\s+[|｜]\s+")
 _START_TRANSLATIONS = re.compile(r"^<translations\s*>\s*", re.I)
+# 只消费完整的响应边界，段内残缺标签交给译文校验重试。
 _END_TRANSLATIONS = re.compile(r"</translations\s*>", re.I)
 
 

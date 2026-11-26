@@ -411,6 +411,7 @@ class EndpointConfig(BaseModel):
     key_env: str = Field(min_length=1)
     allowed_model_ids: list[str] = Field(default_factory=list)
     extra_headers: dict[str, str] = Field(default_factory=dict)
+    allow_private: bool = False
 
 
 class BudgetConfig(BaseModel):

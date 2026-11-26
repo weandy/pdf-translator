@@ -7,11 +7,11 @@ from itertools import combinations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from spikes.batch_d.contract import BASELINE_EXTRACT_PROMPT_SHA256, TermPairExpectation
+from spikes.batch_d.term_diagnostics import diagnose_terms, verify_tr011_patch
+
 from pdftr.glossary import extract
 from pdftr.glossary.normalize import normalize_terms
-
-from ..contract import BASELINE_EXTRACT_PROMPT_SHA256, TermPairExpectation
-from ..term_diagnostics import diagnose_terms, verify_tr011_patch
 
 _ROOT = Path(__file__).resolve().parents[3]
 _PATCH = _ROOT / "spikes/batch_d/tr011.patch"
@@ -24,7 +24,7 @@ class PatchTest(unittest.TestCase):
             verify_tr011_patch(_ROOT),
             {
                 "baseline": BASELINE_EXTRACT_PROMPT_SHA256,
-                "candidate": "cd47c3aaad53f1db917fb9554a0738b3399f86a4644931350e203e02e739ead3",
+                "candidate": "b3548982d134379ec577c6ec06ea68c354ce14ddef9cc6a4bab3eac8767f29fd",
             },
         )
 

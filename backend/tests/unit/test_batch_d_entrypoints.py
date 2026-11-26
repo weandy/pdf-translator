@@ -29,13 +29,16 @@ _BASELINE_RULES_SHA = "eb9a1afc2aa1f9c4c2011b9be366270538b656d7e14e22a3a30e28d5c
 _BASELINE_CACHE_GOLD = "14c5408c8783c2b4e7d0910dc43749963374a40cedb5e155981e9f496cda6f3d"
 
 
-def test_production_defaults_stay_locked_to_v7_baseline() -> None:
+def test_production_keeps_v7_prompts_and_invalidates_the_baseline_cache() -> None:
     assert PROMPT_VERSION == "v7"
-    assert VALIDATION_VERSION == 7
+    assert VALIDATION_VERSION == 8
     assert hashlib.sha256(EXTRACT_PROMPT.encode("utf-8")).hexdigest() == _BASELINE_EXTRACT_SHA
     assert hashlib.sha256(RULES.encode("utf-8")).hexdigest() == _BASELINE_RULES_SHA
     gold_seg = Segment(id="s0", job_id="j0", block_ids=["p0-b0"], source="Inspect the sample.")
-    assert cache_key(gold_seg, "synthetic-model", {}, "default") == _BASELINE_CACHE_GOLD
+    assert cache_key(gold_seg, "synthetic-model", {}, "default", validation_version=7) == _BASELINE_CACHE_GOLD
+    current_key = cache_key(gold_seg, "synthetic-model", {}, "default")
+    assert current_key == cache_key(gold_seg, "synthetic-model", {}, "default", validation_version=8)
+    assert current_key != _BASELINE_CACHE_GOLD
 
 
 class _RecordingChat:

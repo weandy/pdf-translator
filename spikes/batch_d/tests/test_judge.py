@@ -11,8 +11,7 @@ from typing import Any, Literal
 from unittest.mock import Mock, patch
 
 import httpx2
-
-from ..contract import (
+from spikes.batch_d.contract import (
     ALL_CATEGORIES,
     ALL_GROUPS,
     ALL_PERMUTATIONS,
@@ -30,7 +29,7 @@ from ..contract import (
     canonical_json,
     sha256_text,
 )
-from ..judge import (
+from spikes.batch_d.judge import (
     BLIND_JUDGE_SYSTEM_PROMPT,
     build_blind_packets,
     parse_and_validate_item_review,

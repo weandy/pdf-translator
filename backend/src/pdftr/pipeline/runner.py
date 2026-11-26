@@ -27,7 +27,13 @@ from pdftr.domain.layout import LayoutResult
 from pdftr.domain.llm import ChatError, ChatModel
 from pdftr.extraction.chars import extract
 from pdftr.fusion.build import InvalidLayoutPages, fuse
-from pdftr.glossary.extract import Extraction, extract_acronym_definitions, extract_terms, frequent_candidates
+from pdftr.glossary.extract import (
+    Extraction,
+    extract_acronym_definitions,
+    extract_terms,
+    frequent_candidates,
+    select_candidate_contexts,
+)
 from pdftr.glossary.matcher import TermMatcher, TermSelection
 from pdftr.glossary.normalize import normalize_terms
 from pdftr.parsing.mineru_plan import preview_requested_pages
@@ -919,6 +925,9 @@ class Pipeline:
         candidates = frequent_candidates(body_sources)
         definitions = extract_acronym_definitions(body_sources, candidates)
         intro = next((s.source for s in segs if len(s.source.split()) >= 30 and s.source != doc.meta.abstract), "")
+        contexts = select_candidate_contexts(
+            body_sources, candidates, already_shown=f"{doc.meta.title}\n{doc.meta.abstract}\n{intro[:1500]}"
+        )
         prices = self.deps.price_overrides_loader() if self.deps.price_overrides_loader else None
         async with chat_session(self.deps.chat_factory(secrets)) as chat:
             found = await extract_terms(
@@ -928,6 +937,7 @@ class Pipeline:
                 intro=intro,
                 headings=headings,
                 candidates=candidates,
+                contexts=contexts,
                 definitions=definitions,
                 user_terms=job.options.user_terms,
             )

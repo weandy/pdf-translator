@@ -6,7 +6,7 @@ import unittest
 from collections.abc import Callable
 from typing import Any, Literal
 
-from ..contract import (
+from spikes.batch_d.contract import (
     ALL_CATEGORIES,
     ALL_DISCIPLINES,
     ALL_GROUPS,
@@ -30,7 +30,13 @@ from ..contract import (
     SegmentCategory,
     load_policy,
 )
-from ..gate import decide, evaluate_cost_and_latency, exact_one_sided_sign_test_p, paired_bootstrap_ci, unblind_ballots
+from spikes.batch_d.gate import (
+    decide,
+    evaluate_cost_and_latency,
+    exact_one_sided_sign_test_p,
+    paired_bootstrap_ci,
+    unblind_ballots,
+)
 
 type Rubric = Callable[[ReviewerId, GroupId, SegmentCategory, int, int], list[MqmError]]
 

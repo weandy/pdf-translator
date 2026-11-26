@@ -29,7 +29,7 @@ from pdftr.translation.service import TranslateOptions, _request_timeout, _targe
 
 
 def test_sup_citation_accepts_chinese_enumeration_comma_dashes_and_formula_placeholders():
-    assert VALIDATION_VERSION == 7
+    assert VALIDATION_VERSION == 8
 
     # 02_chem_battery s5: 中文顿号、破折号、省略号后紧跟上标引文
     src_enum = (

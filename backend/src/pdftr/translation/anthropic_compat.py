@@ -2,7 +2,8 @@
 
 思考开关只对认得的 Claude 新模型（4.6 及以后）发送：
 - 默认档：output_config.effort = low（Claude Opus 5.5 等新模型不能关闭思考，只能调低强度）
-- 精翻：thinking = adaptive，effort = medium
+- 精翻（low）：thinking = adaptive，effort = medium
+- 术语抽取（xhigh）：thinking = adaptive，effort = high
 其他模型（含第三方兼容接口）不发送思考参数，交给接口默认，避免发了不认识的参数报错。
 新版接口（2026-10-21 起）不再接受 temperature，因此也不发送。
 
@@ -98,7 +99,7 @@ class AnthropicChat:
                 kw["output_config"] = {"effort": "low"}
             else:
                 kw["thinking"] = {"type": "adaptive"}
-                kw["output_config"] = {"effort": "medium"}
+                kw["output_config"] = {"effort": "high" if opts.thinking == "xhigh" else "medium"}
         return kw
 
     def request_kwargs(self, opts: ChatOptions) -> dict[str, Any]:
