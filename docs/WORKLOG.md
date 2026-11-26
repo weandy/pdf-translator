@@ -2,7 +2,19 @@
 
 > 这份文件用于跨对话继续开发。每完成一个完整功能，更新“当前状态”“最近完成”和“下一步”，再单独提交 Git。
 >
-> 最后更新：2026-11-25（Asia/Shanghai）
+> 最后更新：2026-11-26（Asia/Shanghai）
+
+### 术语抽取语境例句 + 高强度思考上线与 Linux CI 收口（2026-11-26）
+
+- **DeepSeek 6 组推理强度 × 阶段混合消融（24 篇留出集 × 6 组 = 576 段，Codex `apice/gpt-6.2-sol xhigh` 8 路双盲 MQM 评阅 96/96 严苛通过）**：
+  - `G0`（基线 `off/off`）：`94.34` 分、19 major 段、150 段论文折算 `¥0.0559`；
+  - `G1`（例句 + 抽 `low` / 译 `off`）：`95.62`（`+1.28`, `p=0.0481`），150 段 `¥0.0632`（`1.13×`）；
+  - **`G2`（例句 + 抽 `xhigh` / 译 `off`，帕累托最优与全 6 组第 1）**：**`96.41`**（`+2.06`, 95% CI `[+0.61, +3.44]`, `p=0.0059`），major 段降至 `11`（`-42.1%`），翻译重试归 `0`，150 段折算仅 `¥0.0665`（`1.19×`，抽取单次约 `17.6s` / `2,732` rtok）；
+  - `G3/G4/G5`（全篇/混合翻译开思考）：`95.80 / 96.11 / 96.20`，均被 `G2` 严格帕累托支配（费用 `4.20×–4.46×` 且 `clause_boundary` 与 `minor` 扣分反增）。
+- **生产落地与 HW-SGP 上线（`14296ac` → `671478b` → 本次 CI/容错加固）**：
+  - 落地 `G2` 方案：`llm.py` 扩展 `Thinking = Literal["off", "low", "xhigh"]`；`openai_compat.py`（DeepSeek 透传 `xhigh`，OpenAI/Nemotron 映射 `high`，`nemotron_off`/`generic` 保持安全）与 `anthropic_compat.py`（Claude 4.6+ 映射 `effort="high"`）全端平滑降级；`extract.py` 新增贪心最小集合覆盖 `select_candidate_contexts` 并默认 `thinking="xhigh"` + `max_tokens=8000`（单上游思考超时自动降级 `thinking="off"` + `max_tokens=1500` 重试 1 次）；`runner.py` 与 `cli.py` 双入口接入。
+  - HW-SGP 上线验收（`14296ac`，仅重建 `app`）：等待在线任务 `7d3fa9f9398740a4` 自然结束后零中断切流；备份 `/data/backups/pre-glossary-xhigh-14296ac-20261126.db`（`4.6M`, `ok`），留存回滚镜像 `pdf-translator-app:before-glossary-xhigh-20261126`（`39aa6c38cc97`）；新镜像 `78fde4c673d3` `healthy`，运行态 `PROMPT_VERSION="v7"`、`VALIDATION_VERSION=8`、`EXTRACT_THINKING="xhigh"`、`EXTRACT_MAX_TOKENS=8000`，公网 `/api/health` 200；根分区余 `4.2G`（`89%`）。
+  - Linux CI 跨平台存量修复：`runtime_config.py` 改用 `getattr(os, "O_BINARY", 0)` 并在 `pyproject.toml` 对齐 `pythonPlatform = "Linux"`（`671478b`）；修复 `test_q4c_export_and_pipeline.py` 与 `test_retry_pipeline.py` 对动态 `remaining` 的精确 `== 45` 浮点时钟断言。
 
 ### 批次 D 双模型实盘收口与译文标签加固（2026-11-25）
 

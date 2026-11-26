@@ -195,6 +195,51 @@ def test_extract_terms_injects_contexts_before_definitions():
     )
 
 
+def test_extract_terms_falls_back_to_thinking_off_on_timeout():
+    seen_opts: list[ChatOptions] = []
+
+    class SlowThinkingChat:
+        model = "fake"
+        call_timeout_s = 0.05
+
+        async def complete(self, system: str, user: str, opts: ChatOptions) -> ChatResult:
+            seen_opts.append(opts)
+            if opts.thinking != "off":
+                await asyncio.sleep(0.2)
+            return ChatResult(text="领域：计量\nAI公共词库：停用\ncapsule=膜盒")
+
+        async def list_models(self) -> list[str]:
+            return []
+
+    got = asyncio.run(
+        extract_terms(SlowThinkingChat(), title="Pressure Gauge", abstract="", intro="", headings=["Setup"])
+    )
+    assert got.terms == {"capsule": "膜盒"}
+    assert [(o.thinking, o.max_tokens) for o in seen_opts] == [("xhigh", 8000), ("off", 1500)]
+
+
+def test_extract_terms_does_not_retry_timeout_when_thinking_off_or_has_fallbacks():
+    calls = 0
+
+    class AlwaysTimeoutChat:
+        model = "fake"
+        call_timeout_s = 0.03
+        has_fallbacks = True
+
+        async def complete(self, system: str, user: str, opts: ChatOptions) -> ChatResult:
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0.2)
+            return ChatResult(text="")
+
+        async def list_models(self) -> list[str]:
+            return []
+
+    with pytest.raises(Exception, match="术语抽取请求超时"):
+        asyncio.run(extract_terms(AlwaysTimeoutChat(), title="T", abstract="", intro="", headings=[]))
+    assert calls == 1
+
+
 def test_frequent_candidates_clean_and_merge_without_bridging_boundaries():
     repeated = (
         "<b>Silver</b> <i>chamber</i>. Chambers. Box. Boxes. Colony. Colonies. Tile. Tiles. "

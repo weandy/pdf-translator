@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 
 from pydantic import BaseModel, Field
 
-from pdftr.domain.llm import ChatError, ChatModel, ChatOptions, ChatUsage, Thinking
+from pdftr.domain.llm import ChatError, ChatModel, ChatOptions, ChatResult, ChatUsage, Thinking
 from pdftr.domain.text import RICH_TAG, normalize_term_key
 from pdftr.glossary.filters import is_lazy_english_self_map
 from pdftr.glossary.matcher import HORIZONTAL_SPACE, TERM_TOKEN, mask_term_boundaries
@@ -30,6 +30,7 @@ _MAX_EXTRACTED_TERMS = 45
 _MAX_CONTEXT_SENTENCES = 12
 _MAX_CONTEXT_CHARS = 2400
 _EXTRACT_MAX_TOKENS = 8000
+_EXTRACT_FALLBACK_MAX_TOKENS = 1500
 _EXTRACT_THINKING: Thinking = "xhigh"
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9<])")
 _INLINE_TAG = re.compile(r"<m\d+/>|</?(?:b|i|sup|sub)>")
@@ -454,16 +455,27 @@ async def extract_terms(
             prompt += "\n用户已指定术语（若抽取包含这些词的复合术语，译法须与之保持一致）：" + formatted
     opts = ChatOptions(max_tokens=_EXTRACT_MAX_TOKENS, thinking=thinking)
     chain_timeout = getattr(chat, "total_timeout_s", None) or getattr(chat, "call_timeout_s", None)
-    if isinstance(chain_timeout, (int, float)) and chain_timeout > 0:
-        try:
-            result = await asyncio.wait_for(
-                chat.complete("你是学术术语专家。", prompt, opts),
-                float(chain_timeout),
-            )
-        except TimeoutError as exc:
-            raise ChatError("术语抽取请求超时", retryable=True) from exc
-    else:
-        result = await chat.complete("你是学术术语专家。", prompt, opts)
+    budget = float(chain_timeout) if isinstance(chain_timeout, (int, float)) and chain_timeout > 0 else None
+    has_fallbacks = bool(getattr(chat, "has_fallbacks", False))
+
+    async def _call(call_opts: ChatOptions, call_budget: float | None) -> ChatResult:
+        if call_budget is not None:
+            try:
+                return await asyncio.wait_for(chat.complete("你是学术术语专家。", prompt, call_opts), call_budget)
+            except TimeoutError as exc:
+                raise ChatError("术语抽取请求超时", retryable=True, status_code=408) from exc
+        return await chat.complete("你是学术术语专家。", prompt, call_opts)
+
+    try:
+        result = await _call(opts, budget)
+    except ChatError as exc:
+        timed_out = exc.status_code == 408 or "超时" in str(exc)
+        if not (thinking != "off" and timed_out and not has_fallbacks):
+            raise
+        log.warning("术语抽取思考档超时，自动降级为关闭思考重试")
+        fallback_opts = ChatOptions(max_tokens=_EXTRACT_FALLBACK_MAX_TOKENS, thinking="off")
+        fallback_budget = min(budget, 30.0) if budget is not None else None
+        result = await _call(fallback_opts, fallback_budget)
     truncated = result.finish_reason in ("length", "max_tokens")
     found = (
         Extraction()

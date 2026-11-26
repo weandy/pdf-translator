@@ -158,7 +158,7 @@ def test_manual_retry_has_whole_request_budget_and_retains_previous_valid_transl
         result, applied, notice = asyncio.run(usecases.retranslate_segment(pipeline, "hard", "default", SECRETS))
         assert not applied and notice
         assert not pipeline.deps.store.revisions(job.id)
-        assert observed == [45]
+        assert len(observed) == 1 and observed[0] is not None and 40 < observed[0] <= 45
         assert result.status is SegmentStatus.EDITED and result.target == original.target
         assert result.failure_reason and result.translation_attempts == 10
         current = pipeline.deps.store.get_job(job.id)

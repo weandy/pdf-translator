@@ -367,7 +367,8 @@ def test_runner_and_retranslation_share_context_and_concurrency(stored_job, monk
     assert runner_targets == [(s.id, s.status) for s in segments]
     assert retry_targets == [("s3", SegmentStatus.PENDING), ("s1", SegmentStatus.PENDING)]
     assert runner_options.concurrency == retry_options.concurrency == 3
-    assert retry_options.total_timeout_s == 45 and not retry_options.use_cache
+    assert retry_options.total_timeout_s is not None and 40 < retry_options.total_timeout_s <= 45
+    assert not retry_options.use_cache
     switch_prompts = [(system, user) for system, user in prompts if "1|This switch is shown" in user]
     assert len(switch_prompts) == 2
     for system, user in switch_prompts:
