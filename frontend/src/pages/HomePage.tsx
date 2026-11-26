@@ -2,8 +2,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 
-import { readBatches, rememberBatch, removeBatch, type BatchEntry } from "@/entities/batch/model";
-import { clearHistory, readHistory, removeHistory, useHistory } from "@/entities/history/model";
+import { pruneBatches, readBatches, rememberBatch, removeBatch, type BatchEntry } from "@/entities/batch/model";
+import { removeHistory, useHistory } from "@/entities/history/model";
 import { deleteJob, MY_JOBS_QUERY, myJobIds, restoreMyJobs, useMyJobs } from "@/entities/job/model";
 import { TermsModal } from "@/features/legal/TermsModal";
 import { UploadPanel } from "@/features/upload/UploadPanel";
@@ -43,25 +43,32 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
   const unavailable = new Set(jobsResult.unavailableIds);
   const unavailableRef = useRef(jobsResult.unavailableIds);
   useLayoutEffect(() => { unavailableRef.current = jobsResult.unavailableIds; }, [jobsResult.unavailableIds]);
+  const unavailableKey = jobsResult.unavailableIds.join(",");
+  useEffect(() => {
+    if (!unavailableKey) return;
+    const { promotedJobIds } = pruneBatches(unavailableKey.split(","));
+    if (promotedJobIds.length > 0) restoreMyJobs(promotedJobIds);
+  }, [unavailableKey]);
   const unreadable = new Set(jobsResult.failedIds);
   const trackedIds = new Set(myJobIds());
   const historyById = new Map(history.map((entry) => [entry.id, entry]));
-  const tasks: TaskEntry[] = batches.map((batch) => ({
-    key: `group-${batch.id}`,
-    jobIds: batch.jobIds,
-    createdAt: batch.createdAt,
-    batch,
-  }));
+  const tasks: TaskEntry[] = [];
+  for (const batch of batches) {
+    const liveIds = batch.jobIds.filter((id) => !unavailable.has(id));
+    if (liveIds.length >= 2) {
+      tasks.push({ key: `group-${batch.id}`, jobIds: liveIds, createdAt: batch.createdAt, batch });
+    } else if (liveIds.length === 1 && liveIds[0]) {
+      const id = liveIds[0];
+      const createdAt = jobsById.get(id)?.created_at ?? historyById.get(id)?.createdAt ?? batch.createdAt;
+      tasks.push({ key: id, jobIds: [id], createdAt });
+    }
+  }
   for (const id of new Set([...trackedIds, ...jobsById.keys()])) {
     if (batchIds.has(id) || unavailable.has(id)) continue;
     const createdAt = jobsById.get(id)?.created_at ?? historyById.get(id)?.createdAt;
     tasks.push({ key: id, jobIds: [id], createdAt });
   }
   tasks.sort((a, b) => uploadTimestamp(b) - uploadTimestamp(a));
-  const past = history.filter(
-    (entry) =>
-      !batchIds.has(entry.id) && !jobsById.has(entry.id) && !unreadable.has(entry.id) && !trackedIds.has(entry.id),
-  );
   const active = jobsResult.jobs.filter((job) => job.status === "queued" || job.status === "running").length;
   const hasUnknown = isPending || unreadable.size > 0;
   const wasActive = useRef(0);
@@ -96,6 +103,10 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
     const job = queryClient.getQueryData<Job>([...MY_JOBS_QUERY, id]);
     if (!job || job.status === "running" || job.status === "queued") return;
     await deleteJob(id);
+    removeHistory(id);
+    const pruned = pruneBatches([id]);
+    if (pruned.promotedJobIds.length > 0) restoreMyJobs(pruned.promotedJobIds);
+    if (pruned.changed) setBatches(pruned.batches);
     await updateJob(id, null);
     toast.success("已删除任务");
   };
@@ -115,13 +126,6 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
     removeBatch(id);
     setBatches(readBatches());
     toast.success("已分开显示本批任务");
-  };
-
-  const clearAllHistory = async () => {
-    if (!(await confirm({ title: "清除翻译历史", message: "清除这个浏览器里的全部翻译历史？", confirmLabel: "全部清除", tone: "danger" }))) return;
-    if (readHistory().length === 0) return;
-    clearHistory();
-    toast.success("已清除翻译历史");
   };
 
   return (
@@ -179,47 +183,12 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
                 createdAt={createdAt}
                 jobs={jobsById}
                 filenames={filenames}
-                unavailable={unavailable}
                 unreadable={unreadable}
                 onCancelJob={cancel}
                 onDeleteJob={remove}
                 onRetryJob={retry}
                 onUngroup={batch ? () => void ungroup(batch.id) : undefined}
               />
-            ))}
-          </ul>
-        </section>
-      )}
-      {past.length > 0 && (
-        <section className="jobs history" aria-labelledby="history-title">
-          <div className="jobs-head">
-            <h2 id="history-title">历史记录</h2>
-            <span className="hint">只存在这个浏览器里</span>
-            <span className="spacer" />
-            <button
-              type="button"
-              className="quiet"
-              onClick={() => void clearAllHistory()}
-            >
-              全部清除
-            </button>
-          </div>
-          <ul className="job-list">
-            {past.map((h) => (
-              <li key={h.id} className="job-item">
-                <span className="name" title={h.filename}>
-                  {h.filename}
-                </span>
-                <span className="status">{unavailable.has(h.id) ? "已过期或已删除" : "历史记录"}</span>
-                <span className="facts-cell num">
-                  {h.pages} 页，{new Date(h.createdAt).toLocaleDateString("zh-CN")}
-                </span>
-                <span className="row-actions">
-                  <button type="button" className="quiet" onClick={() => removeHistory(h.id)}>
-                    移除
-                  </button>
-                </span>
-              </li>
             ))}
           </ul>
         </section>

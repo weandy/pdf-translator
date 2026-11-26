@@ -28,3 +28,7 @@ backend/.samples/
 
 # 导出 PDF 用的字体（scripts/fetch_fonts.py 下载生成，不入库）
 backend/fonts/
+
+# 本地调试数据库与临时输出（可能含运维/验收记录，不入库）
+backend/data-local/
+output/

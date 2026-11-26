@@ -18,6 +18,8 @@ const fixture = vi.hoisted(() => ({
   unavailableIds: [] as string[],
   failedIds: [] as string[],
   restoreMyJobs: vi.fn(),
+  deleteJob: vi.fn(),
+  removeHistory: vi.fn(),
 }));
 vi.mock("@/entities/job/model", () => ({
   useMyJobs: () => ({
@@ -30,7 +32,7 @@ vi.mock("@/entities/job/model", () => ({
   }),
   myJobIds: () => [...fixture.trackedIds, ...fixture.jobs.map((job) => job.id)],
   restoreMyJobs: fixture.restoreMyJobs,
-  deleteJob: vi.fn(),
+  deleteJob: fixture.deleteJob,
   MY_JOBS_QUERY: ["my-jobs"],
   STAGE_LABELS: {},
 }));
@@ -40,15 +42,31 @@ vi.mock("@/entities/batch/model", () => ({
   removeBatch: (id: string) => {
     fixture.batches = fixture.batches.filter((batch) => batch.id !== id);
   },
+  pruneBatches: (unavailableIds: Iterable<string>) => {
+    const unavailable = new Set(unavailableIds);
+    const next: BatchEntry[] = [];
+    const promotedJobIds: string[] = [];
+    let changed = false;
+    for (const batch of fixture.batches) {
+      const live = batch.jobIds.filter((id) => !unavailable.has(id));
+      if (live.length === batch.jobIds.length) {
+        next.push(batch);
+        continue;
+      }
+      changed = true;
+      if (live.length >= 2) next.push({ ...batch, jobIds: live });
+      else if (live.length === 1 && live[0]) promotedJobIds.push(live[0]);
+    }
+    if (changed) fixture.batches = next;
+    return { batches: next, promotedJobIds, changed };
+  },
 }));
 vi.mock("@/features/upload/UploadPanel", () => ({
   UploadPanel: () => <button>选择英文论文 PDF</button>,
 }));
 vi.mock("@/entities/history/model", () => ({
   useHistory: () => fixture.history,
-  readHistory: () => fixture.history,
-  clearHistory: vi.fn(),
-  removeHistory: vi.fn(),
+  removeHistory: fixture.removeHistory,
 }));
 
 function syntheticJob(id: string, filename: string, status: Job["status"], day: number): Job {
@@ -111,6 +129,8 @@ describe("首页内容", () => {
     fixture.unavailableIds = [];
     fixture.failedIds = [];
     fixture.restoreMyJobs.mockClear();
+    fixture.deleteJob.mockReset();
+    fixture.removeHistory.mockClear();
     vi.restoreAllMocks();
   });
 
@@ -193,7 +213,7 @@ describe("首页内容", () => {
     });
   });
 
-  it("查询故障留在对应任务行，取消分组后成员作为单篇显示", async () => {
+  it("查询故障留在对应任务行，失效成员自动从批次移除，取消分组后剩余成员作为单篇显示", async () => {
     fixture.batches = [
       {
         id: "batch",
@@ -218,7 +238,7 @@ describe("首页内容", () => {
     });
     await renderHome(async (host) => {
       const group = host.querySelector('a[href="/jobs/done"]')!.closest(".batch-card")!;
-      expect(group.querySelector(".batch-card-info")?.textContent).toContain("可下载 1 / 4 篇");
+      expect(group.querySelector(".batch-card-info")?.textContent).toContain("可下载 1 / 3 篇");
       expect(group.querySelector(".batch-card-info")?.textContent).not.toContain("已结束");
       const rowStatus = (filename: string) =>
         host.querySelector(`[title="${filename}"]`)?.closest(".job-item")?.querySelector(".job-state .status")
@@ -227,8 +247,11 @@ describe("首页内容", () => {
       expect(rowStatus("pending.pdf")).toBe("查询中");
       expect(rowStatus("offline.pdf")).toBe("暂时无法读取");
       expect(rowStatus("offline-solo.pdf")).toBe("暂时无法读取");
-      expect(rowStatus("gone.pdf")).toBe("已过期或已删除");
+      expect(host.querySelector('[title="gone.pdf"]')).toBeNull();
+      expect(host.textContent).not.toContain("已过期或已删除");
+      expect(host.textContent).not.toContain("历史记录");
       expect(host.textContent).not.toContain("任务列表暂时无法读取");
+      expect(fixture.batches[0]?.jobIds).toEqual(["done", "pending", "offline"]);
 
       const ungroup = [...group.querySelectorAll("button")].find((button) => button.textContent === "取消分组")!;
       await act(async () => ungroup.click());
@@ -244,6 +267,62 @@ describe("首页内容", () => {
       expect(rowStatus("pending.pdf")).toBe("查询中");
       expect(rowStatus("offline.pdf")).toBe("暂时无法读取");
     });
+  });
+
+  it("首页不渲染历史记录区块，全组过期批次自动淘汰，仅剩一篇时自动升格为单篇", async () => {
+    fixture.batches = [
+      { id: "all-gone", name: "全部失效", createdAt: "2026-11-18T00:00:00Z", jobIds: ["dead-a", "dead-b"] },
+      { id: "one-left", name: "仅剩一篇", createdAt: "2026-11-19T00:00:00Z", jobIds: ["alive", "dead-c"] },
+    ];
+    fixture.jobs = [syntheticJob("alive", "仍可下载.pdf", "done", 19)];
+    fixture.history = [
+      { id: "old-past", hash: "h-old", filename: "早已过期.pdf", pages: 12, createdAt: "2026-11-01T00:00:00Z" },
+      { id: "dead-a", hash: "h-a", filename: "失效A.pdf", pages: 8, createdAt: "2026-11-18T00:00:00Z" },
+    ];
+    fixture.unavailableIds = ["dead-a", "dead-b", "dead-c"];
+
+    await renderHome((host) => {
+      expect(host.querySelector('[aria-labelledby="history-title"]')).toBeNull();
+      expect(host.textContent).not.toContain("历史记录");
+      expect(host.textContent).not.toContain("早已过期.pdf");
+      expect(host.textContent).not.toContain("失效A.pdf");
+      expect(fixture.batches).toEqual([]);
+      expect(fixture.restoreMyJobs).toHaveBeenCalledWith(["alive"]);
+      const cards = [...host.querySelectorAll(".task-list > .batch-card")];
+      expect(cards).toHaveLength(1);
+      expect(cards[0]?.querySelector(".batch-card-info .hint")?.textContent).toBe("可下载 1 / 1 篇");
+      expect(cards[0]?.querySelector(".batch-card-footer")).toBeNull();
+    });
+  });
+
+  it("在我的任务中手动删除任务时，同步移除对应的本地防重历史记录", async () => {
+    const job = syntheticJob("done-1", "待删论文.pdf", "done", 20);
+    fixture.jobs = [job];
+    fixture.deleteJob.mockResolvedValueOnce(undefined);
+
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["my-jobs", "done-1"], job);
+    try {
+      await act(async () =>
+        root.render(
+          <QueryClientProvider client={client}>
+            <MemoryRouter>
+              <ConfirmProvider><HomePage openSettings={vi.fn()} /></ConfirmProvider>
+            </MemoryRouter>
+          </QueryClientProvider>,
+        ),
+      );
+      const deleteBtn = [...host.querySelectorAll("button")].find((b) => b.textContent === "删除")!;
+      await act(async () => deleteBtn.click());
+      await act(async () => document.querySelector<HTMLButtonElement>("dialog button:last-child")!.click());
+      expect(fixture.deleteJob).toHaveBeenCalledWith("done-1");
+      expect(fixture.removeHistory).toHaveBeenCalledWith("done-1");
+    } finally {
+      await act(async () => root.unmount());
+      client.clear();
+    }
   });
 
   it("失败和已取消的任务直接在对应行重试，错误反馈只显示在该行", async () => {

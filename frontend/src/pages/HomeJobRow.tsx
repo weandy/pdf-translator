@@ -18,7 +18,6 @@ const STATUS_LABELS: Record<Job["status"], string> = {
 const LOOKUP_LABELS = {
   pending: "查询中",
   unreadable: "暂时无法读取",
-  unavailable: "已过期或已删除",
 };
 
 type JobAction = (id: string, filename: string) => Promise<void>;

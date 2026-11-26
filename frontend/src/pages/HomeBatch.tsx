@@ -18,7 +18,6 @@ interface Props extends HomeJobActions {
   createdAt: string | undefined;
   jobs: ReadonlyMap<string, Job>;
   filenames: ReadonlyMap<string, string>;
-  unavailable: ReadonlySet<string>;
   unreadable: ReadonlySet<string>;
   onUngroup?: () => void;
 }
@@ -28,7 +27,6 @@ export function HomeTaskCard({
   createdAt,
   jobs,
   filenames,
-  unavailable,
   unreadable,
   onUngroup,
   ...actions
@@ -88,7 +86,7 @@ export function HomeTaskCard({
               id={id}
               filename={job?.filename ?? filenames.get(id) ?? `论文 ${index + 1}`}
               job={job}
-              lookupState={unavailable.has(id) ? "unavailable" : unreadable.has(id) ? "unreadable" : "pending"}
+              lookupState={unreadable.has(id) ? "unreadable" : "pending"}
               downloadMode={mode}
               onPreparingChange={onPreparingChange}
               {...actions}

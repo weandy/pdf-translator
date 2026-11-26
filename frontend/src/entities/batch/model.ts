@@ -48,3 +48,34 @@ export function rememberBatch(jobIds: string[], name?: string): BatchEntry | nul
 export function removeBatch(id: string): void {
   writeBatches(readBatches().filter((batch) => batch.id !== id));
 }
+
+export interface PruneBatchesResult {
+  batches: BatchEntry[];
+  promotedJobIds: string[];
+  changed: boolean;
+}
+
+/** 清理已过期或已删除的批次成员：全组失效则移出分组，仅剩 1 篇时升格为单篇任务。 */
+export function pruneBatches(unavailableIds: Iterable<string>): PruneBatchesResult {
+  const unavailable = new Set(unavailableIds);
+  const current = readBatches();
+  if (unavailable.size === 0) return { batches: current, promotedJobIds: [], changed: false };
+  const next: BatchEntry[] = [];
+  const promotedJobIds: string[] = [];
+  let changed = false;
+  for (const batch of current) {
+    const live = batch.jobIds.filter((id) => !unavailable.has(id));
+    if (live.length === batch.jobIds.length) {
+      next.push(batch);
+      continue;
+    }
+    changed = true;
+    if (live.length >= 2) {
+      next.push({ ...batch, jobIds: live });
+    } else if (live.length === 1 && live[0]) {
+      promotedJobIds.push(live[0]);
+    }
+  }
+  if (changed) writeBatches(next);
+  return { batches: next, promotedJobIds, changed };
+}
