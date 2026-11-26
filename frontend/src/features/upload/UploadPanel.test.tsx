@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { addHistory, clearHistory } from "@/entities/history/model";
 import { DEFAULTS, getSettings, saveSettings } from "@/entities/settings/model";
 import { api, type Job, type ServerConfig } from "@/shared/api/client";
+import { clearCachedConfig, writeCachedConfig } from "@/shared/api/configCache";
 import { fingerprint } from "@/shared/file/fingerprint";
 import { countPages } from "@/shared/pdf/pdf";
 
@@ -30,6 +31,7 @@ describe("共享 MinerU 上传流程", () => {
     Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
   });
   beforeEach(() => {
+    clearCachedConfig();
     vi.mocked(countPages).mockReset().mockResolvedValue(3);
     vi.mocked(fingerprint).mockReset().mockResolvedValue(null);
     saveSettings({
@@ -48,6 +50,7 @@ describe("共享 MinerU 上传流程", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     client.clear();
+    clearCachedConfig();
     saveSettings({ ...DEFAULTS });
     vi.restoreAllMocks();
   });
@@ -512,6 +515,62 @@ describe("共享 MinerU 上传流程", () => {
     });
     expect(configSpy).toHaveBeenCalledTimes(3);
     expect(startButton().disabled).toBe(false);
+  });
+
+  it("存在本地公开配置缓存时首屏立即渲染通道切换面板，但在实时配置返回前仍锁定提交", async () => {
+    saveSettings({ ...DEFAULTS, cloudConsent: true });
+    const cached = makeConfig(true, false, {
+      free_channel: { enabled: true, model_display: "cached-free-model", max_pages: 30, notice: "" },
+    });
+    writeCachedConfig(cached);
+    let resolveConfig!: (value: ServerConfig) => void;
+    const create = vi.spyOn(api, "createJob");
+    vi.spyOn(api, "config").mockImplementationOnce(
+      () =>
+        new Promise<ServerConfig>((resolve) => {
+          resolveConfig = resolve;
+        }),
+    );
+
+    await act(async () =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <MemoryRouter>
+            <UploadPanel onCreated={onCreated} onBatchCreated={vi.fn()} onNeedSettings={vi.fn()} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      ),
+    );
+    await act(async () => {
+      const input = host.querySelector('input[type="file"]')!;
+      Object.defineProperty(input, "files", {
+        configurable: true,
+        value: [new File(["synthetic"], "instant.pdf", { type: "application/pdf" })],
+      });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    // 首帧零等待即展示免费体验/自备 API Key 切换面板，不显示占位加载文案
+    expect(host.querySelector(".mode-panel:not(.mode-panel-skeleton)")).not.toBeNull();
+    expect(host.textContent).toContain("免费体验");
+    expect(host.textContent).toContain("自备 API Key");
+    expect(host.textContent).toContain("cached-free-model");
+    expect(host.textContent).not.toContain("正在加载站点配置");
+    // 实时配置返回前，提交按钮必须锁定以防误用计费通道
+    expect(findButton("开始免费翻译")!.disabled).toBe(true);
+    expect(create).not.toHaveBeenCalled();
+
+    // 实时配置返回后平滑更新并解锁提交
+    await act(async () => {
+      resolveConfig(
+        makeConfig(true, false, {
+          free_channel: { enabled: true, model_display: "live-free-model", max_pages: 40, notice: "" },
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(host.textContent).toContain("live-free-model");
+    expect(findButton("开始免费翻译")!.disabled).toBe(false);
   });
 
   it("免费通道关闭且用户此前选过免费模式时明确提示将使用自备 Key", async () => {

@@ -3209,6 +3209,29 @@ input[type="radio"] {
   display: grid;
   gap: 10px;
 }
+.mode-panel-skeleton .mode-tab-skeleton {
+  background: color-mix(in srgb, var(--paper) 65%, transparent);
+  border-color: color-mix(in srgb, var(--rule) 70%, transparent);
+  pointer-events: none;
+  animation: mode-skeleton-pulse 1.4s ease-in-out infinite;
+}
+.mode-panel-skeleton .mode-summary-skeleton {
+  min-height: 36px;
+}
+@keyframes mode-skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mode-panel-skeleton .mode-tab-skeleton {
+    animation: none;
+  }
+}
 .mode-switch {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

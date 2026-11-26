@@ -21,6 +21,7 @@ import {
 } from "@/entities/settings/model";
 import { parsePageRange } from "@/features/upload/pages";
 import { api, type Job, type JobOptions } from "@/shared/api/client";
+import { readCachedConfig, writeCachedConfig } from "@/shared/api/configCache";
 import { useToast } from "@/shared/feedback/Toast";
 import { fingerprint } from "@/shared/file/fingerprint";
 
@@ -76,11 +77,17 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
     data: config,
     isPending: configLoading,
     isError: configError,
+    isPlaceholderData: configPlaceholder,
     refetch: refetchConfig,
   } = useQuery({
     queryKey: ["config"],
     queryFn: api.config,
+    placeholderData: readCachedConfig,
   });
+  const confirmedConfig = config && !configPlaceholder ? config : undefined;
+  useEffect(() => {
+    if (confirmedConfig) writeCachedConfig(confirmedConfig);
+  }, [confirmedConfig]);
   const [{ items, rangeText, pickSeq }, setSelection] = useState({ items: [] as Item[], rangeText: "", pickSeq: 0 });
   const setItems = (update: SetStateAction<Item[]>) =>
     setSelection((previous) => ({ ...previous, items: typeof update === "function" ? update(previous.items) : update }));
@@ -94,7 +101,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
   const [error, setError] = useState<string | null>(null);
 
   const configWaiting = !config && !configError && configLoading;
-  const configFailed = !config && configError;
+  const configFailed = !confirmedConfig && configError;
   const maintenance = Boolean(config?.maintenance_mode);
   const siteNotice = config?.site_notice?.trim() ?? "";
   const freeChannel = config?.free_channel;
@@ -143,7 +150,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
   const { data: estimate } = useQuery({
     queryKey: ["estimate", pages, settings.quality, settings.model],
     queryFn: () => api.estimate(pages ?? 1, settings.quality, settings.model || undefined),
-    enabled: Boolean(config) && !isFree && pages !== null && pages > 0,
+    enabled: Boolean(confirmedConfig) && !isFree && pages !== null && pages > 0,
   });
 
   const actions = useRef<HTMLDivElement>(null);
@@ -162,11 +169,11 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
     if (shown) actions.current?.scrollIntoView({ block: "nearest" });
   }, [shown]);
 
-  const missingKey = !isFree && Boolean(config && !settings.llmKey && !config.server_has_llm_key);
-  const missingToken = isPaddle ? false : Boolean(config && !mineruAvailable);
-  const keyNeedsRebind = !isFree && Boolean(config) && llmKeyNeedsRebind(settings, config);
-  const parserNeedsRebind = !isFree && !isPaddle && Boolean(config) && parserKeyNeedsRebind(settings, config);
-  const freeClosedWarning = Boolean(config && !freeEnabled && settings.translationMode === "free");
+  const missingKey = !isFree && Boolean(confirmedConfig && !settings.llmKey && !confirmedConfig.server_has_llm_key);
+  const missingToken = isPaddle ? false : Boolean(confirmedConfig && !mineruAvailable);
+  const keyNeedsRebind = !isFree && Boolean(confirmedConfig) && llmKeyNeedsRebind(settings, confirmedConfig);
+  const parserNeedsRebind = !isFree && !isPaddle && Boolean(confirmedConfig) && parserKeyNeedsRebind(settings, confirmedConfig);
+  const freeClosedWarning = Boolean(confirmedConfig && !freeEnabled && settings.translationMode === "free");
   const update = (f: File, patch: Partial<Item>) =>
     setItems((list) => list.map((it) => (it.file === f ? { ...it, ...patch } : it)));
 
@@ -224,10 +231,10 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
   };
 
   const submit = async () => {
-    if (submitting.current || busy || !config || maintenance || pickSeq !== pickSeqRef.current) return;
+    if (submitting.current || busy || !confirmedConfig || maintenance || pickSeq !== pickSeqRef.current) return;
     if (!allChecked || undecided.length || rangeError || !consent || missingKey || missingToken) return;
-    if (!isFree && llmKeyNeedsRebind(getSettings(), config)) return;
-    if (!isFree && !isPaddle && parserKeyNeedsRebind(getSettings(), config)) return;
+    if (!isFree && llmKeyNeedsRebind(getSettings(), confirmedConfig)) return;
+    if (!isFree && !isPaddle && parserKeyNeedsRebind(getSettings(), confirmedConfig)) return;
     const queue = uploadQueue(items, itemError);
     if (!queue.length) return;
     const options: Partial<JobOptions> = {
@@ -239,7 +246,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
       ...(items.length === 1 && selected ? { pages: selected } : {}),
     };
     const submitMode: TranslationMode = isFree ? "free" : "byok";
-    const submitHeaders = uploadAuthHeaders(submitMode, getSettings(), config);
+    const submitHeaders = uploadAuthHeaders(submitMode, getSettings(), confirmedConfig);
     const created: Job[] = [];
     // 最多同时上传 PARALLEL_UPLOADS 个；某个失败（如服务器排队已满）只标在那个文件上
     const worker = async () => {
@@ -286,9 +293,15 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
   return (
     <section className="upload upload-card" aria-label="上传论文">
       {configWaiting && (
-        <p className="hint" role="status">
-          正在加载站点配置…
-        </p>
+        <div className="mode-panel mode-panel-skeleton" role="status" aria-live="polite">
+          <div className="mode-switch" aria-hidden="true">
+            <div className="mode-tab mode-tab-skeleton" />
+            <div className="mode-tab mode-tab-skeleton" />
+          </div>
+          <div className="mode-summary mode-summary-skeleton">
+            <span>正在加载站点配置…</span>
+          </div>
+        </div>
       )}
       {configFailed && (
         <div className="site-banner maintenance" role="alert">
@@ -652,7 +665,7 @@ export function UploadPanel({ onCreated, onBatchCreated, onNeedSettings, onOpenT
           type="button"
           className="primary"
           disabled={
-            !config ||
+            !confirmedConfig ||
             !usable.length ||
             !allChecked ||
             !consent ||
