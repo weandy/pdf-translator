@@ -32,3 +32,9 @@ backend/fonts/
 # 本地调试数据库与临时输出（可能含运维/验收记录，不入库）
 backend/data-local/
 output/
+
+# AI 代理说明与内部交接记录（仅本地保留，不提交到公开仓库）
+AGENTS.md
+CLAUDE.md
+docs/WORKLOG.md
+docs/plans/
