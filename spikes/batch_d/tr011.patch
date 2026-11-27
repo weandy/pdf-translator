@@ -1,7 +1,0 @@
-diff --git a/backend/src/pdftr/glossary/extract.py b/backend/src/pdftr/glossary/extract.py
---- a/backend/src/pdftr/glossary/extract.py
-+++ b/backend/src/pdftr/glossary/extract.py
-@@ -75,2 +75,3 @@
-    - 使用中文学界通行译法。
-+   - 对需入表且本文明确区分的相近概念，选用能体现差别的通行译名，保留应入表的完整核心复合术语。普通限定词按语境翻译，不单独入表或套用术语译法。确指同一概念的别称、缩写或全称可同译。保留用户指定译法。
- 不要输出其他内容。

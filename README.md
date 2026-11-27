@@ -114,7 +114,7 @@ GitHub 加速只作用于仓库和脚本下载，Docker 基础镜像和 Python/N
 
 在管理后台热配置并加密保存免费翻译渠道 API Key、解析服务 Token 或出站代理时，服务端使用 AES-256-GCM 加密落库：**默认无需手动配置**，未填写 `PDFTR_CONFIG_SECRET_KEY` 时服务首次启动会自动在数据目录生成并持久化 32 字节本地主密钥文件（`.config_secret.key`，权限 `0600`）。如需将主密钥与数据目录物理分离，也可在 `backend/` 执行 `uv run python scripts/generate_config_key.py` 并将结果写入 `.env` 的 `PDFTR_CONFIG_SECRET_KEY` 显式覆盖。如后续更换主密钥，原有加密存储的密文会自动降级停用并在后台展示告警（不会阻止服务启动），在管理后台重新填写并保存即可恢复。
 
-采集需额外设置 `PDFTR_SUBMISSION_AUDIT_ENABLED=true`，并按[可信代理与发布方案](docs/07-statistics-and-submission-audit-design.md)核验 OpenResty → Caddy → FastAPI 的地址链，配置 `PDFTR_WEB_TRUSTED_PROXIES` 与 `PDFTR_TRUSTED_PROXY_CIDRS`。不能照抄其他机器的 Docker 地址，也不要信任所有私网或任意 X-Forwarded-For。缺少管理、HTTPS Origin 或可信代理配置时，开启采集将拒绝启动。上传处会明确显示长期留存说明。
+采集需额外设置 `PDFTR_SUBMISSION_AUDIT_ENABLED=true`，并按实际反向代理链路（如反向代理 → Caddy → FastAPI）核验可信来源地址，配置 `PDFTR_WEB_TRUSTED_PROXIES` 与 `PDFTR_TRUSTED_PROXY_CIDRS`。不能照抄其他机器的 Docker 地址，也不要信任所有私网或任意 X-Forwarded-For。缺少管理、HTTPS Origin 或可信代理配置时，开启采集将拒绝启动。上传处会明确显示长期留存说明。
 
 启用后长期记录论文标题（识别失败则回退去路径、去扩展名的上传名）、提交时间、提交 IP、页数与状态；正文/PDF仍按保留期清理。删除任务不会删除该元数据。现有任务可由部署者显式补录标题，旧提交 IP 和首次完成时间无法可靠补回。关闭采集停止新增及更新，不自动删除既有账本。
 
@@ -355,16 +355,6 @@ frontend/src/
 ├── entities/     任务、文档、批次和术语数据模型
 └── shared/       API、PDF.js、文本处理和通用组件
 ```
-
-## 文档
-
-- [docs/00-research.md](docs/00-research.md)：调研报告
-- [docs/01-tech-stack.md](docs/01-tech-stack.md)：技术选型与架构
-- [docs/02-spikes.md](docs/02-spikes.md)：版面、导出、费用和质量验证
-- [docs/03-mvp-design.md](docs/03-mvp-design.md)：MVP 设计与验收记录
-- [docs/04-ux-round-1.md](docs/04-ux-round-1.md)：第一轮体验设计
-- [docs/05-ux-round-2.md](docs/05-ux-round-2.md)：第二轮体验设计
-- [docs/06-ux-round-3.md](docs/06-ux-round-3.md)：第三轮体验设计
 
 ## 术语库来源
 
