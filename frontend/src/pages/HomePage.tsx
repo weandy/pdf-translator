@@ -137,21 +137,88 @@ export function HomePage({ openSettings }: { openSettings: () => void }) {
             <br />
             按原版式读中文
           </h1>
-          <p className="lead">上传 PDF，译文排回原位，与原文左右对照，支持逐段编辑并导出 PDF。</p>
+          <p className="lead">上传 PDF，译文排回原位，与原文左右对开对照，支持逐段校对、术语统一并导出双语 PDF。</p>
+          <div className="spread-preview" aria-hidden="true">
+            <div className="spread-sheets">
+              <div className="mini-sheet orig">
+                <div className="mini-title">3.2 Multi-Head Attention</div>
+                <div className="mini-cols">
+                  <div>
+                    <p className="mini-p">
+                      Instead of performing a single attention function with d<sub>model</sub>-dimensional keys, queries
+                      and values, we project them h times.
+                    </p>
+                    <div className="mini-eq">
+                      Attention(Q,K,V) = softmax(QK<sup>T</sup>/√d<sub>k</sub>)V
+                    </div>
+                  </div>
+                  <div>
+                    <p className="mini-p">
+                      <span className="mini-hl">
+                        Multi-head attention allows the model to jointly attend to information from different subspaces.
+                      </span>
+                    </p>
+                    <div className="mini-fig">
+                      <span className="mini-bar mini-bar-1" />
+                      <span className="mini-bar mini-bar-2" />
+                      <span className="mini-bar mini-bar-3 hi" />
+                      <span className="mini-bar mini-bar-4" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="mini-sheet trans">
+                <div className="mini-title">3.2 多头注意力机制</div>
+                <div className="mini-cols">
+                  <div>
+                    <p className="mini-p">
+                      相较于对 d<sub>model</sub> 维的键、查询和值执行单次注意力函数，我们将它们线性投影 h 次并并行计算。
+                    </p>
+                    <div className="mini-eq">
+                      Attention(Q,K,V) = softmax(QK<sup>T</sup>/√d<sub>k</sub>)V
+                    </div>
+                  </div>
+                  <div>
+                    <p className="mini-p">
+                      <span className="mini-hl">
+                        多头注意力使模型能够同时关注来自不同位置的不同表示子空间信息。
+                      </span>
+                    </p>
+                    <div className="mini-fig">
+                      <span className="mini-bar mini-bar-1" />
+                      <span className="mini-bar mini-bar-2" />
+                      <span className="mini-bar mini-bar-3 hi" />
+                      <span className="mini-bar mini-bar-4" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="spread-meta">
+              <span>原位排回 · 公式与图表零错位</span>
+              <span className="spread-tag">
+                <svg className="ui-icon" viewBox="0 0 24 24">
+                  <path d="M12 20h9" />
+                  <path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z" />
+                </svg>
+                点击任意段落即时编辑
+              </span>
+            </div>
+          </div>
           <ul className="facts">
             <li>
               <strong>公式与图表保留</strong>
-              <span>行内公式按 LaTeX 重新渲染，图表与表格保持原位。</span>
+              <span>行内公式按 LaTeX 重渲，图表与表格保持原位。</span>
             </li>
             <li>
               <strong>双语对照可编辑</strong>
-              <span>逐段审校与术语微调，支持导出中文版或双语对照 PDF。</span>
+              <span>逐段审校与术语微调，支持导出中文版或双语 PDF。</span>
             </li>
             <li>
               <strong>{config?.free_channel?.enabled ? "免 Key 直接试用" : "Key 只在本机"}</strong>
               <span>
                 {config?.free_channel?.enabled
-                  ? "支持免填 Key 直接体验公开论文；自备 API Key 享独立队列且仅存本机。"
+                  ? "公开论文免配置体验，自备 API Key 享独立队列且仅存本机。"
                   : "自备 API Key 仅存在当前浏览器中，翻译前提供透明费用预估。"}
               </span>
             </li>

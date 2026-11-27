@@ -22,7 +22,11 @@ interface Props {
   revisions: Revision[];
   /** 段落 id → 简短说明（如“第 3 页：Large Language Models…”）；只看一段的记录时不传 */
   labels?: Record<string, string>;
+  /** 段落 id → 当前生效译文（用于判断某历史版本是否与当前不同并标注当前生效版本） */
+  currentTargets?: Record<string, string | null>;
   onRevert: (rev: Revision) => Promise<void>;
+  /** 非破坏性恢复任意历史版本（或撤销撤回 / Redo），追加新记录而不丢失时间线 */
+  onRestore?: (rev: Revision, target: string) => Promise<void>;
   readOnly?: boolean;
   onOpen?: (segmentId: string) => void;
 }
@@ -77,8 +81,16 @@ function RevisionDiff({ before, after }: Pick<Revision, "before" | "after">) {
 const time = (iso: string) =>
   new Date(iso).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
-export function RevisionList({ revisions, labels, onRevert, onOpen, readOnly = false }: Props) {
-  const [busy, setBusy] = useState<number | null>(null);
+export function RevisionList({
+  revisions,
+  labels,
+  currentTargets,
+  onRevert,
+  onRestore,
+  onOpen,
+  readOnly = false,
+}: Props) {
+  const [busy, setBusy] = useState<{ id: number; kind: "revert" | "restore" } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const confirm = useConfirm();
   const toast = useToast();
@@ -86,6 +98,15 @@ export function RevisionList({ revisions, labels, onRevert, onOpen, readOnly = f
   const locked = useRef(readOnly);
   const inFlight = useRef(false);
   useLayoutEffect(() => { latest.current = revisions; locked.current = readOnly; }, [revisions, readOnly]);
+  // 记录每个段落最新一条历史 id，用于标示“当前生效”及控制“撤销撤回（Redo）”入口
+  const latestIdBySegment = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const r of revisions) {
+      const prev = map.get(r.segment_id) ?? -1;
+      if (r.id > prev) map.set(r.segment_id, r.id);
+    }
+    return map;
+  }, [revisions]);
   if (revisions.length === 0) return <p className="muted revisions-empty">还没有手动修改。</p>;
 
   const revert = async (rev: Revision) => {
@@ -94,14 +115,32 @@ export function RevisionList({ revisions, labels, onRevert, onOpen, readOnly = f
     ).length;
     const later = countLater();
     if (locked.current || inFlight.current) return;
-    if (later > 0 && !(await confirm({ title: "撤回修改", message: `这一段在这一步之后还有 ${later} 次修改，会一并撤回。继续吗？`, confirmLabel: "确认撤回", tone: "danger" }))) return;
+    if (later > 0 && !(await confirm({ title: "撤回修改", message: `这一段在这一步之后还有 ${later} 次修改，会一并撤回（撤回后仍可在记录里随时恢复任一历史版本）。继续吗？`, confirmLabel: "确认撤回", tone: "danger" }))) return;
     if (locked.current || inFlight.current || countLater() > later || !latest.current.some((r) => r.id === rev.id && r.reverted_by === null)) return;
     inFlight.current = true;
-    setBusy(rev.id);
+    setBusy({ id: rev.id, kind: "revert" });
     setError(null);
     try {
       await onRevert(rev);
       toast.success("已撤回修改");
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setError(message);
+      toast.error(message);
+    } finally {
+      inFlight.current = false;
+      setBusy(null);
+    }
+  };
+
+  const restore = async (rev: Revision, target: string, label: string) => {
+    if (!onRestore || locked.current || inFlight.current) return;
+    inFlight.current = true;
+    setBusy({ id: rev.id, kind: "restore" });
+    setError(null);
+    try {
+      await onRestore(rev, target);
+      toast.success(label);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       setError(message);
@@ -122,12 +161,26 @@ export function RevisionList({ revisions, labels, onRevert, onOpen, readOnly = f
       <ol className="revisions">
         {[...revisions].reverse().map((rev) => {
           const voided = rev.reverted_by !== null;
+          const isLatestForSegment = latestIdBySegment.get(rev.segment_id) === rev.id;
+          const activeTarget = currentTargets?.[rev.segment_id];
+          const canRestoreVoided =
+            Boolean(onRestore) &&
+            voided &&
+            Boolean(rev.after) &&
+            (currentTargets === undefined || rev.after !== activeTarget);
+          const canRedoRevert =
+            Boolean(onRestore) &&
+            rev.action === "revert" &&
+            isLatestForSegment &&
+            Boolean(rev.before) &&
+            (currentTargets === undefined || rev.before !== activeTarget);
           return (
-            <li key={rev.id} className={voided ? "voided" : undefined}>
+            <li key={rev.id} className={voided ? "voided" : isLatestForSegment ? "current-rev" : undefined}>
               <div className="rev-head">
                 <span className={`tag ${rev.action === "revert" ? "" : "edited"}`}>{ACTIONS[rev.action]}</span>
                 <span className="muted num">{time(rev.created_at)}</span>
                 {voided && <span className="muted">已撤回</span>}
+                {!voided && isLatestForSegment && <span className="rev-current-badge">当前版本</span>}
                 <span className="spacer" />
                 {rev.action !== "revert" && !voided && (
                   <button
@@ -137,7 +190,29 @@ export function RevisionList({ revisions, labels, onRevert, onOpen, readOnly = f
                     onClick={() => void revert(rev)}
                     title="这一段恢复到这一步之前的译文"
                   >
-                    {busy === rev.id ? "撤回中…" : "撤回这一步"}
+                    {busy?.id === rev.id && busy.kind === "revert" ? "撤回中…" : "撤回这一步"}
+                  </button>
+                )}
+                {canRestoreVoided && rev.after && (
+                  <button
+                    type="button"
+                    className="quiet rev-restore-btn"
+                    disabled={readOnly || busy !== null}
+                    onClick={() => void restore(rev, rev.after!, "已恢复到该历史版本")}
+                    title="把这一段恢复为这一步修改后的译文（追加新记录，不丢失时间线）"
+                  >
+                    {busy?.id === rev.id && busy.kind === "restore" ? "恢复中…" : "恢复此版本"}
+                  </button>
+                )}
+                {canRedoRevert && rev.before && (
+                  <button
+                    type="button"
+                    className="quiet rev-restore-btn"
+                    disabled={readOnly || busy !== null}
+                    onClick={() => void restore(rev, rev.before!, "已撤销撤回并还原译文")}
+                    title="撤销这次撤回，恢复到撤回前的译文"
+                  >
+                    {busy?.id === rev.id && busy.kind === "restore" ? "还原中…" : "撤销撤回"}
                   </button>
                 )}
               </div>

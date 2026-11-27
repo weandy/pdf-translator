@@ -37,6 +37,20 @@ interface Props extends HomeJobActions {
   onPreparingChange: (preparing: boolean) => void;
 }
 
+const ALL_DONE_MESSAGE = /^已翻译\s*(\d+)\s*\/\s*(\d+)\s*段$/;
+
+function visibleJobMessage(job: Job | undefined): string {
+  if (!job) return "";
+  if (job.error) return job.error;
+  const message = job.message?.trim() ?? "";
+  if (!message) return "";
+  if (job.status === "done") {
+    const match = ALL_DONE_MESSAGE.exec(message);
+    if (match && match[1] === match[2]) return "";
+  }
+  return message;
+}
+
 export function HomeJobRow({
   id,
   filename,
@@ -56,7 +70,7 @@ export function HomeJobRow({
   const canRetry = job?.status === "failed" || job?.status === "cancelled";
   let status = job ? STATUS_LABELS[job.status] : LOOKUP_LABELS[lookupState];
   if (job?.status === "running") status = STAGE_LABELS[job.stage] ?? status;
-  const message = job?.error || job?.message;
+  const message = visibleJobMessage(job);
   const remaining = job?.expires_at ? formatRemaining(job.expires_at) : null;
 
   const actOnJob = async (action: JobAction) => {
@@ -113,7 +127,7 @@ export function HomeJobRow({
               <div className="batch-row-download">
                 <ExportDownloadLink
                   key={downloadMode}
-                  className="button"
+                  className="button primary"
                   jobId={id}
                   mode={downloadMode}
                   onPreparingChange={onPreparingChange}

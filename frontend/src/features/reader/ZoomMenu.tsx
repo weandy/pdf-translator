@@ -33,9 +33,11 @@ export function ZoomMenu({ zoom, scale, open, trigger, onOpen, onClose, onChange
 
   const percent = Math.round(scale * 100) + "%";
   const label = (zoom.kind === "auto" ? "自适应 " : zoom.kind === "fit-width" ? "适合宽度 " : "固定 ") + percent;
+  const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent);
+  const mod = isMac ? "⌘" : "Ctrl";
   return (
     <div className="zoom-picker">
-      <button type="button" className="quiet zoom-label" ref={trigger} title={label} aria-label={label}
+      <button type="button" className="quiet zoom-label" ref={trigger} title={`${label}（支持 ${mod} + 滚轮缩放）`} aria-label={label}
         aria-haspopup="menu" aria-expanded={open} onClick={open ? onClose : onOpen}>
         {percent}
       </button>
@@ -62,6 +64,9 @@ export function ZoomMenu({ zoom, scale, open, trigger, onOpen, onClose, onChange
               {option.title}
             </button>
           ))}
+          <div className="zoom-menu-hint" aria-hidden="true">
+            {mod} + 滚轮缩放 · {mod} + 0 适应
+          </div>
         </div>,
         document.body,
       )}

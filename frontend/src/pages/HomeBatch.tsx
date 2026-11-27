@@ -32,6 +32,7 @@ export function HomeTaskCard({
   ...actions
 }: Props) {
   const ids = [...new Set(jobIds)];
+  const single = ids.length === 1 && !onUngroup;
   const cardKey = JSON.stringify([...ids].sort());
   const { mode, setMode, preparing, onPreparingChange } = useDownloadChoice(cardKey);
   const downloadableIds = ids.filter((id) => jobs.get(id)?.status === "done");
@@ -40,7 +41,7 @@ export function HomeTaskCard({
   const timestamp = Date.parse(createdAt ?? "");
 
   return (
-    <li className="batch-card">
+    <li className={single ? "batch-card batch-card-single" : "batch-card"}>
       <div className="batch-card-head">
         <div className="batch-card-info">
           <h3>
@@ -52,9 +53,11 @@ export function HomeTaskCard({
               "上传记录"
             )}
           </h3>
-          <p className="hint">
-            可下载 {downloadable} / {ids.length} 篇
-          </p>
+          {!single && (
+            <p className="hint">
+              可下载 {downloadable} / {ids.length} 篇
+            </p>
+          )}
         </div>
         {(downloadable > 0 || batchDownload.progress) && (
           <div className="batch-format">

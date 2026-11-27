@@ -2,12 +2,12 @@
  * 任务页：进行中显示进度，完成后显示阅读器；阅读器、下载与段落编辑在这里组合（功能模块之间互不依赖）。
  */
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useParams } from "react-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useLocation, useOutletContext, useParams } from "react-router";
 
 import { progressOf, withSegment } from "@/entities/document/model";
 import { STAGE_LABELS, useJob } from "@/entities/job/model";
-import { useSettings } from "@/entities/settings/model";
+import { savePrefs, useSettings } from "@/entities/settings/model";
 import { ExpandPagesDialog } from "@/features/expansion/ExpandPagesDialog";
 import { ExpansionBanner } from "@/features/expansion/ExpansionBanner";
 import { useExpansion } from "@/features/expansion/useExpansion";
@@ -15,6 +15,7 @@ import { ExportDownloadLink } from "@/features/export/ExportDownloadLink";
 import { DownloadMenu } from "@/features/export/DownloadMenu";
 import { TermsPanel } from "@/features/job-terms/TermsPanel";
 import { JobProgress } from "@/features/job-progress/JobProgress";
+import { DisplayMenu } from "@/features/reader/DisplayMenu";
 import { ReaderView, type LocatePage } from "@/features/reader/ReaderView";
 import { RevisionList } from "@/features/revisions/RevisionList";
 import { SegmentEditor } from "@/features/segment-edit/SegmentEditor";
@@ -27,13 +28,21 @@ import {
   type SegmentData,
 } from "@/shared/api/client";
 import { APP_TITLE, notify, useVisible } from "@/shared/attention/attention";
-import { hasOpenModal } from "@/shared/feedback/ConfirmDialog";
+import { hasOpenModal, useConfirm } from "@/shared/feedback/ConfirmDialog";
 import { ErrorCard } from "@/shared/feedback/ErrorCard";
+import { useTheme } from "@/shared/theme/theme";
 import { expiresSoon, formatRemaining } from "@/shared/time/elapsed";
+
+interface JobOutletContext {
+  openSettings?: () => void;
+}
 
 export function JobPage() {
   const { id = "" } = useParams();
   const location = useLocation();
+  const outlet = useOutletContext<JobOutletContext | null>();
+  const { resolved: theme, lightPaper, darkPaper, setPreference: setTheme, setLightPaper, setDarkPaper } = useTheme();
+  const confirm = useConfirm();
   const [request, setLocateRequest] = useState<{ key: string; target: LocatePage } | null>(null);
   const { job, error, refresh } = useJob(id);
   const { active, started } = useExpansion(job, id, refresh);
@@ -42,33 +51,47 @@ export function JobPage() {
   useJobTitle(job);
   const qc = useQueryClient();
   const { translationSide } = useSettings();
+  /** 纯阅读态下轻聚焦的段落（只高亮 + 浮现「校对译文」胶囊，不弹出 400px 抽屉） */
+  const [focused, setFocused] = useState<string | null>(null);
+  /** 正式打开右侧段落编辑抽屉的段落 */
   const [selected, setSelected] = useState<string | null>(null);
+  const editorDirtyRef = useRef(false);
+  const setEditorDirty = useCallback((dirty: boolean) => {
+    editorDirtyRef.current = dirty;
+  }, []);
   const historyButton = useRef<HTMLButtonElement>(null);
   const termsButton = useRef<HTMLButtonElement>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
+  /** 从「本文术语」临时切去改一段时保持术语面板挂起状态，关编辑后无缝回到原术语定位 */
+  const [returnToTerms, setReturnToTerms] = useState(false);
   const [reviewingFailed, setReviewingFailed] = useState(false);
   const [spot, setSpot] = useState<{ id: string; n: number; term?: { source: string; target: string } } | null>(null);
   const [marked, setMarked] = useState<ReadonlySet<string>>(new Set());
   const [revealKey, setRevealKey] = useState(0);
   useEffect(() => {
-    if (!showHistory && !showTerms) return;
+    if (!showHistory && !showTerms && !focused) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.isComposing || e.defaultPrevented || hasOpenModal()) return;
-      e.preventDefault();
       if (showHistory) {
+        e.preventDefault();
         setShowHistory(false);
         historyButton.current?.focus();
-      } else {
+      } else if (showTerms) {
+        e.preventDefault();
         setShowTerms(false);
+        setReturnToTerms(false);
         setSpot(null);
         setMarked(new Set());
         termsButton.current?.focus();
+      } else if (focused && !selected) {
+        e.preventDefault();
+        setFocused(null);
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [showHistory, showTerms]);
+  }, [showHistory, showTerms, focused, selected]);
   const ready = job?.status === "done";
   const {
     data: queriedDoc,
@@ -139,34 +162,107 @@ export function JobPage() {
     refresh();
   };
   const onRevert = async (rev: Revision) => onChange(await api.revert(rev.id));
-  const open = (segmentId: string) => {
-    setReviewingFailed(false);
-    setSelected(segmentId);
-    void qc.invalidateQueries({ queryKey: ["document", id, contentVersion] });
-    setShowHistory(false);
-    setShowTerms(false);
-    setMarked(new Set());
+  const onRestore = async (rev: Revision, target: string) => onChange(await api.editSegment(rev.segment_id, target));
+  const currentTargets = Object.fromEntries(doc.segments.map((s) => [s.id, s.target] as const));
+  const guardDirty = (action: () => void) => {
+    if (!editorDirtyRef.current) {
+      action();
+      return;
+    }
+    void confirm({
+      title: "放弃未保存的修改？",
+      message: "当前段落的译文修改尚未保存，离开后这些改动将丢失。",
+      confirmLabel: "放弃修改",
+      cancelLabel: "继续编辑",
+      tone: "danger",
+    }).then((accepted) => {
+      if (!accepted) return;
+      editorDirtyRef.current = false;
+      action();
+    });
   };
-  // 关闭编辑后把焦点还给原来的段落（键盘用户接着 Tab）
+  const open = (segmentId: string, options?: { keepTerms?: boolean }) => {
+    guardDirty(() => {
+      const preserveTerms = Boolean(options?.keepTerms || showTerms || returnToTerms);
+      setReviewingFailed(false);
+      setFocused(segmentId);
+      setSelected(segmentId);
+      void qc.invalidateQueries({ queryKey: ["document", id, contentVersion] });
+      setShowHistory(false);
+      if (preserveTerms) {
+        setReturnToTerms(true);
+        setShowTerms(false);
+      } else {
+        setShowTerms(false);
+        setMarked(new Set());
+      }
+    });
+  };
+  // 纯阅读态单击段落只做轻聚焦 + 浮现「校对译文」胶囊，避免误触挤出 400px 抽屉导致页面惊跳；
+  // 一旦已处于精校态（右侧编辑抽屉打开中），单击其它段落直接切换编辑对象。
+  const selectSegment = (segmentId: string) => {
+    if (selected !== null) {
+      if (segmentId !== selected) open(segmentId);
+      return;
+    }
+    setFocused(segmentId);
+  };
+  const editSegment = (segmentId: string) => open(segmentId);
+  const editFromTerms = (segmentId: string) => {
+    open(segmentId, { keepTerms: true });
+    setRevealKey((k) => k + 1);
+  };
+  const backToTerms = () => {
+    guardDirty(() => {
+      setSelected(null);
+      setReviewingFailed(false);
+      setShowTerms(true);
+      setReturnToTerms(false);
+    });
+  };
+  // 关闭编辑后：若从「本文术语」进入则返回术语面板，否则把焦点还给原来的段落（键盘用户接着 Tab）
   const closeEditor = () => {
-    const id = selected;
-    setSelected(null);
-    requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-seg="${id}"]`)?.focus());
+    guardDirty(() => {
+      const id = selected;
+      setSelected(null);
+      setReviewingFailed(false);
+      if (returnToTerms) {
+        setShowTerms(true);
+        setReturnToTerms(false);
+        return;
+      }
+      requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-seg="${id}"]`)?.focus());
+    });
   };
   const reveal = (segmentId: string) => {
-    open(segmentId);
+    open(segmentId, { keepTerms: false });
     setRevealKey((k) => k + 1);
   };
   const changes = revisions.filter((r) => r.action !== "revert" && r.reverted_by === null).length;
-  const segment = doc.segments.find((s) => s.id === selected) ?? null;
+  const segmentIndex = doc.segments.findIndex((s) => s.id === selected);
+  const segment = segmentIndex >= 0 ? (doc.segments[segmentIndex] ?? null) : null;
+  const stepSegment = (delta: -1 | 1) => {
+    const next = doc.segments[segmentIndex + delta];
+    if (!next) return;
+    open(next.id);
+    setRevealKey((k) => k + 1);
+  };
   const stats = progressOf(doc);
   // 沿用解析器的段落阅读顺序，避免按坐标排序打乱多栏正文。
   const failedSegments = doc.segments.filter((s) => s.status === "failed");
   const failedIndex = failedSegments.findIndex((s) => s.id === selected);
   const locateFailed = (segmentId: string) => {
-    open(segmentId);
-    setReviewingFailed(true);
-    setSpot((s) => ({ id: segmentId, n: (s?.n ?? 0) + 1 }));
+    guardDirty(() => {
+      setFocused(segmentId);
+      setSelected(segmentId);
+      setReviewingFailed(true);
+      setShowHistory(false);
+      setShowTerms(false);
+      setReturnToTerms(false);
+      setMarked(new Set());
+      void qc.invalidateQueries({ queryKey: ["document", id, contentVersion] });
+      setSpot((s) => ({ id: segmentId, n: (s?.n ?? 0) + 1 }));
+    });
   };
   const moveFailed = (delta: number) => {
     if (!failedSegments.length) return;
@@ -179,42 +275,51 @@ export function JobPage() {
     if (next) locateFailed(next.id);
   };
 
+  const docTooltipParts = [doc.title || job.filename];
+  if (job.cost_cny !== null) docTooltipParts.push(`花费 ¥${job.cost_cny.toFixed(3)}`);
+  if (job.expires_at) docTooltipParts.push(`服务器保留${formatRemaining(job.expires_at)}`);
+  const hasHighSignalMeta =
+    publishedCount < job.page_count ||
+    Boolean(active) ||
+    stats.failed > 0 ||
+    Boolean(job.expires_at && expiresSoon(job.expires_at));
+  const rightPanelOpen = Boolean(showHistory || showTerms || (!readOnly && segment));
+  const termsMounted = showTerms || returnToTerms;
+
   const heading = (
-    <>
-      <Link to="/" className="back">
-        返回
+    <div className="toolbar-lead">
+      <Link to="/" className="back" aria-label="返回首页">
+        <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <polyline points="15 18 9 12 15 6" />
+        </svg>
+        <span>返回</span>
       </Link>
       <div className="doc-heading">
-        <span className="doc-title" title={doc.title || job.filename}>
+        <span className="doc-title" title={docTooltipParts.join(" · ")}>
           {doc.title || job.filename}
         </span>
-        <span className="doc-meta num">
-          <span>
-            已翻译 {stats.done}/{stats.total} 段
+        {hasHighSignalMeta && (
+          <span className="doc-meta num">
+            {publishedCount < job.page_count && <span>仅翻译了 {publishedCount}/{job.page_count} 页</span>}
+            {active && <span>正在补翻其余页</span>}
+            {stats.failed > 0 && (
+              <button
+                type="button"
+                className="link failed-segments-link"
+                disabled={readOnly}
+                onClick={() => locateFailed(failedSegments[failedIndex >= 0 ? failedIndex : 0]!.id)}
+                title="定位问题段落并打开编辑面板，可重翻或手动修改"
+              >
+                {stats.failed} 段未完成翻译 · 点击定位
+              </button>
+            )}
+            {job.expires_at && expiresSoon(job.expires_at) && (
+              <span className="error">保留{formatRemaining(job.expires_at)}，请先下载</span>
+            )}
           </span>
-          {publishedCount < job.page_count && <span>仅翻译了 {publishedCount}/{job.page_count} 页</span>}
-          {active && <span>正在补翻其余页，完成后即可继续编辑</span>}
-          {stats.failed > 0 && (
-            <button
-              type="button"
-              className="link failed-segments-link"
-              disabled={readOnly}
-              onClick={() => locateFailed(failedSegments[failedIndex >= 0 ? failedIndex : 0]!.id)}
-              title="定位问题段落并打开编辑面板，可重翻或手动修改"
-            >
-              {stats.failed} 段未完成翻译 · 点击定位
-            </button>
-          )}
-          {job.cost_cny !== null && <span>花费 ¥{job.cost_cny.toFixed(3)}</span>}
-          {job.expires_at &&
-            (expiresSoon(job.expires_at) ? (
-              <span className="error">服务器保留{formatRemaining(job.expires_at)}，到期自动删除，请先下载</span>
-            ) : (
-              <span title="到期后原文与译文自动删除">服务器保留{formatRemaining(job.expires_at)}</span>
-            ))}
-        </span>
+        )}
       </div>
-    </>
+    </div>
   );
 
   return (
@@ -243,52 +348,90 @@ export function JobPage() {
           doc={doc}
           jobId={id}
           locatePage={locatePage}
-          selectedSegment={selected}
-          onSelectSegment={readOnly ? undefined : open}
+          selectedSegment={selected ?? focused}
+          editingOpen={Boolean(!readOnly && !showHistory && !showTerms && segment)}
+          onSelectSegment={readOnly ? undefined : selectSegment}
+          onEditSegment={readOnly ? undefined : editSegment}
+          onClearSelection={() => setFocused(null)}
           backgroundUrl={fileUrl(id, "background.pdf", displayedVersion)}
           heading={heading}
           side={translationSide}
           revealKey={revealKey}
           spot={spot}
           marked={marked}
+          rightPanelOpen={rightPanelOpen}
           actions={
             <>
               <button
                 type="button"
-                className={showTerms ? "quiet on" : "quiet"}
+                className={showTerms ? "quiet toolbar-btn on" : "quiet toolbar-btn"}
                 ref={termsButton}
                 aria-pressed={showTerms}
                 onClick={() => {
-                  setShowTerms((v) => !v);
-                  setShowHistory(false);
-                  setSelected(null);
-                  setSpot(null);
-                  setMarked(new Set());
+                  guardDirty(() => {
+                    if (showTerms) {
+                      setShowTerms(false);
+                      setReturnToTerms(false);
+                      setSpot(null);
+                      setMarked(new Set());
+                    } else {
+                      setShowTerms(true);
+                      setReturnToTerms(false);
+                      setShowHistory(false);
+                      setSelected(null);
+                      setReviewingFailed(false);
+                    }
+                  });
                 }}
                 title="这篇用到的术语，检查译法是否一致"
               >
-                术语
+                <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                  <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+                </svg>
+                <span>术语</span>
               </button>
               <button
                 type="button"
-                className={showHistory ? "quiet on" : "quiet"}
+                className={showHistory ? "quiet toolbar-btn on" : "quiet toolbar-btn"}
                 ref={historyButton}
                 aria-pressed={showHistory}
                 onClick={() => {
-                  setShowHistory((v) => !v);
-                  setShowTerms(false);
-                  setSpot(null);
-                  setMarked(new Set());
+                  guardDirty(() => {
+                    setShowHistory((v) => !v);
+                    setShowTerms(false);
+                    setReturnToTerms(false);
+                    setSpot(null);
+                    setMarked(new Set());
+                  });
                 }}
                 title="所有手动修改，可按步撤回"
               >
+                <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <polyline points="1 4 1 10 7 10" />
+                  <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+                </svg>
                 <span>
                   <span className="wide-only">修改</span>记录{changes > 0 && <span className="num"> {changes}</span>}
                 </span>
               </button>
               {!readOnly && publishedCount < job.page_count && (
-                <button type="button" className="quiet" onClick={() => setExpanding(id)}>补翻其余页</button>
+                <button type="button" className="quiet toolbar-btn" onClick={() => setExpanding(id)}>
+                  补翻其余页
+                </button>
               )}
+              <span className="toolbar-sep" aria-hidden="true" />
+              <DisplayMenu
+                theme={theme}
+                lightPaper={lightPaper}
+                darkPaper={darkPaper}
+                side={translationSide}
+                onThemeChange={setTheme}
+                onLightPaperChange={setLightPaper}
+                onDarkPaperChange={setDarkPaper}
+                onSideChange={(nextSide) => savePrefs({ translationSide: nextSide })}
+                onOpenSettings={outlet?.openSettings}
+              />
               <DownloadMenu jobId={id} contentVersion={contentVersion} onLocatePage={showPage} />
             </>
           }
@@ -303,21 +446,32 @@ export function JobPage() {
                 关闭
               </button>
             </header>
-            <p className="hint">点段落名称可打开那一段；撤回某一步，这一段会恢复到那一步之前的译文。</p>
-            <RevisionList revisions={revisions} labels={labels} onRevert={onRevert} onOpen={reveal} readOnly={readOnly} />
+            <p className="hint">点段落名称可打开那一段；撤回后仍可随时恢复任意历史版本或撤销撤回。</p>
+            <RevisionList
+              revisions={revisions}
+              labels={labels}
+              currentTargets={currentTargets}
+              onRevert={onRevert}
+              onRestore={onRestore}
+              onOpen={reveal}
+              readOnly={readOnly}
+            />
           </aside>
         )}
-        {showTerms && (
+        {termsMounted && (
           <TermsPanel
             jobId={id}
             doc={doc}
             channelMode={job.channel_mode}
             readOnly={readOnly}
+            hidden={!showTerms}
             onChange={onChange}
             onSpot={(segmentId, term) => setSpot((s) => ({ id: segmentId, n: (s?.n ?? 0) + 1, term }))}
             onMark={(ids) => setMarked(new Set(ids))}
+            onEditSegment={readOnly ? undefined : editFromTerms}
             onClose={() => {
               setShowTerms(false);
+              setReturnToTerms(false);
               setSpot(null);
               setMarked(new Set());
             }}
@@ -325,11 +479,19 @@ export function JobPage() {
         )}
         {!readOnly && !showHistory && !showTerms && segment && (
           <SegmentEditor
-            key={`${segment.id}:${segment.target ?? ""}`}
+            key={`${segment.id}:${segment.target ?? ""}:${Object.entries(segment.formulas)
+              .map(([k, v]) => `${k}=${v.latex}`)
+              .join("|")}`}
             segment={segment}
             channelMode={job.channel_mode}
             onChange={onChange}
             onClose={closeEditor}
+            onDirtyChange={setEditorDirty}
+            onStep={stepSegment}
+            canStepPrev={segmentIndex > 0}
+            canStepNext={segmentIndex >= 0 && segmentIndex < doc.segments.length - 1}
+            returnToTerms={returnToTerms}
+            onReturnToTerms={backToTerms}
             navigation={
               reviewingFailed && (
                 <nav className="failed-segment-nav" aria-label="待处理段落导航">
@@ -354,7 +516,13 @@ export function JobPage() {
               )
             }
             history={
-              <RevisionList revisions={revisions.filter((r) => r.segment_id === segment.id)} onRevert={onRevert} />
+              <RevisionList
+                revisions={revisions.filter((r) => r.segment_id === segment.id)}
+                currentTargets={currentTargets}
+                onRevert={onRevert}
+                onRestore={onRestore}
+                readOnly={readOnly}
+              />
             }
           />
         )}

@@ -179,6 +179,22 @@ def get_file(
     return FileResponse(path, media_type="application/pdf", headers={"Cache-Control": cache})
 
 
+@router.get("/{job_id}/blocks/{block_id}.png")
+def get_block_png(
+    job_id: str,
+    block_id: str,
+    p: PipelineDep,
+    download: bool = False,
+) -> Response:
+    """按 MinerU 版面坐标高清裁剪论文插图或表格为白底 PNG，供阅读台一键复制或保存。"""
+    png = usecases.block_crop(p, job_id, block_id)
+    headers = {"Cache-Control": "private, max-age=86400"}
+    if download:
+        safe = "".join(ch for ch in block_id if ch.isalnum() or ch in "-_") or "figure"
+        headers["Content-Disposition"] = f'attachment; filename="{safe}.png"'
+    return Response(png, media_type="image/png", headers=headers)
+
+
 async def _export_with_timeout(
     p: Pipeline, job_id: str, mode: Literal["mono", "dual"], side: Literal["left", "right"]
 ) -> ExportResult:

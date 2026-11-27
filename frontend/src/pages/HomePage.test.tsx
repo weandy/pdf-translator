@@ -169,10 +169,10 @@ describe("首页内容", () => {
         "2026-11-16T00:00:00Z",
         "2026-11-15T00:00:00Z",
       ]);
-      expect(cards.map((card) => card.querySelector(".batch-card-info .hint")?.textContent)).toEqual([
-        "可下载 1 / 1 篇",
+      expect(cards.map((card) => card.querySelector(".batch-card-info .hint")?.textContent ?? null)).toEqual([
+        null,
         "可下载 2 / 2 篇",
-        "可下载 0 / 1 篇",
+        null,
         "可下载 0 / 2 篇",
       ]);
       expect(cards.map((card) => card.querySelectorAll(":scope > .batch-items > .job-item").length)).toEqual([
@@ -261,9 +261,8 @@ describe("首页内容", () => {
       const cards = [...host.querySelectorAll(".task-list > .batch-card")];
       expect(cards).toHaveLength(4);
       expect(cards.every((card) => card.querySelectorAll(":scope > .batch-items > .job-item").length === 1)).toBe(true);
-      expect(host.querySelector('a[href="/jobs/done"]')?.closest(".batch-card")?.textContent).toContain(
-        "可下载 1 / 1 篇",
-      );
+      expect(host.querySelector('a[href="/jobs/done"]')?.closest(".batch-card")?.classList.contains("batch-card-single")).toBe(true);
+      expect(host.querySelector('a[href="/jobs/done"]')?.closest(".batch-card")?.querySelector(".batch-card-info .hint")).toBeNull();
       expect(rowStatus("pending.pdf")).toBe("查询中");
       expect(rowStatus("offline.pdf")).toBe("暂时无法读取");
     });
@@ -290,8 +289,25 @@ describe("首页内容", () => {
       expect(fixture.restoreMyJobs).toHaveBeenCalledWith(["alive"]);
       const cards = [...host.querySelectorAll(".task-list > .batch-card")];
       expect(cards).toHaveLength(1);
-      expect(cards[0]?.querySelector(".batch-card-info .hint")?.textContent).toBe("可下载 1 / 1 篇");
+      expect(cards[0]?.classList.contains("batch-card-single")).toBe(true);
+      expect(cards[0]?.querySelector(".batch-card-info .hint")).toBeNull();
       expect(cards[0]?.querySelector(".batch-card-footer")).toBeNull();
+    });
+  });
+
+  it("已完成且全部段落翻完时隐藏机器计数，进行中或存在未完成段时保留提示", async () => {
+    fixture.jobs = [
+      { ...syntheticJob("done-all", "全翻完.pdf", "done", 21), message: "已翻译 158/158 段" },
+      { ...syntheticJob("done-partial", "有失败段.pdf", "done", 20), message: "已翻译 156/158 段" },
+      { ...syntheticJob("running-mid", "进行中.pdf", "running", 19), message: "已翻译 42/158 段" },
+    ];
+    await renderHome((host) => {
+      const doneRow = host.querySelector('a[href="/jobs/done-all"]')!.closest(".job-item")!;
+      const partialRow = host.querySelector('a[href="/jobs/done-partial"]')!.closest(".job-item")!;
+      const runningRow = host.querySelector('a[href="/jobs/running-mid"]')!.closest(".job-item")!;
+      expect(doneRow.textContent).not.toContain("已翻译 158/158 段");
+      expect(partialRow.textContent).toContain("已翻译 156/158 段");
+      expect(runningRow.textContent).toContain("已翻译 42/158 段");
     });
   });
 

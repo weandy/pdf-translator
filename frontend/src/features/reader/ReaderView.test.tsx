@@ -332,10 +332,13 @@ describe("阅读位置恢复、手动段落定位与虚拟化搜索", () => {
     await escape();
     expect(container.contains(input)).toBe(false);
     expect(document.activeElement).toBe(pages);
-    // React 会在首次挂载 Portal 时给 body 添加委托监听，阅读器本身不注册滚轮事件。
-    expect(listen.mock.calls.filter(([type], index) =>
+    // 仅在 .pages 滚动容器上注册一个非被动 wheel 监听用于拦截 Ctrl/Cmd+滚轮缩放，不在 window/document 全局劫持滚轮
+    const readerWheelCalls = listen.mock.calls.filter(([type], index) =>
       /^(wheel|mousewheel|gesture)/i.test(type) && listen.mock.contexts[index] !== document.body,
-    )).toEqual([]);
+    );
+    expect(readerWheelCalls).toHaveLength(1);
+    expect(readerWheelCalls[0]?.[0]).toBe("wheel");
+    expect(listen.mock.contexts[listen.mock.calls.indexOf(readerWheelCalls[0]!)]).toBe(pages);
   });
 
   it("缩放菜单只在点击外部或滚动工具栏时关闭", async () => {
@@ -535,5 +538,148 @@ describe("阅读位置恢复、手动段落定位与虚拟化搜索", () => {
       origPage.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }));
     });
     expect(container.querySelector(".hit.hovered")).toBeNull();
+  });
+
+  it("Ctrl+滚轮拦截浏览器网页缩放并直接缩放 PDF，且原文页渲染可划选公式层", async () => {
+    const doc = makeDoc(1);
+    doc.segments[0]!.formulas = {
+      m1: { latex: "E=mc^2", page: 0, bbox: { x0: 80, y0: 140, x1: 160, y1: 158 } },
+    };
+    await render(null, doc, "wheel-zoom-doc");
+    const pages = container.querySelector<HTMLDivElement>(".pages")!;
+    const beforeLabel = container.querySelector(".zoom-label")?.textContent;
+
+    // 普通滚轮不拦截
+    const plainWheel = new WheelEvent("wheel", { deltaY: -100, bubbles: true, cancelable: true });
+    await act(async () => {
+      pages.dispatchEvent(plainWheel);
+    });
+    expect(plainWheel.defaultPrevented).toBe(false);
+
+    // Ctrl+滚轮向上：拦截浏览器默认缩放，直接放大 PDF 缩放比例
+    const zoomInWheel = new WheelEvent("wheel", { deltaY: -100, ctrlKey: true, bubbles: true, cancelable: true });
+    await act(async () => {
+      pages.dispatchEvent(zoomInWheel);
+    });
+    expect(zoomInWheel.defaultPrevented).toBe(true);
+    expect(container.querySelector(".zoom-label")?.textContent).not.toBe(beforeLabel);
+
+    // 切到对照模式，原文页应挂载带 data-latex 的公式划选节点
+    await act(() => [...container.querySelectorAll<HTMLButtonElement>(".segmented button")].find((button) => button.textContent === "对照")!.click());
+    const formulaBox = container.querySelector<HTMLElement>('.formula-select[data-latex="E=mc^2"]');
+    expect(formulaBox).not.toBeNull();
+
+    // 划选公式后复制：剪贴板应同时写入标准 LaTeX (text/plain) 与 W3C MathML (text/html)
+    const setData = vi.fn();
+    const range = document.createRange();
+    range.selectNodeContents(formulaBox!);
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      isCollapsed: false,
+      rangeCount: 1,
+      getRangeAt: () => range,
+      toString: () => "$E=mc^2$",
+    } as unknown as Selection);
+    const copyEvent = new Event("copy", { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(copyEvent, "clipboardData", { value: { setData } });
+    await act(async () => {
+      pages.dispatchEvent(copyEvent);
+    });
+    expect(copyEvent.defaultPrevented).toBe(true);
+    expect(setData).toHaveBeenCalledWith("text/plain", "$$E=mc^2$$");
+    expect(setData).toHaveBeenCalledWith("text/html", expect.stringContaining("<math"));
+  });
+
+  it("MinerU 解析出的 figure 图表块支持悬停复制高清 PNG 与保存下载", async () => {
+    const doc = makeDoc(1);
+    doc.pages[0]!.blocks.push({
+      id: "p0-fig1",
+      page: 0,
+      type: "figure",
+      bbox: { x0: 100, y0: 200, x1: 300, y1: 380 },
+      font_size: 10,
+      bold: false,
+      italic: false,
+      serif: true,
+      color: 0,
+      translatable: false,
+      list_item: false,
+    });
+    const fakeBlob = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue({ ok: true, status: 200, blob: async () => fakeBlob } as Response);
+    const writeSpy = vi.fn().mockResolvedValue(undefined);
+    const FakeClipboardItem = vi.fn(function (this: Record<string, unknown>, items: Record<string, Blob>) {
+      this.items = items;
+    });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { write: writeSpy } });
+    Object.defineProperty(window, "ClipboardItem", { configurable: true, value: FakeClipboardItem });
+
+    await render(null, doc, "figure-copy-doc");
+    const copyBtn = container.querySelector<HTMLButtonElement>('.figure-box button[aria-label="复制图片"]')!;
+    const saveLink = container.querySelector<HTMLAnchorElement>('.figure-box a[aria-label="保存图片 PNG"]')!;
+    expect(copyBtn).not.toBeNull();
+    expect(saveLink.getAttribute("href")).toBe("/api/jobs/figure-copy-doc/blocks/p0-fig1.png?download=true");
+
+    await act(async () => copyBtn.click());
+    expect(fetchSpy).toHaveBeenCalledWith("/api/jobs/figure-copy-doc/blocks/p0-fig1.png");
+    expect(FakeClipboardItem).toHaveBeenCalledWith({ "image/png": expect.any(Blob) });
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(copyBtn.textContent).toContain("已复制");
+  });
+
+  it("图表操作条优先挂在图表外侧，贴近页顶或左边缘时自动换边防止遮挡与裁切", async () => {
+    const doc = makeDoc(1);
+    doc.pages[0]!.blocks.push(
+      {
+        id: "fig-mid",
+        page: 0,
+        type: "figure",
+        bbox: { x0: 190, y0: 200, x1: 410, y1: 360 },
+        font_size: 10,
+        bold: false,
+        italic: false,
+        serif: true,
+        color: 0,
+        translatable: false,
+        list_item: false,
+      },
+      {
+        id: "fig-top-left",
+        page: 0,
+        type: "table",
+        bbox: { x0: 12, y0: 10, x1: 110, y1: 120 },
+        font_size: 10,
+        bold: false,
+        italic: false,
+        serif: true,
+        color: 0,
+        translatable: false,
+        list_item: false,
+      },
+      {
+        id: "fig-full",
+        page: 0,
+        type: "figure",
+        bbox: { x0: 20, y0: 10, x1: 580, y1: 790 },
+        font_size: 10,
+        bold: false,
+        italic: false,
+        serif: true,
+        color: 0,
+        translatable: false,
+        list_item: false,
+      },
+    );
+
+    await render(null, doc, "figure-placement-doc");
+    const actions = Array.from(container.querySelectorAll<HTMLElement>(".page[aria-label='原文第 1 页'] .figure-actions"));
+    expect(actions).toHaveLength(3);
+    expect(actions[0]!.dataset.placement).toBe("top");
+    expect(actions[0]!.dataset.align).toBe("right");
+    expect(actions[1]!.dataset.placement).toBe("bottom");
+    expect(actions[1]!.dataset.align).toBe("left");
+    expect(actions[2]!.dataset.placement).toBe("inside");
+    expect(actions[2]!.dataset.align).toBe("right");
   });
 });

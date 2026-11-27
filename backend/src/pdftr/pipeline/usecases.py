@@ -47,7 +47,7 @@ from pdftr.pipeline.runner import ExportResult, Pipeline, chat_session, load_con
 from pdftr.pipeline.secrets import Secrets
 from pdftr.pipeline.versions import purge_versions, version_artifact
 from pdftr.pipeline.workers import finish_on_cancel, run_thread
-from pdftr.rendering.background import crop_png
+from pdftr.rendering.background import crop_block_png, crop_png
 from pdftr.rendering.export import ExportMode, Side, export_pdf_to_path, page_links, place_links
 from pdftr.rendering.links import VERSION as LINKS_VERSION
 from pdftr.rendering.links import PdfLink
@@ -865,7 +865,12 @@ def _revision(before: Segment, after: Segment, action: RevisionAction, reverts: 
     )  # fmt: skip
 
 
-def edit_segment(pipeline: Pipeline, segment_id: str, target: str) -> Segment:
+def edit_segment(
+    pipeline: Pipeline,
+    segment_id: str,
+    target: str,
+    formulas: Mapping[str, str] | None = None,
+) -> Segment:
     cleaned = target.strip()
     if not cleaned:
         raise UserError("译文不能为空")
@@ -885,11 +890,25 @@ def edit_segment(pipeline: Pipeline, segment_id: str, target: str) -> Segment:
             raise UserError("译文里的公式不对：" + "；".join(problems) + "。每个公式占位符要各保留一次")
         if problems := rich_text_problems(cleaned):
             raise UserError("译文里的格式标记不对：" + "；".join(problems))
-        before = seg.model_copy()
+        updated_formulas: dict[str, str] | None = None
+        if formulas:
+            unknown_keys = [k for k in formulas if k not in seg.formulas]
+            if unknown_keys:
+                raise UserError(f"公式 {', '.join(unknown_keys)} 在本段中不存在")
+            updated_formulas = dict(seg.formulas)
+            for k, v in formulas.items():
+                latex = v.strip()
+                if not latex:
+                    raise UserError(f"公式 {k} 不能为空")
+                updated_formulas[k] = latex
+        before = seg.model_copy(deep=True)
         seg.target, seg.status = cleaned, SegmentStatus.EDITED
+        if updated_formulas is not None:
+            seg.formulas = updated_formulas
         seg.failure_reason = ""
         pipeline.deps.store.save_segments([seg])
-        _record(pipeline, before, seg, "edit")
+        if before.target != seg.target:
+            _record(pipeline, before, seg, "edit")
         return seg
     finally:
         pipeline.end_mutation(seg.job_id)
@@ -1189,6 +1208,30 @@ def formula_crop(pipeline: Pipeline, segment_id: str, key: str) -> bytes:
     if ref is None:
         raise NotFound("公式不存在")
     return crop_png(pipeline.deps.artifacts.path(seg.job_id, "original.pdf"), ref.page, ref.bbox)
+
+
+_COPYABLE_MEDIA_TYPES = frozenset({BlockType.FIGURE, BlockType.TABLE})
+
+
+def block_crop(pipeline: Pipeline, job_id: str, block_id: str) -> bytes:
+    """按 MinerU 解析出的图表/表格坐标从 original.pdf 高清裁剪白底 PNG。"""
+    deps = pipeline.deps
+    with pipeline.export_access(job_id) as allowed:
+        if not allowed:
+            raise NotFound("任务不存在")
+        with pipeline.content_access():
+            job = get_job(pipeline, job_id)
+        doc = load_document(deps, job_id, job.content_version)
+        block = doc.block(block_id)
+        if block is None or block.type not in _COPYABLE_MEDIA_TYPES:
+            raise NotFound("图表不存在")
+        pdf = deps.artifacts.path(job_id, "original.pdf")
+        if not pdf.is_file():
+            raise NotFound("原文件不存在")
+        png = crop_block_png(pdf, block.page, block.bbox)
+    if not png:
+        raise NotFound("图表区域为空")
+    return png
 
 
 class Estimate(BaseModel):

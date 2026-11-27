@@ -120,4 +120,34 @@ describe("修改记录的变化展示", () => {
     await render([]);
     expect(host.textContent).toBe("还没有手动修改。");
   });
+
+  it("已撤回的历史版本支持恢复此版本，最新撤回记录支持撤销撤回", async () => {
+    const onRestore = vi.fn().mockResolvedValue(undefined);
+    const v1 = revision({ id: 1, before: "初始版", after: "版本一", reverted_by: 3 });
+    const v2 = revision({ id: 2, before: "版本一", after: "版本二", reverted_by: 3 });
+    const undo = revision({ id: 3, action: "revert", reverts: 1, before: "版本二", after: "初始版", reverted_by: null });
+    await act(async () =>
+      root.render(
+        <ConfirmProvider>
+          <RevisionList
+            revisions={[v1, v2, undo]}
+            currentTargets={{ synthetic: "初始版" }}
+            onRevert={vi.fn().mockResolvedValue(undefined)}
+            onRestore={onRestore}
+          />
+        </ConfirmProvider>,
+      ),
+    );
+    expect(host.textContent).toContain("当前版本");
+    const restoreBtns = [...host.querySelectorAll("button")].filter((b) => b.textContent === "恢复此版本");
+    expect(restoreBtns).toHaveLength(2);
+    // 逆序渲染：第一个「恢复此版本」对应 v2（版本二）
+    await act(async () => restoreBtns[0]!.click());
+    expect(onRestore).toHaveBeenCalledWith(v2, "版本二");
+
+    const redoBtn = [...host.querySelectorAll("button")].find((b) => b.textContent === "撤销撤回")!;
+    expect(redoBtn).toBeDefined();
+    await act(async () => redoBtn.click());
+    expect(onRestore).toHaveBeenCalledWith(undo, "版本二");
+  });
 });

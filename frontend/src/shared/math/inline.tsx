@@ -10,6 +10,7 @@ import { splitScript } from "@/shared/text/script";
 import { balanceRichParts, parseRich, tokenize, type RichNode } from "@/shared/text/split";
 
 const cache = new Map<string, string | null>();
+const mathmlCache = new Map<string, string | null>();
 
 /** 返回 KaTeX 生成的 HTML；LaTeX 有误时返回 null。display 为独立公式（居中、大号）。 */
 export function renderLatex(latex: string, display = false): string | null {
@@ -24,6 +25,28 @@ export function renderLatex(latex: string, display = false): string | null {
   }
   cache.set(key, html);
   return html;
+}
+
+/** 返回标准 W3C MathML（供复制时写入 text/html，粘贴到 Word / WPS 自动识别为可编辑原生公式）。 */
+export function renderMathml(latex: string, display = false): string | null {
+  const key = display ? `D:${latex}` : latex;
+  const hit = mathmlCache.get(key);
+  if (hit !== undefined) return hit;
+  let ml: string | null;
+  try {
+    const raw = katex.renderToString(latex, {
+      throwOnError: true,
+      displayMode: display,
+      output: "mathml",
+      strict: "ignore",
+    });
+    const match = raw.match(/<math[\s\S]*<\/math>/);
+    ml = match ? match[0] : raw;
+  } catch {
+    ml = null;
+  }
+  mathmlCache.set(key, ml);
+  return ml;
 }
 
 /** 译文里的链接：网址（href）在新标签页打开，页内跳转（onActivate）由阅读器滚动过去。 */
@@ -159,15 +182,15 @@ export const InlineMathText = memo(function InlineMathText({ text, formulas, fal
     const formula = formulas[piece.key];
     const latex = formula?.latex;
     const html = latex ? renderLatex(latex) : null;
-    if (html) return <span key={i} className="math" dangerouslySetInnerHTML={{ __html: html }} />;
+    if (html) return <span key={i} className="math" data-latex={latex} dangerouslySetInnerHTML={{ __html: html }} />;
     if (latex && formula?.bbox === null) {
       return (
-        <code key={i} className="math-raw">
+        <code key={i} className="math-raw" data-latex={latex}>
           {latex}
         </code>
       );
     }
-    return <img key={i} className="math-fallback" src={fallbackUrl(piece.key)} alt={latex ?? piece.key} />;
+    return <img key={i} className="math-fallback" data-latex={latex ?? undefined} src={fallbackUrl(piece.key)} alt={latex ?? piece.key} />;
   });
   return <>{nodes}</>;
 });

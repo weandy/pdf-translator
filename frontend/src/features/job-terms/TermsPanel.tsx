@@ -19,13 +19,26 @@ interface Props {
   doc: DocumentData;
   channelMode?: TranslationMode;
   readOnly?: boolean;
+  hidden?: boolean;
   onChange: (seg: SegmentData) => void;
   onSpot: (segmentId: string, term?: { source: string; target: string }) => void; // 滚到术语所在词并短暂高亮
   onMark: (segmentIds: string[]) => void; // 标出当前术语出现的所有段落
+  onEditSegment?: (segmentId: string) => void; // 顺手编辑当前定位的段落并保留术语上下文
   onClose: () => void;
 }
 
-export function TermsPanel({ jobId, doc, channelMode, readOnly = false, onChange, onSpot, onMark, onClose }: Props) {
+export function TermsPanel({
+  jobId,
+  doc,
+  channelMode,
+  readOnly = false,
+  hidden = false,
+  onChange,
+  onSpot,
+  onMark,
+  onEditSegment,
+  onClose,
+}: Props) {
   const { data: uses, error } = useQuery({ queryKey: ["terms", jobId, doc.job.content_version ?? 1], queryFn: () => api.jobTerms(jobId) });
   const mine = useTerms();
   const rows = useMemo(() => termRows(uses ?? [], mine, doc.segments), [uses, mine, doc.segments]);
@@ -56,7 +69,7 @@ export function TermsPanel({ jobId, doc, channelMode, readOnly = false, onChange
   };
 
   return (
-    <aside className="editor terms-panel" aria-label="本文术语">
+    <aside className="editor terms-panel" aria-label="本文术语" hidden={hidden}>
       <header>
         <strong>本文术语</strong>
         {uses && <span className="muted num">{pool.length} 个</span>}
@@ -72,27 +85,41 @@ export function TermsPanel({ jobId, doc, channelMode, readOnly = false, onChange
           关闭
         </button>
       </header>
-      <p className="hint">
-        翻译时用到的术语。“可能未采用推荐译法”只表示译文里没有找到推荐译法的字面匹配，不代表语义一定错误；同义词或词形变化也可能被标记。点击术语会定位到具体词。
-      </p>
+      <p className="hint">点击术语定位段落；字面差异提示仅作核对参考。</p>
       <div className="terms-filter">
         <input
           type="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="搜索术语"
+          placeholder="搜索术语…"
           aria-label="搜索术语"
         />
-        <label className="choice-inline">
-          <input type="checkbox" checked={onlyMismatch} onChange={(e) => setOnlyMismatch(e.target.checked)} />
-          只看可能未采用推荐译法（{mismatchTerms}）
-        </label>
-        {libraryCount > 0 && (
-          <label className="choice-inline">
-            <input type="checkbox" checked={withLibrary} onChange={(e) => setWithLibrary(e.target.checked)} />
-            包含公共词库（{libraryCount}）
-          </label>
-        )}
+        <div className="terms-toggles">
+          <div className="segmented segmented-compact" role="group" aria-label="术语筛选">
+            <button
+              type="button"
+              className={!onlyMismatch ? "on" : undefined}
+              aria-pressed={!onlyMismatch}
+              onClick={() => setOnlyMismatch(false)}
+            >
+              全部
+            </button>
+            <button
+              type="button"
+              className={onlyMismatch ? "on" : undefined}
+              aria-pressed={onlyMismatch}
+              onClick={() => setOnlyMismatch(true)}
+            >
+              仅看差异 <span className="num">{mismatchTerms}</span>
+            </button>
+          </div>
+          {libraryCount > 0 && (
+            <label className="choice-inline">
+              <input type="checkbox" checked={withLibrary} onChange={(e) => setWithLibrary(e.target.checked)} />
+              含公共词库（{libraryCount}）
+            </label>
+          )}
+        </div>
       </div>
       {error && <p className="error">{String(error)}</p>}
       {!uses && !error && <p className="muted">正在查找…</p>}
@@ -124,6 +151,7 @@ export function TermsPanel({ jobId, doc, channelMode, readOnly = false, onChange
                 readOnly={readOnly}
                 onChange={onChange}
                 onSpot={onSpot}
+                onEditSegment={onEditSegment}
               />
             )}
           </li>
@@ -141,6 +169,7 @@ function TermDetail({
   readOnly,
   onChange,
   onSpot,
+  onEditSegment,
 }: {
   row: TermRow;
   jobId: string;
@@ -149,6 +178,7 @@ function TermDetail({
   readOnly: boolean;
   onChange: (seg: SegmentData) => void;
   onSpot: (segmentId: string, term?: { source: string; target: string }) => void;
+  onEditSegment?: (segmentId: string) => void;
 }) {
   const toast = useToast();
   const [at, setAt] = useState(0);
@@ -241,6 +271,19 @@ function TermDetail({
           ›
         </button>
         {row.changed && <small className="muted">建任务后改过译法</small>}
+        {onEditSegment && ids[at] && (
+          <>
+            <span className="spacer" />
+            <button
+              type="button"
+              className="quiet term-edit-btn"
+              disabled={readOnly}
+              onClick={() => onEditSegment(ids[at]!)}
+            >
+              编辑此段
+            </button>
+          </>
+        )}
       </div>
       <form
         className="term-fix"

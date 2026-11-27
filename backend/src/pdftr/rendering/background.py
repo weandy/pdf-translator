@@ -260,3 +260,27 @@ def crop_png(pdf: Path, page: int, bbox: Rect, zoom: float = 4.0) -> bytes:
     with pymupdf.open(pdf) as doc:
         image = crop_formula(doc[page], bbox, zoom)
     return image[0] if image else b""
+
+
+def crop_block_png(
+    pdf: Path,
+    page: int,
+    bbox: Rect,
+    *,
+    zoom: float = 3.0,
+    pad: float = 3.0,
+    max_side: int = 3200,
+) -> bytes:
+    """按 MinerU 解析坐标从原版矢量 PDF 高清裁剪图表/表格为白底无损 PNG，供阅读器一键复制与保存。"""
+    with pymupdf.open(pdf) as doc:
+        if page < 0 or page >= len(doc):
+            return b""
+        p = doc[page]
+        clip = pymupdf.Rect(bbox.x0 - pad, bbox.y0 - pad, bbox.x1 + pad, bbox.y1 + pad) & p.rect
+        if clip.is_empty or clip.width < 1 or clip.height < 1:
+            return b""
+        safe_zoom = min(zoom, max_side / max(clip.width, clip.height))
+        pix = p.get_pixmap(
+            matrix=pymupdf.Matrix(safe_zoom, safe_zoom), clip=clip, colorspace=pymupdf.csRGB, alpha=False
+        )
+        return pix.tobytes("png")

@@ -218,6 +218,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/{job_id}/blocks/{block_id}.png": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Block Png
+         * @description 按 MinerU 版面坐标高清裁剪论文插图或表格为白底 PNG，供阅读台一键复制或保存。
+         */
+        get: operations["get_block_png_api_jobs__job_id__blocks__block_id__png_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/{job_id}/export": {
         parameters: {
             query?: never;
@@ -1374,6 +1394,10 @@ export interface components {
         EditIn: {
             /** Target */
             target: string;
+            /** Formulas */
+            formulas?: {
+                [key: string]: string;
+            } | null;
         };
         /** EnvLockItem */
         EnvLockItem: {
@@ -3053,6 +3077,40 @@ export interface operations {
             path: {
                 job_id: string;
                 name: "original.pdf" | "background.pdf";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_block_png_api_jobs__job_id__blocks__block_id__png_get: {
+        parameters: {
+            query?: {
+                download?: boolean;
+            };
+            header?: never;
+            path: {
+                job_id: string;
+                block_id: string;
             };
             cookie?: never;
         };

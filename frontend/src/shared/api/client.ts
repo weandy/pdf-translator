@@ -200,8 +200,12 @@ export const api = {
   },
   cancelJob: (id: string) => request<Job>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   document: documentRequest,
-  editSegment: (id: string, target: string, signal?: AbortSignal) =>
-    request<SegmentData>(`/api/segments/${id}`, { method: "PATCH", ...json({ target }), signal }),
+  editSegment: (id: string, target: string, signal?: AbortSignal, formulas?: Record<string, string>) =>
+    request<SegmentData>(`/api/segments/${id}`, {
+      method: "PATCH",
+      ...json(formulas ? { target, formulas } : { target }),
+      signal,
+    }),
   /** userTerms：浏览器里最新的用户术语库 */
   retranslate: (
     id: string,
@@ -308,6 +312,8 @@ export type ExportMode = "mono" | "dual";
 export const exportUrl = (jobId: string, mode: ExportMode, side: "left" | "right" = "right") =>
   `/api/jobs/${jobId}/export?mode=${mode}${mode === "dual" ? `&side=${side}` : ""}`;
 export const formulaUrl = (segmentId: string, key: string) => `/api/segments/${segmentId}/formulas/${key}.png`;
+export const blockImageUrl = (jobId: string, blockId: string, download = false) =>
+  `/api/jobs/${jobId}/blocks/${encodeURIComponent(blockId)}.png${download ? "?download=true" : ""}`;
 
 /** 订阅任务进度（SSE）。返回取消订阅函数。 */
 export function subscribeJob(id: string, onJob: (job: Job) => void, onError?: () => void): () => void {

@@ -8,6 +8,7 @@ import { JobPage } from "@/pages/JobPage";
 import type { ReaderView } from "@/features/reader/ReaderView";
 import { api, type DocumentData, type Expansion, type Job, type SegmentData } from "@/shared/api/client";
 
+import { ConfirmProvider } from "@/shared/feedback/ConfirmDialog";
 import { ToastProvider } from "@/shared/feedback/Toast";
 
 const job: Job = {
@@ -47,17 +48,65 @@ vi.mock("@/entities/job/model", () => ({
   }),
   STAGE_LABELS: {},
 }));
-vi.mock("@/entities/settings/model", () => ({ useSettings: () => ({ translationSide: "left" }) }));
+vi.mock("@/entities/settings/model", () => ({
+  useSettings: () => ({ translationSide: "left" }),
+  savePrefs: vi.fn(),
+}));
 vi.mock("@/features/reader/ReaderView", () => ({
-  ReaderView: ({ heading, actions, spot, backgroundUrl, onSelectSegment }: ComponentProps<typeof ReaderView>) => (
-    <div data-spot={spot?.id} data-spot-count={spot?.n} data-pdf={backgroundUrl} data-editable={Boolean(onSelectSegment)}>
+  ReaderView: ({
+    heading,
+    actions,
+    spot,
+    backgroundUrl,
+    selectedSegment,
+    editingOpen,
+    onSelectSegment,
+    onEditSegment,
+  }: ComponentProps<typeof ReaderView>) => (
+    <div
+      data-spot={spot?.id}
+      data-spot-count={spot?.n}
+      data-pdf={backgroundUrl}
+      data-editable={Boolean(onSelectSegment)}
+      data-selected={selectedSegment ?? ""}
+      data-editing={String(Boolean(editingOpen))}
+    >
       {heading}
       <p>阅读器</p>
+      {onSelectSegment && (
+        <button type="button" data-testid="mock-click-first" onClick={() => onSelectSegment("first")}>
+          单击首段
+        </button>
+      )}
+      {onEditSegment && (
+        <button type="button" data-testid="mock-edit-first" onClick={() => onEditSegment("first")}>
+          校对首段
+        </button>
+      )}
+      {onSelectSegment && (
+        <button type="button" data-testid="mock-click-middle" onClick={() => onSelectSegment("middle")}>
+          单击中段
+        </button>
+      )}
       {actions}
     </div>
   ),
 }));
-vi.mock("@/features/job-terms/TermsPanel", () => ({ TermsPanel: () => null }));
+vi.mock("@/features/job-terms/TermsPanel", () => ({
+  TermsPanel: ({ hidden, onEditSegment, onClose }: { hidden?: boolean; onEditSegment?: (id: string) => void; onClose: () => void }) => (
+    <aside data-testid="mock-terms" hidden={hidden}>
+      <span>术语面板</span>
+      {onEditSegment && (
+        <button type="button" onClick={() => onEditSegment("first")}>
+          术语编辑首段
+        </button>
+      )}
+      <button type="button" onClick={onClose}>
+        关闭术语
+      </button>
+    </aside>
+  ),
+}));
 
 function failedDoc(): DocumentData {
   return {
@@ -107,13 +156,15 @@ describe("任务完成后的阅读数据等待", () => {
     await act(async () =>
       root.render(
         <QueryClientProvider client={client}>
-          <ToastProvider>
-            <MemoryRouter initialEntries={["/jobs/synthetic"]}>
-              <Routes>
-                <Route path="/jobs/:id" element={<JobPage />} />
-              </Routes>
-            </MemoryRouter>
-          </ToastProvider>
+          <ConfirmProvider>
+            <ToastProvider>
+              <MemoryRouter initialEntries={["/jobs/synthetic"]}>
+                <Routes>
+                  <Route path="/jobs/:id" element={<JobPage />} />
+                </Routes>
+              </MemoryRouter>
+            </ToastProvider>
+          </ConfirmProvider>
         </QueryClientProvider>,
       ),
     );
@@ -215,7 +266,7 @@ describe("任务完成后的阅读数据等待", () => {
     vi.spyOn(api, "document").mockResolvedValue(doc);
     await render();
     expect(host.textContent).toContain("阅读器");
-    expect(host.textContent).toContain("已翻译 0/0 段");
+    expect(host.textContent).not.toContain("已翻译 0/0 段");
     expect(host.textContent).toContain("下载 PDF");
     expect(host.textContent).not.toContain("开始阅读");
     expect(host.querySelector(".completion-bar")).toBeNull();
@@ -269,6 +320,64 @@ describe("任务完成后的阅读数据等待", () => {
     await act(async () => vi.advanceTimersByTimeAsync(1));
     expect(host.textContent).not.toContain("未完成翻译");
     expect(host.textContent).toContain("待处理段落已全部处理");
-    expect(host.textContent).toContain("已翻译 1/1 段");
+    expect(host.textContent).not.toContain("已翻译 1/1 段");
+  });
+
+  it("纯阅读态单击段落仅聚焦不弹编辑抽屉，进入精校后单击切段，未保存修改离开前弹确认拦截", async () => {
+    await renderFailed();
+    // 纯阅读态单击首段：高亮聚焦但不打开右侧编辑抽屉
+    await click("单击首段");
+    expect(host.querySelector("[data-selected]")?.getAttribute("data-selected")).toBe("first");
+    expect(host.querySelector("[data-editing]")?.getAttribute("data-editing")).toBe("false");
+    expect(host.querySelector('[aria-label="段落编辑"]')).toBeNull();
+
+    // 显式触发校对（双击或点浮动胶囊）打开编辑抽屉
+    await click("校对首段");
+    expect(host.querySelector("[data-editing]")?.getAttribute("data-editing")).toBe("true");
+    expect(host.querySelector('[aria-label="原文"]')?.textContent).toBe("Synthetic first");
+
+    // 精校态下无未保存修改时，单击中段直接切换
+    await click("单击中段");
+    expect(host.querySelector('[aria-label="原文"]')?.textContent).toBe("Synthetic middle");
+
+    // 输入未保存草稿后，尝试关闭抽屉会弹出确认框拦截；点取消留在原段，点放弃修改才关闭
+    const textarea = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="译文"]')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(textarea, "未保存的草稿");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(host.textContent).toContain("未保存");
+
+    await click("关闭");
+    expect(document.querySelector(".confirm-dialog")).not.toBeNull();
+    expect(document.body.textContent).toContain("放弃未保存的修改");
+    const cancelBtn = [...document.querySelectorAll(".confirm-actions button")].find((b) => b.textContent === "继续编辑") as HTMLButtonElement;
+    await act(async () => cancelBtn.click());
+    expect(host.querySelector('[aria-label="段落编辑"]')).not.toBeNull();
+
+    await click("关闭");
+    const discardBtn = [...document.querySelectorAll(".confirm-actions button")].find((b) => b.textContent === "放弃修改") as HTMLButtonElement;
+    await act(async () => discardBtn.click());
+    expect(host.querySelector('[aria-label="段落编辑"]')).toBeNull();
+  });
+
+  it("从本文术语进入段落编辑时保留术语面板挂载，返回后无缝切回术语上下文", async () => {
+    await renderFailed();
+    await click("术语");
+    const termsAside = host.querySelector('[data-testid="mock-terms"]') as HTMLElement;
+    expect(termsAside).not.toBeNull();
+    expect(termsAside.hidden).toBe(false);
+
+    await click("术语编辑首段");
+    expect(host.querySelector('[aria-label="段落编辑"]')).not.toBeNull();
+    expect(host.textContent).toContain("返回「本文术语」");
+    // 术语面板 DOM 保持挂载但隐藏，筛选和展开状态不丢失
+    expect(host.querySelector('[data-testid="mock-terms"]')).toBe(termsAside);
+    expect(termsAside.hidden).toBe(true);
+
+    await click("返回「本文术语」");
+    expect(host.querySelector('[aria-label="段落编辑"]')).toBeNull();
+    expect(termsAside.hidden).toBe(false);
   });
 });

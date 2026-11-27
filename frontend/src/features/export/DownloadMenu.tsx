@@ -47,7 +47,7 @@ function JobDownloadMenu({ jobId, onLocatePage }: Props) {
       <button
         ref={trigger}
         type="button"
-        className="primary"
+        className="primary toolbar-download-btn"
         disabled={busy}
         aria-expanded={open}
         aria-haspopup="menu"
@@ -55,19 +55,26 @@ function JobDownloadMenu({ jobId, onLocatePage }: Props) {
         aria-describedby={statusId}
         onClick={() => setOpen((o) => !o)}
       >
-        下载 PDF
+        <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+        <span>下载 PDF</span>
       </button>
-      <ExportDownloadStatus
-        id={statusId}
-        state={state}
-        message={message}
-        pages={pages}
-        renderOverflowPage={onLocatePage && ((page) => (
-          <button type="button" className="link" aria-label={`定位到第 ${page} 页`} onClick={() => onLocatePage(page)}>
-            {page}
-          </button>
-        ))}
-      />
+      <div className="download-status-anchor">
+        <ExportDownloadStatus
+          id={statusId}
+          state={state}
+          message={message}
+          pages={pages}
+          renderOverflowPage={onLocatePage && ((page) => (
+            <button type="button" className="link" aria-label={`定位到第 ${page} 页`} onClick={() => onLocatePage(page)}>
+              {page}
+            </button>
+          ))}
+        />
+      </div>
       {(open || busy) && createPortal(
         <div ref={menu} className="download-menu" role={open ? "menu" : undefined} hidden={!open}
           style={{ position: "fixed" }}>

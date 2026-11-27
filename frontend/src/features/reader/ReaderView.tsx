@@ -10,6 +10,7 @@ import "./fonts.css";
 
 import { blockTexts, headingAlign, layoutBox, roleOf, type BlockText } from "@/entities/document/model";
 import {
+  blockImageUrl,
   fileUrl,
   formulaUrl,
   type BlockData,
@@ -19,8 +20,10 @@ import {
   type PageData,
 } from "@/shared/api/client";
 import { readJSON, writeJSON } from "@/shared/storage/local";
+import { hasOpenModal } from "@/shared/feedback/ConfirmDialog";
+import { useToast } from "@/shared/feedback/Toast";
 import { fitElement } from "@/shared/fit/fit";
-import { InlineMathText, type InlineLink } from "@/shared/math/inline";
+import { InlineMathText, renderMathml, type InlineLink } from "@/shared/math/inline";
 import { countCompact } from "@/shared/text/links";
 import { splitCaptionNo } from "@/shared/text/script";
 import { dropFakeScripts, keyActivate, shortLabel, spaceCjkLatin, wantsIndent } from "@/shared/text/typeset";
@@ -59,6 +62,12 @@ interface Props {
   locatePage?: LocatePage | null;
   selectedSegment: string | null;
   onSelectSegment?: (id: string) => void;
+  /** 右侧段落编辑抽屉是否正处于打开状态（打开时不再显示段首浮动「校对译文」胶囊） */
+  editingOpen?: boolean;
+  /** 双击段落或点击浮动「校对译文」胶囊时触发，正式打开编辑抽屉 */
+  onEditSegment?: (id: string) => void;
+  /** 点击页面空白处清除轻聚焦态 */
+  onClearSelection?: () => void;
   backgroundUrl?: string;
   /** 工具栏左侧（标题等）与右侧（下载等），由页面组合 */
   heading?: ReactNode;
@@ -71,6 +80,8 @@ interface Props {
   spot?: { id: string; n: number; term?: { source: string; target: string } } | null;
   /** 淡淡标出的段落（术语面板里当前术语出现的段落） */
   marked?: ReadonlySet<string>;
+  /** 右侧编辑/术语/记录抽屉是否打开，中等屏宽时自动避让左侧目录 */
+  rightPanelOpen?: boolean;
 }
 
 const POSITIONS = "pdftr.pos.v1"; // 每篇文档上次读到的页（浏览器本地）
@@ -81,6 +92,7 @@ const DRAG_THRESHOLD_PX = 5;
 interface JumpTarget {
   page: number;
   top: number;
+  bbox?: BlockData["bbox"];
 }
 
 function savedPage(jobId: string): number {
@@ -110,6 +122,9 @@ export function ReaderView({
   locatePage,
   selectedSegment,
   onSelectSegment,
+  editingOpen = false,
+  onEditSegment,
+  onClearSelection,
   backgroundUrl,
   heading,
   actions,
@@ -117,6 +132,7 @@ export function ReaderView({
   revealKey = 0,
   spot = null,
   marked,
+  rightPanelOpen = false,
 }: Props) {
   const firstPageIndex = doc.pages[0]?.index ?? 0;
   const [initialPage] = useState(() => {
@@ -130,6 +146,8 @@ export function ReaderView({
   const mode = preferredMode(prefs, slot);
   const zoom = prefs.zoom ?? AUTO_ZOOM;
   const [zoomOpen, setZoomOpen] = useState(false);
+  const [zoomHud, setZoomHud] = useState<string | null>(null);
+  const zoomHudTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const zoomTrigger = useRef<HTMLButtonElement>(null);
   const closeZoom = useCallback(() => setZoomOpen(false), []);
   useEffect(() => {
@@ -157,6 +175,11 @@ export function ReaderView({
   const located = useRef<string | null>(null);
   const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null);
   const [showOutline, setShowOutline] = useState(() => window.innerWidth >= 1280 && doc.outline.length > 0);
+  const [prevRightPanelOpen, setPrevRightPanelOpen] = useState(rightPanelOpen);
+  if (rightPanelOpen !== prevRightPanelOpen) {
+    setPrevRightPanelOpen(rightPanelOpen);
+    if (rightPanelOpen && window.innerWidth < 1440) setShowOutline(false);
+  }
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -187,15 +210,25 @@ export function ReaderView({
   const fontsVersion = useFontsVersion();
 
   // 按文档预构建结构索引，避免交互和滚动时反复全量遍历
-  const { blockById, blocksByPage, pagesBySegment, firstPageBySegment } = useMemo(() => {
+  const { blockById, blocksByPage, pagesBySegment, firstPageBySegment, formulasByPage, mediaByPage } = useMemo(() => {
     const bById = new Map<string, BlockData>();
     const bByPage = new Map<number, BlockData[]>();
     const pBySeg = new Map<string, Set<number>>();
     const firstBySeg = new Map<string, number>();
+    const fByPage = new Map<number, Array<{ id: string; latex: string; bbox: BlockData["bbox"] }>>();
+    const mByPage = new Map<number, BlockData[]>();
     for (const page of doc.pages) {
       const pageBlocks: BlockData[] = [];
+      const pageMedia: BlockData[] = [];
       for (const b of page.blocks) {
         bById.set(b.id, b);
+        if (
+          (b.type === "figure" || b.type === "table") &&
+          b.bbox.x1 - b.bbox.x0 >= 24 &&
+          b.bbox.y1 - b.bbox.y0 >= 24
+        ) {
+          pageMedia.push(b);
+        }
         const bt = texts.get(b.id);
         if (bt) {
           pageBlocks.push(bt.renderBox ? { ...b, bbox: bt.renderBox } : b);
@@ -209,12 +242,26 @@ export function ReaderView({
         }
       }
       bByPage.set(page.index, pageBlocks);
+      if (pageMedia.length > 0) mByPage.set(page.index, pageMedia);
     }
     for (const seg of doc.segments) {
       const firstBlock = bById.get(seg.block_ids[0] ?? "");
       if (firstBlock) firstBySeg.set(seg.id, firstBlock.page);
+      for (const [key, f] of Object.entries(seg.formulas)) {
+        if (f.page === null || !f.bbox || !f.latex) continue;
+        const list = fByPage.get(f.page) ?? [];
+        list.push({ id: `${seg.id}:${key}`, latex: f.latex, bbox: f.bbox });
+        fByPage.set(f.page, list);
+      }
     }
-    return { blockById: bById, blocksByPage: bByPage, pagesBySegment: pBySeg, firstPageBySegment: firstBySeg };
+    return {
+      blockById: bById,
+      blocksByPage: bByPage,
+      pagesBySegment: pBySeg,
+      firstPageBySegment: firstBySeg,
+      formulasByPage: fByPage,
+      mediaByPage: mByPage,
+    };
   }, [doc, texts]);
 
   const maxPageWidth = useMemo(
@@ -237,6 +284,7 @@ export function ReaderView({
   const visibleRangeRef = useRef<[number, number]>([visibleStart, visibleEnd]);
   const layoutRef = useRef(layout);
   const scaleRef = useRef(scale);
+  const fitWidthScaleRef = useRef(fitWidthScale);
   const viewportHeightRef = useRef(viewportHeight);
   const prevScaleRef = useRef<number | null>(null);
 
@@ -244,8 +292,9 @@ export function ReaderView({
     visibleRangeRef.current = [visibleStart, visibleEnd];
     layoutRef.current = layout;
     scaleRef.current = scale;
+    fitWidthScaleRef.current = fitWidthScale;
     viewportHeightRef.current = viewportHeight;
-  }, [visibleStart, visibleEnd, layout, scale, viewportHeight]);
+  }, [visibleStart, visibleEnd, layout, scale, fitWidthScale, viewportHeight]);
 
   // 缩放或切换显示方式导致 scale 变化时，在绘制前把真实 scrollTop 同步回锚点对应的文档位置
   useLayoutEffect(() => {
@@ -305,6 +354,7 @@ export function ReaderView({
       clearTimeout(pinTimer.current);
       clearTimeout(saveTimer.current);
       clearTimeout(searchTimer.current);
+      clearTimeout(zoomHudTimer.current);
       if (frame.current) cancelAnimationFrame(frame.current);
       if (syncFrame.current) cancelAnimationFrame(syncFrame.current);
     };
@@ -440,9 +490,9 @@ export function ReaderView({
   }, [locateIndex, locateSequence, highlightLocation, layout, goTo]);
 
   const jump = useCallback(
-    (page: number, top: number) => {
+    (page: number, top: number, bbox?: BlockData["bbox"]) => {
       goTo(page, top);
-      setJumpTarget({ page, top });
+      setJumpTarget({ page, top, bbox });
       clearTimeout(jumpTimer.current);
       jumpTimer.current = setTimeout(() => setJumpTarget(null), 2400);
     },
@@ -455,7 +505,7 @@ export function ReaderView({
       const block = blockById.get(segment?.block_ids[0] ?? "");
       if (!block) return;
       setSearchIndex(index);
-      jump(block.page, block.bbox.y0);
+      jump(block.page, block.bbox.y0, block.bbox);
       setFlash(hit.segmentId);
       clearTimeout(flashTimer.current);
       flashTimer.current = setTimeout(() => setFlash(null), 2400);
@@ -587,7 +637,9 @@ export function ReaderView({
   const [picked, setPicked] = useState<number | null>(null); // 刚在目录里点的一项（同一页有好几节时高亮它）
   const goOutline = (item: OutlineData) => {
     setPicked(doc.outline.indexOf(item));
-    jump(item.page, item.top);
+    const seg = item.segment_id ? doc.segments.find((s) => s.id === item.segment_id) : undefined;
+    const block = seg ? blockById.get(seg.block_ids[0] ?? "") : undefined;
+    jump(item.page, item.top, block?.bbox);
     clearTimeout(flashTimer.current);
     setFlash(item.segment_id ?? null);
     flashTimer.current = setTimeout(() => setFlash(null), 2400);
@@ -623,9 +675,107 @@ export function ReaderView({
     setPrefs(writeReaderPrefs({ modeBySlot: { [slot]: nextMode } }));
   };
 
-  const changeZoom = (nextZoom: ZoomSpec) => {
+  const changeZoom = useCallback((nextZoom: ZoomSpec) => {
     setWindowAnchor(anchorRef.current);
     setPrefs(writeReaderPrefs({ zoom: nextZoom }));
+  }, []);
+
+  // 拦截 Ctrl/Cmd + 滚轮（含触控板双指捏合）以及 Ctrl/Cmd + +/-/0，只缩放 PDF 纸面，避免触发浏览器整页缩放冲突
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const showZoomHud = (nextScale: number) => {
+      setZoomHud(`${Math.round(nextScale * 100)}%`);
+      clearTimeout(zoomHudTimer.current);
+      zoomHudTimer.current = setTimeout(() => setZoomHud(null), 900);
+    };
+    const stepZoom = (delta: number) => {
+      const minScale = Math.min(MIN_MANUAL_ZOOM, fitWidthScaleRef.current);
+      const next = Math.min(MAX_MANUAL_ZOOM, Math.max(minScale, Math.round((scaleRef.current + delta) * 100) / 100));
+      changeZoom({ kind: "fixed", value: next });
+      showZoomHud(next);
+    };
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.deltaY === 0) return;
+      e.preventDefault();
+      // 触控板捏合通常产生小幅连续 deltaY，鼠标滚轮每格约 ±100；按幅度平滑步进
+      const delta = Math.abs(e.deltaY) < 25 ? -e.deltaY * 0.008 : e.deltaY < 0 ? 0.12 : -0.12;
+      stepZoom(delta);
+    };
+    const onZoomKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || !(e.ctrlKey || e.metaKey) || e.altKey || hasOpenModal()) return;
+      const active = document.activeElement;
+      if (active?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+      if (e.key === "=" || e.key === "+") {
+        e.preventDefault();
+        stepZoom(0.15);
+      } else if (e.key === "-") {
+        e.preventDefault();
+        stepZoom(-0.15);
+      } else if (e.key === "0") {
+        e.preventDefault();
+        changeZoom(AUTO_ZOOM);
+        showZoomHud(fitWidthScaleRef.current);
+      }
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    document.addEventListener("keydown", onZoomKey);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      document.removeEventListener("keydown", onZoomKey);
+    };
+  }, [changeZoom]);
+
+  // 双格式剪贴板复制：text/plain 写标准 LaTeX（$...$ / $$...$$ 适配 Markdown/Obsidian/Notion/Overleaf），
+  // text/html 同时写 W3C 标准 MathML（粘贴到 Microsoft Word / WPS 自动变为可编辑原生公式）
+  const onPagesCopy = (e: React.ClipboardEvent<HTMLDivElement>) => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    const plainFragment = range.cloneContents();
+    const htmlFragment = range.cloneContents();
+    const mathNodes = plainFragment.querySelectorAll<HTMLElement>("[data-latex]");
+    // 选区完全落在单个公式内部时，cloneContents 不含外层带 data-latex 的祖先，需向上查找
+    const ancestorEl =
+      range.commonAncestorContainer instanceof Element
+        ? range.commonAncestorContainer
+        : range.commonAncestorContainer.parentElement;
+    const enclosingMath = ancestorEl?.closest<HTMLElement>("[data-latex]");
+    if (mathNodes.length === 0 && !enclosingMath) return;
+    e.preventDefault();
+    const wrapTex = (latex: string, display: boolean) => (display ? `$$${latex}$$` : `$${latex}$`);
+    if (enclosingMath && mathNodes.length === 0) {
+      const latex = enclosingMath.dataset.latex ?? "";
+      const display = enclosingMath.dataset.display === "true";
+      e.clipboardData.setData("text/plain", latex ? wrapTex(latex, display) : selection.toString());
+      const mathml = latex ? renderMathml(latex, display) : null;
+      if (mathml) e.clipboardData.setData("text/html", mathml);
+      return;
+    }
+    mathNodes.forEach((node) => {
+      const latex = node.dataset.latex ?? "";
+      const display = node.dataset.display === "true";
+      node.replaceWith(document.createTextNode(latex ? wrapTex(latex, display) : ""));
+    });
+    const plain = plainFragment.textContent ?? selection.toString();
+    e.clipboardData.setData("text/plain", plain);
+
+    const htmlMathNodes = htmlFragment.querySelectorAll<HTMLElement>("[data-latex]");
+    htmlMathNodes.forEach((node) => {
+      const latex = node.dataset.latex ?? "";
+      const display = node.dataset.display === "true";
+      const mathml = latex ? renderMathml(latex, display) : null;
+      if (mathml) {
+        const wrapper = document.createElement("span");
+        wrapper.innerHTML = mathml;
+        node.replaceWith(wrapper.firstChild ?? document.createTextNode(wrapTex(latex, display)));
+      } else {
+        node.replaceWith(document.createTextNode(latex ? wrapTex(latex, display) : ""));
+      }
+    });
+    const holder = document.createElement("div");
+    holder.appendChild(htmlFragment);
+    if (holder.innerHTML) e.clipboardData.setData("text/html", holder.innerHTML);
   };
 
   const missingPages = doc.pages.filter((page) => page.missing_layout).map((page) => page.index + 1);
@@ -660,8 +810,11 @@ export function ReaderView({
               className="quiet"
               onClick={() => changeZoom({ kind: "fixed", value: Math.max(Math.min(MIN_MANUAL_ZOOM, fitWidthScale), scale - 0.15) })}
               aria-label="缩小"
+              title="缩小（Ctrl + 滚轮 / Ctrl + -）"
             >
-              −
+              <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
             </button>
             <ZoomMenu zoom={zoom} scale={scale} open={zoomOpen} trigger={zoomTrigger}
               onOpen={() => setZoomOpen(true)} onClose={closeZoom} onChange={changeZoom} />
@@ -670,12 +823,15 @@ export function ReaderView({
               className="quiet"
               onClick={() => changeZoom({ kind: "fixed", value: Math.min(MAX_MANUAL_ZOOM, scale + 0.15) })}
               aria-label="放大"
+              title="放大（Ctrl + 滚轮 / Ctrl + +）"
             >
-              +
+              <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
             </button>
           </div>
           <label className="page-jump">
-            第
             <input
               className="num"
               inputMode="numeric"
@@ -693,106 +849,40 @@ export function ReaderView({
                 e.currentTarget.blur();
               }}
             />
-            / {doc.pages.length} 页
+            <span>/ {doc.pages.length}</span>
           </label>
+          <span className="toolbar-sep" aria-hidden="true" />
           {doc.outline.length > 0 && (
             <button
               type="button"
-              className={showOutline ? "quiet on" : "quiet"}
+              className={showOutline ? "quiet toolbar-btn on" : "quiet toolbar-btn"}
               aria-pressed={showOutline}
               onClick={() => setShowOutline((v) => !v)}
             >
-              目录
+              <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <line x1="4" y1="6" x2="20" y2="6" />
+                <line x1="4" y1="12" x2="14" y2="12" />
+                <line x1="4" y1="18" x2="18" y2="18" />
+              </svg>
+              <span>目录</span>
             </button>
           )}
           <button
             type="button"
-            className={searchOpen ? "quiet on" : "quiet"}
+            className={searchOpen ? "quiet toolbar-btn on" : "quiet toolbar-btn"}
             aria-pressed={searchOpen}
             onClick={(e) => searchOpen ? searchShortcuts.hide() : searchShortcuts.show(e.currentTarget)}
             title="搜索已索引段落的原文和译文"
           >
-            搜索
+            <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            <span>搜索</span>
           </button>
           {actions}
         </div>
       </div>
-      {searchOpen && (
-        <div className="reader-search" role="search" aria-label="搜索已索引段落">
-          <label className="reader-search-input">
-            <span>段落搜索</span>
-            <input
-              ref={searchInput}
-              type="search"
-              value={searchQuery}
-              placeholder="搜索已索引段落的原文或译文（Ctrl+F / ⌘F）"
-              onChange={(e) => onSearchChange(e.target.value)}
-              onKeyDown={(e) => {
-                if (isImeComposing(e) || e.key !== "Enter") return;
-                e.preventDefault();
-                if (debouncedQuery !== searchQuery) {
-                  clearTimeout(searchTimer.current);
-                  setDebouncedQuery(searchQuery);
-                  const immediate = querySearchIndex(searchIndexData, searchQuery);
-                  moveSearch(e.shiftKey ? -1 : 1, immediate);
-                } else {
-                  moveSearch(e.shiftKey ? -1 : 1);
-                }
-              }}
-              aria-label="搜索原文或译文"
-            />
-          </label>
-          <span className="reader-search-count" aria-live="polite">
-            {debouncedQuery.trim()
-              ? searchResults.length
-                ? `${activeSearchIndex + 1} / ${searchResults.length}`
-                : "没有结果"
-              : searchQuery.trim()
-                ? "搜索中…"
-                : "输入关键词"}
-          </span>
-          <button
-            type="button"
-            className="quiet"
-            onClick={() => moveSearch(-1)}
-            disabled={!searchResults.length}
-            aria-label="上一个结果"
-          >
-            ↑
-          </button>
-          <button
-            type="button"
-            className="quiet"
-            onClick={() => moveSearch(1)}
-            disabled={!searchResults.length}
-            aria-label="下一个结果"
-          >
-            ↓
-          </button>
-          <button type="button" className="quiet" onClick={searchShortcuts.hide}>
-            关闭
-          </button>
-          {(doc.job.options?.pages != null || missingPages.length > 0 || !doc.job.options?.include_references) && (
-            <p className="reader-search-scope hint">仅搜索当前已切分的段落（未翻译页、未勾选的参考文献与纯图不含在内）</p>
-          )}
-          {searchResults.length > 0 && (
-            <ol className="reader-search-results">
-              {searchResults.slice(0, 50).map((hit, index) => (
-                <li key={hit.segmentId}>
-                  <button
-                    type="button"
-                    className={index === activeSearchIndex ? "search-result on" : "search-result"}
-                    onClick={() => jumpSearchHit(hit, index)}
-                  >
-                    <span>第 {(layout.byPageIndex.get(hit.page)?.order ?? hit.page) + 1} 页</span>
-                    <strong>{shortLabel(hit.target || hit.source, 90)}</strong>
-                  </button>
-                </li>
-              ))}
-            </ol>
-          )}
-        </div>
-      )}
       {missingPages.length > 0 && (
         <p className="notice" role="status">
           第 {missingPages.join("、")} 页未返回版面解析结果，已保留原文。
@@ -808,7 +898,87 @@ export function ReaderView({
             onClose={() => setShowOutline(false)}
           />
         )}
-        <div className="pages" ref={scroller} tabIndex={-1} onScroll={onScroll}>
+        <div className="pages-stage">
+          {searchOpen && (
+            <div className="reader-search" role="search" aria-label="搜索已索引段落">
+              <label className="reader-search-input">
+                <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+                <input
+                  ref={searchInput}
+                  type="search"
+                  value={searchQuery}
+                  placeholder="搜索原文或译文（Ctrl+F / ⌘F）…"
+                  onChange={(e) => onSearchChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (isImeComposing(e) || e.key !== "Enter") return;
+                    e.preventDefault();
+                    if (debouncedQuery !== searchQuery) {
+                      clearTimeout(searchTimer.current);
+                      setDebouncedQuery(searchQuery);
+                      const immediate = querySearchIndex(searchIndexData, searchQuery);
+                      moveSearch(e.shiftKey ? -1 : 1, immediate);
+                    } else {
+                      moveSearch(e.shiftKey ? -1 : 1);
+                    }
+                  }}
+                  aria-label="搜索原文或译文"
+                />
+              </label>
+              <span className="reader-search-count num" aria-live="polite">
+                {debouncedQuery.trim()
+                  ? searchResults.length
+                    ? `${activeSearchIndex + 1} / ${searchResults.length}`
+                    : "0 条"
+                  : searchQuery.trim()
+                    ? "…"
+                    : ""}
+              </span>
+              <button
+                type="button"
+                className="quiet"
+                onClick={() => moveSearch(-1)}
+                disabled={!searchResults.length}
+                aria-label="上一个结果"
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                className="quiet"
+                onClick={() => moveSearch(1)}
+                disabled={!searchResults.length}
+                aria-label="下一个结果"
+              >
+                ↓
+              </button>
+              <button type="button" className="quiet" onClick={searchShortcuts.hide} aria-label="关闭搜索">
+                关闭
+              </button>
+              {(doc.job.options?.pages != null || missingPages.length > 0 || !doc.job.options?.include_references) && (
+                <p className="reader-search-scope hint">仅搜索已切分段落（未译页与纯图不含在内）</p>
+              )}
+              {searchResults.length > 0 && (
+                <ol className="reader-search-results">
+                  {searchResults.slice(0, 50).map((hit, index) => (
+                    <li key={hit.segmentId}>
+                      <button
+                        type="button"
+                        className={index === activeSearchIndex ? "search-result on" : "search-result"}
+                        onClick={() => jumpSearchHit(hit, index)}
+                      >
+                        <span>第 {(layout.byPageIndex.get(hit.page)?.order ?? hit.page) + 1} 页</span>
+                        <strong>{shortLabel(hit.target || hit.source, 90)}</strong>
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          )}
+          <div className="pages" ref={scroller} tabIndex={-1} onScroll={onScroll} onCopy={onPagesCopy}>
           {(original.error || background.error) && (
             <p className="error">PDF 加载失败：{original.error ?? background.error}</p>
           )}
@@ -848,8 +1018,14 @@ export function ReaderView({
                   currentSearchId={pageCurrentSearch}
                   onHover={setHovered}
                   onSelect={onSelectSegment}
+                  onEdit={onEditSegment}
+                  editingOpen={editingOpen}
+                  onClearSelection={onClearSelection}
                   pageLinks={byPage.get(page.index)}
                   blockLinks={byBlock}
+                  pageFormulas={formulasByPage.get(page.index)}
+                  mediaBlocks={mediaByPage.get(page.index)}
+                  jobId={jobId}
                   jumpTarget={jumpTarget?.page === page.index ? jumpTarget : null}
                   term={spot?.term}
                   onJump={jump}
@@ -857,6 +1033,12 @@ export function ReaderView({
               );
             })}
           </div>
+        </div>
+        {zoomHud && (
+          <div className="zoom-hud num" role="status" aria-live="polite">
+            {zoomHud}
+          </div>
+        )}
         </div>
       </div>
     </div>
@@ -888,8 +1070,14 @@ interface RowProps {
   currentSearchId: string | null;
   onHover: (id: string | null) => void;
   onSelect?: (id: string) => void;
+  onEdit?: (id: string) => void;
+  editingOpen: boolean;
+  onClearSelection?: () => void;
   pageLinks: LinkData[] | undefined;
   blockLinks: Map<string, LinkData[]>;
+  pageFormulas: ReadonlyArray<{ id: string; latex: string; bbox: BlockData["bbox"] }> | undefined;
+  mediaBlocks: readonly BlockData[] | undefined;
+  jobId: string;
   jumpTarget: JumpTarget | null;
   term: { source: string; target: string } | undefined;
   onJump: (page: number, top: number) => void;
@@ -944,11 +1132,145 @@ function LinkLayer({
   );
 }
 
-function JumpMarker({ top, scale }: { top: number; scale: number }) {
+/** MinerU 识别的论文插图/表格悬浮操作层：鼠标移入时图表外侧（优先上方，贴顶时翻到下方）浮现「复制图片 / 保存」胶囊，不遮挡图内内容。 */
+function FigureLayer({
+  jobId,
+  blocks,
+  scale,
+  pageHeight,
+}: {
+  jobId: string;
+  blocks: readonly BlockData[];
+  scale: number;
+  pageHeight: number;
+}) {
+  const toast = useToast();
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const copyTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(copyTimer.current), []);
+
+  const copyFigure = async (block: BlockData) => {
+    if (busyId) return;
+    setBusyId(block.id);
+    const label = block.type === "table" ? "表格" : "图片";
+    try {
+      const res = await fetch(blockImageUrl(jobId, block.id));
+      if (!res.ok) throw new Error(`获取${label}失败（${res.status}）`);
+      const blob = await res.blob();
+      const ClipboardItemCtor = (window as unknown as { ClipboardItem?: typeof ClipboardItem }).ClipboardItem;
+      if (navigator.clipboard?.write && ClipboardItemCtor) {
+        await navigator.clipboard.write([new ClipboardItemCtor({ "image/png": blob })]);
+        setCopiedId(block.id);
+        clearTimeout(copyTimer.current);
+        copyTimer.current = setTimeout(() => setCopiedId((cur) => (cur === block.id ? null : cur)), 1800);
+        toast.success(`已复制高清${label}，可直接粘贴到 PPT、Word 或笔记`);
+      } else {
+        const link = document.createElement("a");
+        link.href = blockImageUrl(jobId, block.id, true);
+        link.download = `${block.id}.png`;
+        link.click();
+        toast.info(`当前浏览器不支持直接复制图片，已为你下载高清 PNG`);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : `复制${label}失败，请尝试点击保存`);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="figure-layer" aria-label="论文图表快捷操作">
+      {blocks.map((b) => {
+        const isBusy = busyId === b.id;
+        const isCopied = copiedId === b.id;
+        const kindLabel = b.type === "table" ? "表格" : "图片";
+        const topPx = b.bbox.y0 * scale;
+        const bottomSpacePx = (pageHeight - b.bbox.y1) * scale;
+        const rightPx = b.bbox.x1 * scale;
+        const placement: "top" | "bottom" | "inside" =
+          topPx >= 44 ? "top" : bottomSpacePx >= 44 ? "bottom" : "inside";
+        const align: "right" | "left" = rightPx < 176 ? "left" : "right";
+        return (
+          <div
+            key={b.id}
+            className={`figure-box${isBusy ? " busy" : ""}${isCopied ? " copied" : ""}`}
+            style={{
+              left: b.bbox.x0 * scale,
+              top: b.bbox.y0 * scale,
+              width: (b.bbox.x1 - b.bbox.x0) * scale,
+              height: (b.bbox.y1 - b.bbox.y0) * scale,
+            }}
+          >
+            <div
+              className="figure-actions"
+              data-placement={placement}
+              data-align={align}
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+            >
+              <button
+                type="button"
+                className={isCopied ? "figure-btn done" : "figure-btn"}
+                disabled={isBusy}
+                onClick={() => void copyFigure(b)}
+                aria-label={`复制${kindLabel}`}
+                title={`复制高清${kindLabel}（PNG）到剪贴板`}
+              >
+                <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  {isCopied ? (
+                    <polyline points="20 6 9 17 4 12" />
+                  ) : (
+                    <>
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </>
+                  )}
+                </svg>
+                <span>{isBusy ? "裁剪中…" : isCopied ? "已复制" : `复制${kindLabel}`}</span>
+              </button>
+              <a
+                className="figure-btn"
+                href={blockImageUrl(jobId, b.id, true)}
+                download={`${b.id}.png`}
+                aria-label={`保存${kindLabel} PNG`}
+                title={`保存高清${kindLabel}为 PNG`}
+              >
+                <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                <span>保存</span>
+              </a>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function JumpMarker({ target, scale, pageWidth }: { target: JumpTarget; scale: number; pageWidth: number }) {
+  const padY = 4;
+  if (target.bbox) {
+    const padX = 6;
+    const left = Math.max(4, target.bbox.x0 * scale - padX);
+    const width = Math.min(pageWidth * scale - left - 4, Math.max(24, (target.bbox.x1 - target.bbox.x0) * scale + padX * 2));
+    const top = Math.max(2, target.bbox.y0 * scale - padY);
+    const height = Math.max(18, (target.bbox.y1 - target.bbox.y0) * scale + padY * 2);
+    return <div className="page-jump-flash" style={{ left, top, width, height }} aria-hidden="true" />;
+  }
+  const marginX = Math.max(16, pageWidth * scale * 0.08);
   return (
     <div
       className="page-jump-flash"
-      style={{ top: top * scale, height: Math.max(28, 36 * scale) }}
+      style={{
+        left: marginX,
+        right: marginX,
+        top: Math.max(2, target.top * scale - padY),
+        height: Math.max(20, 22 * scale) + padY,
+      }}
       aria-hidden="true"
     />
   );
@@ -998,8 +1320,14 @@ const PageRow = memo(function PageRow({
   currentSearchId,
   onHover,
   onSelect,
+  onEdit,
+  editingOpen,
+  onClearSelection,
   pageLinks,
   blockLinks,
+  pageFormulas,
+  mediaBlocks,
+  jobId,
   jumpTarget,
   highlighted,
   term,
@@ -1048,12 +1376,64 @@ const PageRow = memo(function PageRow({
   const onOriginalClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const down = pointerDownRef.current;
     pointerDownRef.current = null;
-    // 拖拽划词刚松开或存在非空选区时，不触发段落编辑选中
+    // 拖拽划词刚松开或存在非空选区时，不触发段落聚焦/选中
     if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > DRAG_THRESHOLD_PX) return;
     if (window.getSelection()?.toString()) return;
     const segId = segmentAtPointer(e);
     if (segId) onSelect?.(segId);
+    else onClearSelection?.();
   };
+
+  const onOriginalDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const segId = segmentAtPointer(e);
+    if (segId) onEdit?.(segId);
+  };
+
+  // 纯阅读态（编辑抽屉未打开）下，为当前聚焦段落计算段首右上角的浮动「校对译文」胶囊位置
+  const quickAnchorBlock =
+    selected && !editingOpen && onEdit
+      ? blocks.find((b) => texts.get(b.id)?.segment.id === selected && texts.get(b.id)?.first) ??
+        blocks.find((b) => texts.get(b.id)?.segment.id === selected) ??
+        null
+      : null;
+  const quickAnchorRect = quickAnchorBlock
+    ? (() => {
+        const t = texts.get(quickAnchorBlock.id);
+        const renderBlock = t?.renderBox ? { ...quickAnchorBlock, bbox: t.renderBox } : quickAnchorBlock;
+        return t ? layoutBox(renderBlock, page.blocks, page.width, t.sourceText) : quickAnchorBlock.bbox;
+      })()
+    : null;
+  const quickBar =
+    selected && quickAnchorRect && onEdit ? (
+      <div
+        className="seg-quick-bar"
+        style={{
+          left: Math.min(Math.max(8, quickAnchorRect.x1 * scale - 92), Math.max(8, page.width * scale - 102)),
+          top: Math.max(6, quickAnchorRect.y0 * scale - 32),
+        }}
+        onClick={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          className="seg-quick-btn"
+          onClick={() => onEdit(selected)}
+          title="打开段落编辑抽屉（也可直接双击段落）"
+        >
+          <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+          </svg>
+          <span>校对译文</span>
+        </button>
+      </div>
+    ) : null;
+
+  const isDisplayFormula = (bbox: BlockData["bbox"]) =>
+    !blocks.some(
+      (b) => bbox.y0 >= b.bbox.y0 - 4 && bbox.y1 <= b.bbox.y1 + 4 && bbox.x0 >= b.bbox.x0 - 4 && bbox.x1 <= b.bbox.x1 + 4,
+    );
+  const displayFormulas = pageFormulas?.filter((f) => isDisplayFormula(f.bbox));
 
   return (
     <div
@@ -1070,6 +1450,7 @@ const PageRow = memo(function PageRow({
           onMouseMove={onOriginalMouseMove}
           onMouseLeave={onOriginalMouseLeave}
           onClick={onOriginalClick}
+          onDoubleClick={onOriginalDoubleClick}
         >
           {original && <PdfCanvas doc={original} page={page.index} scale={scale} />}
           <div className="hit-layer" aria-hidden="true">
@@ -1125,15 +1506,56 @@ const PageRow = memo(function PageRow({
               })}
             </div>
           )}
+          {pageFormulas && pageFormulas.length > 0 && (
+            <div className="formula-select-layer" aria-label={`原文第 ${page.index + 1} 页公式`}>
+              {pageFormulas.map((f) => {
+                const display = isDisplayFormula(f.bbox);
+                return (
+                  <span
+                    key={f.id}
+                    className="formula-select"
+                    data-latex={f.latex}
+                    data-display={display ? "true" : undefined}
+                    title="可划选或复制该公式（自动适配 Markdown LaTeX 与 Word 原生公式）"
+                    style={{
+                      left: f.bbox.x0 * scale,
+                      top: f.bbox.y0 * scale,
+                      width: Math.max(8, (f.bbox.x1 - f.bbox.x0) * scale),
+                      height: Math.max(10, (f.bbox.y1 - f.bbox.y0) * scale),
+                    }}
+                  >
+                    {display ? `$$${f.latex}$$` : `$${f.latex}$`}
+                  </span>
+                );
+              })}
+            </div>
+          )}
           {pageLinks && <LinkLayer links={pageLinks} scale={scale} onJump={onJump} />}
-          {jumpTarget && <JumpMarker top={jumpTarget.top} scale={scale} />}
+          {mediaBlocks && mediaBlocks.length > 0 && (
+            <FigureLayer jobId={jobId} blocks={mediaBlocks} scale={scale} pageHeight={page.height} />
+          )}
+          {jumpTarget && <JumpMarker target={jumpTarget} scale={scale} pageWidth={page.width} />}
+          {mode === "original" && quickBar}
         </div>
       )}
       {mode !== "original" && (
-        <div className="page" style={size} aria-label={`译文第 ${page.index + 1} 页`}>
+        <div
+          className="page"
+          style={size}
+          aria-label={`译文第 ${page.index + 1} 页`}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) onClearSelection?.();
+          }}
+        >
           {background && <PdfCanvas doc={background} page={page.index} scale={scale} />}
-          {jumpTarget && <JumpMarker top={jumpTarget.top} scale={scale} />}
-          <div className="overlay" style={{ width: page.width * scale, height: page.height * scale }}>
+          {jumpTarget && <JumpMarker target={jumpTarget} scale={scale} pageWidth={page.width} />}
+          <div
+            className="overlay"
+            style={{ width: page.width * scale, height: page.height * scale }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget) onClearSelection?.();
+            }}
+          >
             {blocks.map((b) => {
               const t = texts.get(b.id);
               return t ? (
@@ -1147,6 +1569,7 @@ const PageRow = memo(function PageRow({
                   fontsVersion={fontsVersion}
                   onHover={onHover}
                   onSelect={onSelect}
+                  onEdit={onEdit}
                   links={blockLinks.get(b.id)}
                   highlight={term?.target}
                   onJump={onJump}
@@ -1154,6 +1577,31 @@ const PageRow = memo(function PageRow({
               ) : null;
             })}
           </div>
+          {displayFormulas && displayFormulas.length > 0 && (
+            <div className="formula-select-layer" aria-label={`译文第 ${page.index + 1} 页独立公式`}>
+              {displayFormulas.map((f) => (
+                <span
+                  key={f.id}
+                  className="formula-select"
+                  data-latex={f.latex}
+                  data-display="true"
+                  title="可划选或复制该公式（自动适配 Markdown LaTeX 与 Word 原生公式）"
+                  style={{
+                    left: f.bbox.x0 * scale,
+                    top: f.bbox.y0 * scale,
+                    width: Math.max(8, (f.bbox.x1 - f.bbox.x0) * scale),
+                    height: Math.max(10, (f.bbox.y1 - f.bbox.y0) * scale),
+                  }}
+                >
+                  {`$$${f.latex}$$`}
+                </span>
+              ))}
+            </div>
+          )}
+          {quickBar}
+          {mediaBlocks && mediaBlocks.length > 0 && (
+            <FigureLayer jobId={jobId} blocks={mediaBlocks} scale={scale} pageHeight={page.height} />
+          )}
           {pageLinks && <LinkLayer links={pageLinks.filter((l) => !l.block_id)} scale={scale} onJump={onJump} />}
         </div>
       )}
@@ -1183,6 +1631,7 @@ function OverlayBlock({
   fontsVersion,
   onHover,
   onSelect,
+  onEdit,
   links,
   highlight,
   onJump,
@@ -1195,6 +1644,7 @@ function OverlayBlock({
   fontsVersion: number;
   onHover: (id: string | null) => void;
   onSelect?: (id: string) => void;
+  onEdit?: (id: string) => void;
   links: LinkData[] | undefined;
   highlight?: string;
   onJump: (page: number, top: number) => void;
@@ -1251,11 +1701,15 @@ function OverlayBlock({
       onClick={onSelect && (() => {
         if (!window.getSelection()?.toString()) onSelect(segment.id);
       })}
+      onDoubleClick={onEdit && ((e) => {
+        e.stopPropagation();
+        onEdit(segment.id);
+      })}
       tabIndex={onSelect ? (first ? 0 : -1) : undefined}
       role={onSelect ? "button" : undefined}
       aria-label={`段落：${shortLabel(segment.source)}`}
       data-seg={first ? segment.id : undefined}
-      onKeyDown={onSelect && keyActivate(() => onSelect(segment.id))}
+      onKeyDown={(onEdit ?? onSelect) && keyActivate(() => (onEdit ?? onSelect)?.(segment.id))}
       onFocus={() => onHover(segment.id)}
       onBlur={() => onHover(null)}
     >

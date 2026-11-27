@@ -917,6 +917,66 @@
     }
    }
   },
+  "/api/jobs/{job_id}/blocks/{block_id}.png": {
+   "get": {
+    "tags": [
+     "jobs"
+    ],
+    "summary": "Get Block Png",
+    "description": "按 MinerU 版面坐标高清裁剪论文插图或表格为白底 PNG，供阅读台一键复制或保存。",
+    "operationId": "get_block_png_api_jobs__job_id__blocks__block_id__png_get",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     },
+     {
+      "name": "block_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Block Id"
+      }
+     },
+     {
+      "name": "download",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false,
+       "title": "Download"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/api/jobs/{job_id}/export": {
    "get": {
     "tags": [
@@ -3810,6 +3870,21 @@
       "maxLength": 20000,
       "minLength": 1,
       "title": "Target"
+     },
+     "formulas": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "type": "string"
+        },
+        "type": "object",
+        "maxProperties": 200
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Formulas"
      }
     },
     "type": "object",

@@ -17,7 +17,7 @@ PipelineDep = Annotated[Pipeline, Depends(pipeline)]
 
 @router.patch("/{segment_id}", response_model=SegmentOut)
 def edit_segment(segment_id: str, body: EditIn, p: PipelineDep) -> SegmentOut:
-    return SegmentOut.of(usecases.edit_segment(p, segment_id, body.target))
+    return SegmentOut.of(usecases.edit_segment(p, segment_id, body.target, formulas=body.formulas))
 
 
 @router.post("/{segment_id}/retranslate", response_model=RetranslateSegmentOut)

@@ -67,3 +67,16 @@
 .revisions li.voided .revision-preview {
   opacity: 0.6;
 }
+
+.rev-current-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--done-tint);
+  color: var(--done);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.rev-restore-btn {
+  color: var(--pen);
+}

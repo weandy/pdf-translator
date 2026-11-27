@@ -324,6 +324,7 @@ class RevisionOut(BaseModel):
 
 class EditIn(BaseModel):
     target: str = Field(min_length=1, max_length=20000)
+    formulas: dict[str, str] | None = Field(default=None, max_length=200)
 
     @field_validator("target")
     @classmethod
@@ -331,6 +332,22 @@ class EditIn(BaseModel):
         cleaned = value.strip()
         if not cleaned:
             raise ValueError("译文不能为空")
+        return cleaned
+
+    @field_validator("formulas")
+    @classmethod
+    def _valid_formulas(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        if value is None:
+            return None
+        cleaned: dict[str, str] = {}
+        for k, v in value.items():
+            key = k.strip()
+            latex = v.strip()
+            if not key or not latex:
+                raise ValueError("公式内容不能为空")
+            if len(latex) > 2000:
+                raise ValueError(f"公式 {key} 长度不能超过 2000 字符")
+            cleaned[key] = latex
         return cleaned
 
 
